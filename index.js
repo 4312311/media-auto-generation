@@ -120,6 +120,7 @@ async function processMessage(messageText, messageId) {
             
             try {
                 const url = await generateMedia(prompt, INSERT_TYPE.REPLACE);
+                alert(url)
                 const replacement = settings.mediaType === 'image'
                     ? `<img src="${url}" prompt="${escapeHtmlAttribute(prompt)}">`
                     : `<video src="${url}" prompt="${escapeHtmlAttribute(prompt)}" controls>`;
@@ -187,6 +188,7 @@ $(function () {
         });
 
         setupMessageListener();
+        alert('Media Generation Plugin initialized')
         console.log('Media Generation Plugin initialized');
     })();
 });
