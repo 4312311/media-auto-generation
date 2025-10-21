@@ -11,7 +11,7 @@ import { regexFromString } from '../../../utils.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 
 // 插件常量定义
-const extensionName = 'st-media-generation';
+const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 const INSERT_TYPE = { REPLACE: 'replace', NEW_MESSAGE: 'new' };
 
