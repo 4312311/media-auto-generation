@@ -124,7 +124,7 @@ async function processMessage(messageText, messageId) {
                 alert(url)
                 const replacement = settings.mediaType === 'image'
                     ? `<img src="${url}" prompt="${escapeHtmlAttribute(prompt)}">`
-                    : `<video src="${url}" prompt="${escapeHtmlAttribute(prompt)}" controls>`;
+                    : `<video src="${url}" prompt="${escapeHtmlAttribute(prompt)}" style="width: 100%; height: auto;" controls>`;
                 
                 processedText = processedText.replace(fullMatch, replacement);
             } catch (error) {
