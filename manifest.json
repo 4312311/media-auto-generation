@@ -5,9 +5,9 @@
     "js": "index.js",
     "author": "zy",
     "version": "1.0.0",
-    "homePage": "https://github.com/4312311/st-image-auto-generation",
+    "homePage": "https://github.com/4312311/media-auto-generation",
     "auto_update": true,
     "i18n": {
-        "zh-cn": "i18n/zh-cn.json"
+        "zh-cn": "zh-cn.json"
     }
 }
