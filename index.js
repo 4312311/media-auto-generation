@@ -151,11 +151,13 @@ function escapeHtmlAttribute(value) {
 // 监听消息事件
 function setupMessageListener() {
     eventSource.on(event_types.MESSAGE_RECEIVED, async (data) => {
+        alert(1)
         if (data.message.role !== 'assistant') return;
-        
+        alert(2)
         const processedText = await processMessage(data.message.text, data.message.id);
         if (processedText !== data.message.text) {
             data.message.text = processedText;
+            alert(processedText)
             updateMessageBlock($(`#message_${data.message.id}`), data.message);
         }
     });
