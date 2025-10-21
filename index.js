@@ -106,8 +106,9 @@ async function generateMedia(prompt, insertType) {
 // 处理消息替换
 async function processMessage(messageText, messageId) {
     const settings = extension_settings[extensionName];
+    alert(settings.promptInjection.regex)
     const regex = regexFromString(settings.promptInjection.regex);
-    
+    alert(regex)
     if (!regex) return messageText;
 
     let processedText = messageText;
@@ -154,6 +155,9 @@ function setupMessageListener() {
         alert(1)
         alert(2)
         const processedText = await processMessage(data.message.text, data.message.id);
+                alert(processedText)
+                alert(data.message.text)
+
         if (processedText !== data.message.text) {
             data.message.text = processedText;
             alert(processedText)
