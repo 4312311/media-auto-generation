@@ -1,0 +1,193 @@
+{
+  "1": {
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "model": "wan",
+      "type": "wan"
+    },
+    "class_type": "CLIPLoader"
+  },
+  "2": {
+    "inputs": {
+      "vae_name": "Wan\\wan_2.1_vae.safetensors"
+    },
+    "class_type": "VAELoader"
+  },
+  "3": {
+    "inputs": {
+      "unet_name": "smoothMixWan22I2VT2V_t2vHighV20.safetensors",
+      "model": "default",
+      "weight_dtype": "default"  
+    },
+    "class_type": "UNETLoader"
+  },
+  "4": {
+    "inputs": {
+      "unet_name": "smoothmixTxt2vidLow.c9GR.safetensors",
+      "model": "default",
+      "weight_dtype": "default"  
+    },
+    "class_type": "UNETLoader"
+  },
+  "5": {
+    "inputs": {
+      "model": ["3", 0],
+      "blocks_to_swap": 25,
+      "offload_txt_emb": false, 
+      "offload_img_emb": false,  
+      "use_non_blocking": false 
+    },
+    "class_type": "wanBlockSwap"
+  },
+  "6": {
+    "inputs": {
+      "model": ["4", 0],
+      "blocks_to_swap": 25,
+      "offload_txt_emb": false, 
+      "offload_img_emb": false,  
+      "use_non_blocking": false  
+    },
+    "class_type": "wanBlockSwap"
+  },
+  "7": {
+    "inputs": {
+      "model": ["5", 0],
+      "lora_name": "wan-nsfw\\动漫通用高.safetensors",
+      "strength_model": 1
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "21": {
+    "inputs": {
+      "model": ["7", 0],
+      "lora_name": "wan-nsfw\\多姿势高.safetensors",  
+      "strength_model": 1
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "8": {
+    "inputs": {
+      "model": ["6", 0],
+      "lora_name": "wan-nsfw\\动漫通用低.safetensors",
+      "strength_model": 0.9
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "24": {
+    "inputs": {
+      "model": ["8", 0],
+      "lora_name": "wan-nsfw\\多姿势低.safetensors",  
+      "strength_model": 1
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "9": {
+    "inputs": {
+      "model": ["21", 0],
+      "sage_attention": "auto"
+    },
+    "class_type": "PathchSageAttentionKJ"
+  },
+  "10": {
+    "inputs": {
+      "model": ["24", 0],
+      "sage_attention": "auto"
+    },
+    "class_type": "PathchSageAttentionKJ"
+  },
+  "11": {
+    "inputs": {
+      "model": ["9", 0],
+      "enable_fp16_accumulation": true
+    },
+    "class_type": "ModelPatchTorchSettings"
+  },
+  "12": {
+    "inputs": {
+      "model": ["10", 0],
+      "enable_fp16_accumulation": true
+    },
+    "class_type": "ModelPatchTorchSettings"
+  },
+  "13": {
+    "inputs": {
+      "clip": ["1", 0],
+      "text": "%prompt%"
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "14": {
+    "inputs": {
+      "clip": ["1", 0],
+      "text": "%negative_prompt%"
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "15": {
+    "inputs": {
+      "Value": 5
+    },
+    "class_type": "DF_Integer"
+  },
+  "16": {
+    "inputs": {
+      "a": ["15", 0],
+      "value": "a*16+1"
+    },
+    "class_type": "SimpleMath+"
+  },
+  "17": {
+    "inputs": {
+      "length": ["16", 0],
+      "width": 480,
+      "height": 480,
+      "batch_size": 1,
+      "batch_count": 1
+    },
+    "class_type": "EmptyHunyuanLatentVideo"
+  },
+  "18": {
+    "inputs": {
+      "model_high_noise": ["11", 0],
+      "model_low_noise": ["12", 0],
+      "positive": ["13", 0],
+      "negative": ["14", 0],
+      "latent_image": ["17", 0],
+      "strength": 0.875,
+      "seed": 92983394346842,
+      "seed_behavior": "randomize",
+      "steps": 6,
+      "cfg_high_noise": 1,
+      "cfg_low_noise": 1,
+      "sampler_name": "euler",  
+      "scheduler": "normal",
+      "denoise": 1,
+      "boundary": 0.875,  
+      "sigma_shift": 8
+    },
+    "class_type": "WanMoeKSampler"
+  },
+  "19": {
+    "inputs": {
+      "samples": ["18", 0],
+      "vae": ["2", 0]
+    },
+    "class_type": "VAEDecode"
+  },
+  "20": {
+    "inputs": {
+      "images": ["19", 0],
+      "frame_rate": 16,
+      "loop_count": 0,
+      "filename_prefix": "wan2.2",
+      "format": "video/h264-mp4",
+      "pix_fmt": "yuv420p",
+      "crf": 15,
+      "save_metadata": true,
+      "trim_to_audio": false,
+      "pingpong": false,
+      "save_output": true
+    },
+    "class_type": "VHS_VideoCombine"
+  }
+}
