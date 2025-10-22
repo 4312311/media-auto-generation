@@ -4,19 +4,26 @@
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
-        <!-- 媒体类型选择 -->
+        <!-- 媒体类型选择（包含禁用选项） -->
         <div class="flex-container flexnowrap">
             <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
             <select id="mediaType" class="text_pole widthNatural margin0">
+                <option value="disabled" data-i18n="Disabled" selected>Disabled</option>
                 <option value="image" data-i18n="Image">Image</option>
                 <option value="video" data-i18n="Video">Video</option>
             </select>
         </div>
         
-        <!-- 正则表达式输入 -->
+        <!-- 图片正则表达式输入 -->
         <div class="">
-            <div><label for="media_regex" class="flex1" data-i18n="Regex">Regex</label></div>
-            <textarea id="media_regex" class="text_pole textarea_compact" rows="2" placeholder="Your regex here"></textarea>
+            <div><label for="image_regex" class="flex1" data-i18n="Image Regex">Image Regex</label></div>
+            <textarea id="image_regex" class="text_pole textarea_compact" rows="2" placeholder="Image regex here"></textarea>
+        </div>
+        
+        <!-- 视频正则表达式输入 -->
+        <div class="">
+            <div><label for="video_regex" class="flex1" data-i18n="Video Regex">Video Regex</label></div>
+            <textarea id="video_regex" class="text_pole textarea_compact" rows="2" placeholder="Video regex here"></textarea>
         </div>
         
         <!-- 样式输入 -->
