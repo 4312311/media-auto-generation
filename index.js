@@ -325,7 +325,7 @@ async function handleIncomingMessage() {
                         // 创建适当的媒体标签
                         let mediaTag;
                         if (mediaType === 'video') {
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}"></video>`;
+                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" controls style="${style}"></video>`;
                         } else {
                             mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}">`;
                         }
