@@ -1,19 +1,28 @@
 <div class="inline-drawer">
     <div class="inline-drawer-toggle inline-drawer-header">
-        <b data-i18n="Media Generation">媒体生成设置</b>
+        <b data-i18n="Media Auto Generation">Media Auto Generation</b>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
-        <div class="setting-item">
-            <label for="media_type" data-i18n="Media Type">媒体类型</label>
-            <select id="media_type" class="text_pole widthNatural margin0">
-                <option value="image" data-i18n="Image">图片</option>
-                <option value="video" data-i18n="Video">视频</option>
+        <!-- 媒体类型选择 -->
+        <div class="flex-container flexnowrap">
+            <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
+            <select id="mediaType" class="text_pole widthNatural margin0">
+                <option value="image" data-i18n="Image">Image</option>
+                <option value="video" data-i18n="Video">Video</option>
             </select>
         </div>
-        <div class="setting-item">
-            <label for="media_regex" data-i18n="Regex">正则表达式</label>
+        
+        <!-- 正则表达式输入 -->
+        <div class="">
+            <div><label for="media_regex" class="flex1" data-i18n="Regex">Regex</label></div>
             <textarea id="media_regex" class="text_pole textarea_compact" rows="2" placeholder="Your regex here"></textarea>
+        </div>
+        
+        <!-- 样式输入 -->
+        <div class="">
+            <div><label for="media_style" class="flex1" data-i18n="Style">Style</label></div>
+            <input id="media_style" class="text_pole" placeholder="e.g. width:100%;height:auto">
         </div>
     </div>
 </div>
