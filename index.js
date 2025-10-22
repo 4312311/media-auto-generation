@@ -38,8 +38,9 @@ function escapeHtmlAttribute(value) {
 
 // 默认设置
 const defaultSettings = {
-    mediaType: 'image', // 默认图片
-    regex: '/<media[^>]*\\sprompt="([^"]*)"[^>]*?>/g',
+    mediaType: 'disabled', // 默认禁用
+    imageRegex: '/<[\\s\\r\\n]*img[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
+    videoRegex: '/<[\\s\\r\\n]*video[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
     style: 'width:auto;height:auto', // 默认图片样式
 };
 
@@ -50,7 +51,8 @@ function updateUI() {
     // 只在表单元素存在时更新它们
     if ($('#mediaType').length) {
         $('#mediaType').val(extension_settings[extensionName].mediaType);
-        $('#media_regex').val(extension_settings[extensionName].regex);
+        $('#image_regex').val(extension_settings[extensionName].imageRegex);
+        $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
     }
 }
@@ -111,9 +113,15 @@ async function createSettings(settingsHtml) {
         saveSettingsDebounced();
     });
 
-    $('#media_regex').on('input', function () {
-        console.log(`[${extensionName}] 正则表达式已更新`);
-        extension_settings[extensionName].regex = $(this).val();
+    $('#image_regex').on('input', function () {
+        console.log(`[${extensionName}] 图片正则表达式已更新`);
+        extension_settings[extensionName].imageRegex = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    $('#video_regex').on('input', function () {
+        console.log(`[${extensionName}] 视频正则表达式已更新`);
+        extension_settings[extensionName].videoRegex = $(this).val();
         saveSettingsDebounced();
     });
 
@@ -208,9 +216,9 @@ eventSource.on(event_types.MESSAGE_RECEIVED, handleIncomingMessage);
 async function handleIncomingMessage() {
     console.log(`[${extensionName}] 收到新消息事件`);
     
-    // 确保设置对象存在
-    if (!extension_settings[extensionName]) {
-        console.log(`[${extensionName}] 未找到设置，终止处理`);
+    // 确保设置对象存在且未被禁用
+    if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') {
+        console.log(`[${extensionName}] 插件已禁用或未找到设置，终止处理`);
         return;
     }
 
@@ -223,16 +231,20 @@ async function handleIncomingMessage() {
         return;
     }
 
-    // 确保regex属性存在
-    if (!extension_settings[extensionName].regex) {
+    // 获取当前媒体类型和对应正则
+    const mediaType = extension_settings[extensionName].mediaType;
+    const regexStr = mediaType === 'image' 
+        ? extension_settings[extensionName].imageRegex 
+        : extension_settings[extensionName].videoRegex;
+
+    // 确保正则属性存在
+    if (!regexStr) {
         console.error(`[${extensionName}] 正则表达式设置未正确初始化`);
         return;
     }
 
     // 使用正则表达式搜索
-    const mediaTagRegex = regexFromString(
-        extension_settings[extensionName].regex
-    );
+    const mediaTagRegex = regexFromString(regexStr);
     console.log(`[${extensionName}] 使用正则表达式:`, mediaTagRegex);
     
     let matches;
@@ -250,7 +262,28 @@ async function handleIncomingMessage() {
         setTimeout(async () => {
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
-                toastr.info(`Generating ${matches.length} media items...`);
+                
+                // 显示带计时器的提示信息（不自动关闭）
+                let seconds = 0;
+                const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
+                const toastrOptions = {
+                    timeOut: 0,        // 不自动关闭
+                    extendedTimeOut: 0, // 鼠标悬停也不延长关闭时间
+                    closeButton: true   // 显示关闭按钮
+                };
+                
+                // 初始提示
+                let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... 0s`, '', toastrOptions);
+                const toastId = toast.attr('data-toastr'); // 获取toastr实例ID
+                
+                // 计时器：每秒更新提示
+                const timer = setInterval(() => {
+                    seconds++;
+                    // 更新现有提示内容
+                    $(`[data-toastr="${toastId}"] .toast-message`).text(
+                        `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
+                    );
+                }, 1000);
 
                 // 处理每个匹配的媒体标签
                 for (const match of matches) {
@@ -280,8 +313,7 @@ async function handleIncomingMessage() {
                             continue;
                         }
                         
-                        // 获取媒体类型和样式
-                        const mediaType = extension_settings[extensionName].mediaType || 'image';
+                        // 获取样式
                         const style = extension_settings[extensionName].style || '';
                         
                         console.log(`[${extensionName}] 使用${mediaType}类型，样式: ${style}`);
@@ -293,7 +325,7 @@ async function handleIncomingMessage() {
                         // 创建适当的媒体标签
                         let mediaTag;
                         if (mediaType === 'video') {
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}">`;
+                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}"></video>`;
                         } else {
                             mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}">`;
                         }
@@ -313,9 +345,16 @@ async function handleIncomingMessage() {
                     }
                 }
                 
-                toastr.success(`${matches.length} media items generated successfully`);
+                // 清除计时器并关闭生成中提示
+                clearInterval(timer);
+                toastr.clear(toast);
+                
+                // 显示成功信息
+                toastr.success(`${matches.length} ${mediaTypeText}(s) generated successfully`);
                 console.log(`[${extensionName}] 媒体生成完成`);
             } catch (error) {
+                // 出错时也需要清除计时器
+                clearInterval(timer);
                 toastr.error(`Media generation error: ${error}`);
                 console.error(`[${extensionName}] 媒体生成错误:`, error);
             }
