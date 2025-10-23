@@ -273,7 +273,7 @@ async function handleIncomingMessage() {
                 };
                 
                 // 初始提示文本（用于定位提示框）
-                const baseText = `Generating ${matches.length} ${mediaTypeText}(s)...`;
+                const baseText = `生成 ${matches.length} ${mediaTypeText}(s)...`;
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
                 console.log(`[${extensionName}] 生成初始提示框，文本: ${baseText} ${seconds}s`);
                 
@@ -357,12 +357,11 @@ async function handleIncomingMessage() {
                     }
                 }
 
-                clearInterval(timer);
+                 clearInterval(timer);
+                console.log(`[${extensionName}] 生成成功，清除定时器`);
                 toastr.clear(toast);
-                toastr.success(`Successfully generated ${matches.length} ${mediaTypeText}(s)`);
-                
-                // 显示成功信息
-                console.log(`[${extensionName}] 媒体生成完成`);
+                toastr.success(`成功 生成 ${matches.length} ${mediaTypeText}(s)`);
+
             } catch (error) {
                 // 出错时也需要清除计时器
                 clearInterval(timer);
