@@ -260,38 +260,38 @@ async function handleIncomingMessage() {
     if (matches.length > 0) {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
-               let timer; // 声明定时器变量，用于后续清除
+           let timer; // 声明定时器变量
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
                 
-                // 显示带计时器的提示信息（不自动关闭）
+                // 计时器变量（初始为0）
                 let seconds = 0;
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = {
                     timeOut: 0,        // 不自动关闭
-                    extendedTimeOut: 0, // 鼠标悬停也不延长关闭时间
+                    extendedTimeOut: 0, // 鼠标悬停不延长
                     closeButton: true   // 显示关闭按钮
                 };
                 
-                // 初始提示
-                let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... 0s`, '', toastrOptions);
-                const toastId = toast.attr('data-toastr'); // 获取toastr实例ID
-
-                // 核心修复：添加每秒更新计时器的逻辑
+                // 初始提示：使用变量seconds（初始值0）
+                let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`, '', toastrOptions);
+                const toastId = toast.attr('data-toastr'); // 获取提示框ID
+                
+                // 启动定时器：每秒更新秒数和提示文本
                 timer = setInterval(() => {
                     seconds++; // 每秒递增1
-                    // 找到对应的提示框并更新文本
-                    const targetToast = $(`[data-toastr="${toastId}"]`);
-                    if (targetToast.length) {
-                        targetToast.find('.toast-message').text(
+                    // 定位到对应的提示框元素
+                    const $toastElement = $(`[data-toastr="${toastId}"]`);
+                    if ($toastElement.length) {
+                        // 更新提示文本中的秒数（使用最新的seconds变量）
+                        $toastElement.find('.toast-message').text(
                             `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
                         );
                     } else {
-                        // 若提示框已被用户关闭，清除定时器
+                        // 提示框已被关闭，清除定时器
                         clearInterval(timer);
                     }
-                }, 1000); // 每1000毫秒（1秒）执行一次
-
+                }, 1000);
 
                 // 处理每个匹配的媒体标签
                 for (const match of matches) {
