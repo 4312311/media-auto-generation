@@ -261,10 +261,11 @@ async function handleIncomingMessage() {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
             let timer;
+           let seconds = 0;
+
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
                 
-                let seconds = 0;
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = {
                     timeOut: 0,
@@ -273,7 +274,7 @@ async function handleIncomingMessage() {
                 };
                 
                 // 初始提示文本（用于定位提示框）
-                const baseText = `开始生成 ${matches.length} ${mediaTypeText}(s)...`;
+                const baseText = `开始生成 ${matches.length} ${mediaTypeText}...`;
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
                 console.log(`[${extensionName}] 生成初始提示框，文本: ${baseText} ${seconds}s`);
                 
@@ -360,7 +361,7 @@ async function handleIncomingMessage() {
                  clearInterval(timer);
                 console.log(`[${extensionName}] 生成成功，清除定时器`);
                 toastr.clear(toast);
-                toastr.success(`成功生成 ${matches.length} ${mediaTypeText}(s)`);
+                toastr.success(`成功生成 ${matches.length} ${mediaTypeText},一共耗时${seconds}s`);
 
             } catch (error) {
                 // 出错时也需要清除计时器
