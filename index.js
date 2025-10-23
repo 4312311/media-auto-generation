@@ -266,6 +266,8 @@ async function handleIncomingMessage() {
                 
                 // 计时器变量（初始为0）
                 let seconds = 0;
+                console.log(`[${extensionName}] 初始化计时器，初始值: ${seconds}s`);
+                
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = {
                     timeOut: 0,        // 不自动关闭
@@ -276,22 +278,29 @@ async function handleIncomingMessage() {
                 // 初始提示：使用变量seconds（初始值0）
                 let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`, '', toastrOptions);
                 const toastId = toast.attr('data-toastr'); // 获取提示框ID
+                console.log(`[${extensionName}] 生成初始提示框，ID: ${toastId}`);
                 
                 // 启动定时器：每秒更新秒数和提示文本
                 timer = setInterval(() => {
                     seconds++; // 每秒递增1
+                    console.log(`[${extensionName}] 计时器更新，当前值: ${seconds}s`);
+                    
                     // 定位到对应的提示框元素
                     const $toastElement = $(`[data-toastr="${toastId}"]`);
+                    console.log(`[${extensionName}] 查找提示框元素: ${toastId}，结果: ${$toastElement.length > 0 ? '找到' : '未找到'}`);
+                    
                     if ($toastElement.length) {
                         // 更新提示文本中的秒数（使用最新的seconds变量）
-                        $toastElement.find('.toast-message').text(
-                            `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
-                        );
+                        const newText = `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`;
+                        $toastElement.find('.toast-message').text(newText);
+                        console.log(`[${extensionName}] 提示框文本已更新: ${newText}`);
                     } else {
                         // 提示框已被关闭，清除定时器
                         clearInterval(timer);
+                        console.log(`[${extensionName}] 提示框已关闭，清除定时器`);
                     }
                 }, 1000);
+
 
                 // 处理每个匹配的媒体标签
                 for (const match of matches) {
