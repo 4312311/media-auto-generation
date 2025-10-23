@@ -260,6 +260,8 @@ async function handleIncomingMessage() {
     if (matches.length > 0) {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
+                        let timer; // 声明计时器变量，用于后续销毁
+
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
                 
@@ -277,12 +279,18 @@ async function handleIncomingMessage() {
                 const toastId = toast.attr('data-toastr'); // 获取toastr实例ID
                 
                 // 计时器：每秒更新提示
-                const timer = setInterval(() => {
+                  timer = setInterval(() => {
                     seconds++;
-                    // 更新现有提示内容
-                    $(`[data-toastr="${toastId}"] .toast-message`).text(
-                        `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
-                    );
+                    // 查找当前提示框元素并更新文本
+                    const $toastElement = $(`[data-toastr="${toastId}"]`);
+                    if ($toastElement.length) {
+                        $toastElement.find('.toast-message').text(
+                            `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
+                        );
+                    } else {
+                        // 提示框已关闭，清除计时器
+                        clearInterval(timer);
+                    }
                 }, 1000);
 
                 // 处理每个匹配的媒体标签
@@ -344,13 +352,12 @@ async function handleIncomingMessage() {
                         console.log(`[${extensionName}] 媒体替换后已保存聊天`);
                     }
                 }
-                
-                // 清除计时器并关闭生成中提示
+
                 clearInterval(timer);
                 toastr.clear(toast);
+                toastr.success(`Successfully generated ${matches.length} ${mediaTypeText}(s)`);
                 
                 // 显示成功信息
-                toastr.success(`${matches.length} ${mediaTypeText}(s) generated successfully`);
                 console.log(`[${extensionName}] 媒体生成完成`);
             } catch (error) {
                 // 出错时也需要清除计时器
