@@ -1,4 +1,18 @@
 {
-    "Media Auto Generation": "自动生成视频",
-    "Regex": "正则表达式",
+    "Media Auto Generation": "媒体自动生成",
+    "Media Type": "媒体类型",
+    "Disabled": "禁用",
+    "Image": "图片",
+    "Video": "视频",
+    "Image Regex": "图片正则表达式",
+    "Video Regex": "视频正则表达式",
+    "Style": "样式",
+    "Image regex here": "图片正则表达式在此输入",
+    "Video regex here": "视频正则表达式在此输入",
+    "e.g. width:100%;height:auto": "例如：width:100%;height:auto",
+    "Generating %d %s(s)... %ds": "正在生成%d个%s... %d秒",
+    "Generated %d %s(s) successfully": "成功生成%d个%s",
+    "Failed to generate %s": "生成%s失败",
+    "Please configure regex first": "请先配置正则表达式",
+    "Plugin disabled": "插件已禁用"
 }
