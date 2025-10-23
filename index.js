@@ -260,42 +260,37 @@ async function handleIncomingMessage() {
     if (matches.length > 0) {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
-           let timer; // 声明定时器变量
+            let timer;
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
                 
-                // 计时器变量（初始为0）
                 let seconds = 0;
-                console.log(`[${extensionName}] 初始化计时器，初始值: ${seconds}s`);
-                
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = {
-                    timeOut: 0,        // 不自动关闭
-                    extendedTimeOut: 0, // 鼠标悬停不延长
-                    closeButton: true   // 显示关闭按钮
+                    timeOut: 0,
+                    extendedTimeOut: 0,
+                    closeButton: true
                 };
                 
-                // 初始提示：使用变量seconds（初始值0）
-                let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`, '', toastrOptions);
-                const toastId = toast.attr('data-toastr'); // 获取提示框ID
-                console.log(`[${extensionName}] 生成初始提示框，ID: ${toastId}`);
+                // 初始提示文本（用于定位提示框）
+                const baseText = `Generating ${matches.length} ${mediaTypeText}(s)...`;
+                let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
+                console.log(`[${extensionName}] 生成初始提示框，文本: ${baseText} ${seconds}s`);
                 
-                // 启动定时器：每秒更新秒数和提示文本
+                // 启动定时器：通过文本特征定位提示框（不依赖data-toastr）
                 timer = setInterval(() => {
-                    seconds++; // 每秒递增1
+                    seconds++;
                     console.log(`[${extensionName}] 计时器更新，当前值: ${seconds}s`);
                     
-                    // 定位到对应的提示框元素
-                    const $toastElement = $(`[data-toastr="${toastId}"]`);
-                    console.log(`[${extensionName}] 查找提示框元素: ${toastId}，结果: ${$toastElement.length > 0 ? '找到' : '未找到'}`);
+                    // 关键修正：通过提示框包含的基础文本定位元素（toastr默认会把文本放在.toast-message中）
+                    const $toastElement = $(`.toast-message:contains("${baseText}")`).closest('.toast');
+                    console.log(`[${extensionName}] 查找提示框元素（文本特征: ${baseText}），结果: ${$toastElement.length > 0 ? '找到' : '未找到'}`);
                     
                     if ($toastElement.length) {
-                        // 更新提示文本中的秒数（使用最新的seconds变量）
-                        const newText = `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`;
+                        const newText = `${baseText} ${seconds}s`;
                         $toastElement.find('.toast-message').text(newText);
                         console.log(`[${extensionName}] 提示框文本已更新: ${newText}`);
                     } else {
-                        // 提示框已被关闭，清除定时器
                         clearInterval(timer);
                         console.log(`[${extensionName}] 提示框已关闭，清除定时器`);
                     }
