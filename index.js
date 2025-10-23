@@ -260,8 +260,7 @@ async function handleIncomingMessage() {
     if (matches.length > 0) {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
-                        let timer; // 声明计时器变量，用于后续销毁
-
+               let timer; // 声明定时器变量，用于后续清除
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
                 
@@ -277,21 +276,22 @@ async function handleIncomingMessage() {
                 // 初始提示
                 let toast = toastr.info(`Generating ${matches.length} ${mediaTypeText}(s)... 0s`, '', toastrOptions);
                 const toastId = toast.attr('data-toastr'); // 获取toastr实例ID
-                
-                // 计时器：每秒更新提示
-                  timer = setInterval(() => {
-                    seconds++;
-                    // 查找当前提示框元素并更新文本
-                    const $toastElement = $(`[data-toastr="${toastId}"]`);
-                    if ($toastElement.length) {
-                        $toastElement.find('.toast-message').text(
+
+                // 核心修复：添加每秒更新计时器的逻辑
+                timer = setInterval(() => {
+                    seconds++; // 每秒递增1
+                    // 找到对应的提示框并更新文本
+                    const targetToast = $(`[data-toastr="${toastId}"]`);
+                    if (targetToast.length) {
+                        targetToast.find('.toast-message').text(
                             `Generating ${matches.length} ${mediaTypeText}(s)... ${seconds}s`
                         );
                     } else {
-                        // 提示框已关闭，清除计时器
+                        // 若提示框已被用户关闭，清除定时器
                         clearInterval(timer);
                     }
-                }, 1000);
+                }, 1000); // 每1000毫秒（1秒）执行一次
+
 
                 // 处理每个匹配的媒体标签
                 for (const match of matches) {
