@@ -338,9 +338,9 @@ async function handleIncomingMessage() {
                         // 创建适当的媒体标签
                         let mediaTag;
                         if (mediaType === 'video') {
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" controls style="${style}"></video>`;
+                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`;
                         } else {
-                            mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}">`;
+                            mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
                         }
                         
                         console.log(`[${extensionName}] 生成的媒体标签:`, mediaTag);
