@@ -42,6 +42,8 @@ const defaultSettings = {
     imageRegex: '/<[\\s\\r\\n]*img[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
     videoRegex: '/<[\\s\\r\\n]*video[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
     style: 'width:auto;height:auto', // 默认图片样式
+    useCustomComfyVars: false, // 是否使用自定义comfyUI变量
+    comfyVarNames: '' // 自定义变量名称，英文逗号分隔
 };
 
 // 从设置更新UI
@@ -54,6 +56,8 @@ function updateUI() {
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
+        $('#useCustomComfyVars').prop('checked', extension_settings[extensionName].useCustomComfyVars);
+        $('#comfyVarNames').val(extension_settings[extensionName].comfyVarNames);
     }
 }
 
@@ -110,6 +114,19 @@ async function createSettings(settingsHtml) {
         }
         
         updateUI();
+        saveSettingsDebounced();
+    });
+
+    $('#useCustomComfyVars').on('change', function () {
+        const newValue = $(this).is(':checked');
+        console.log(`[${extensionName}] 自定义comfyUI变量已设置为: ${newValue}`);
+        extension_settings[extensionName].useCustomComfyVars = newValue;
+        saveSettingsDebounced();
+    });
+
+    $('#comfyVarNames').on('input', function () {
+        console.log(`[${extensionName}] 自定义变量名称已更新`);
+        extension_settings[extensionName].comfyVarNames = $(this).val();
         saveSettingsDebounced();
     });
 
@@ -308,19 +325,45 @@ async function handleIncomingMessage() {
                     
                     console.log(`[${extensionName}] 生成媒体，提示词: ${prompt.substring(0, 50)}...`);
 
+                    // 处理comfyUI自定义变量
+                    let comfyCustomVars = '';
+                    const originalTag = typeof match?.[0] === 'string' ? match[0] : '';
+                    const useCustomVars = extension_settings[extensionName].useCustomComfyVars;
+                    const varNames = useCustomVars ? extension_settings[extensionName].comfyVarNames.split(',').map(v => v.trim()).filter(v => v) : [];
+                    const varValues = {};
+
+                    // 提取自定义变量值
+                    if (useCustomVars && varNames.length > 0 && originalTag) {
+                        varNames.forEach(varName => {
+                            const varRegex = new RegExp(`${varName}\\s*=\\s*"([^"]*)"`, 'i');
+                            const varMatch = originalTag.match(varRegex);
+                            if (varMatch && varMatch[1]) {
+                                varValues[varName] = varMatch[1];
+                            }
+                        });
+
+                        // 生成变量模板
+                        Object.entries(varValues).forEach(([name, value]) => {
+                            comfyCustomVars += `{{setvar::${name}::${value}}}`;
+                        });
+                        console.log(`[${extensionName}] 生成的comfyUI自定义变量: ${comfyCustomVars}`);
+                    }
+
+                    // 拼接变量和原始prompt
+                    const finalPrompt = `${comfyCustomVars}${prompt}`;
+                    
                     // 调用sd命令生成媒体
                     const result = await SlashCommandParser.commands['sd'].callback(
                         {
                             quiet: 'true'
                         },
-                        prompt
+                        finalPrompt
                     );
                     
                     console.log(`[${extensionName}] 媒体生成结果:`, result);
 
                     if (typeof result === 'string' && result.trim().length > 0) {
                         // 处理替换逻辑
-                        const originalTag = typeof match?.[0] === 'string' ? match[0] : '';
                         if (!originalTag) {
                             console.log(`[${extensionName}] 未找到原始标签，跳过`);
                             continue;
@@ -335,10 +378,16 @@ async function handleIncomingMessage() {
                         const escapedUrl = escapeHtmlAttribute(result);
                         const escapedPrompt = escapeHtmlAttribute(prompt);
                         
-                        // 创建适当的媒体标签
+                        // 创建适当的媒体标签，还原变量属性
                         let mediaTag;
                         if (mediaType === 'video') {
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`;
+                            // 拼接变量属性
+                            let varAttributes = '';
+                            Object.entries(varValues).forEach(([name, value]) => {
+                                varAttributes += ` ${name}="${escapeHtmlAttribute(value)}"`;
+                            });
+                            
+                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}"${varAttributes} loop controls autoplay muted/>`;
                         } else {
                             mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
                         }
