@@ -1,41 +1,35 @@
 <div class="inline-drawer">
-    <div class="inline-drawer-header">
-        <h3 data-i18n="Media Auto Generation">媒体自动生成</h3>
+    <div class="inline-drawer-toggle inline-drawer-header">
+        <b data-i18n="Media Auto Generation">Media Auto Generation</b>
+        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
-        <div class="form-group">
-            <label for="mediaType" data-i18n="Media Type">媒体类型</label>
-            <select id="mediaType" class="form-control">
-                <option value="disabled" data-i18n="Disabled">禁用</option>
-                <option value="image" data-i18n="Image">图片</option>
-                <option value="video" data-i18n="Video">视频</option>
+        <!-- 媒体类型选择（包含禁用选项） -->
+        <div class="flex-container flexnowrap">
+            <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
+            <select id="mediaType" class="text_pole widthNatural margin0">
+                <option value="disabled" data-i18n="Disabled" selected>Disabled</option>
+                <option value="image" data-i18n="Image">Image</option>
+                <option value="video" data-i18n="Video">Video</option>
             </select>
         </div>
-
-        <div class="form-group">
-            <label for="useCustomComfyVars"">使用自定义comfyUI工作流变量</label>
-            <input type="checkbox" id="useCustomComfyVars" class="form-control">
+        
+        <!-- 图片正则表达式输入 -->
+        <div class="">
+            <div><label for="image_regex" class="flex1" data-i18n="Image Regex">Image Regex</label></div>
+            <textarea id="image_regex" class="text_pole textarea_compact" rows="2" placeholder="Image regex here"></textarea>
         </div>
-
-        <div class="form-group">
-            <label for="comfyVarNames" data-i18n="comfyUI自定义变量名称">comfyUI自定义变量名称</label>
-            <input type="text" id="comfyVarNames" class="form-control" placeholder="例如：videoWidth,videoHeight,videoFrameCount">
-            <small>用英文逗号分隔变量名称</small>
+        
+        <!-- 视频正则表达式输入 -->
+        <div class="">
+            <div><label for="video_regex" class="flex1" data-i18n="Video Regex">Video Regex</label></div>
+            <textarea id="video_regex" class="text_pole textarea_compact" rows="2" placeholder="Video regex here"></textarea>
         </div>
-
-        <div class="form-group">
-            <label for="image_regex" data-i18n="Image Regex">图片正则表达式</label>
-            <input type="text" id="image_regex" class="form-control" data-i18n-placeholder="Image regex here">
-        </div>
-
-        <div class="form-group">
-            <label for="video_regex" data-i18n="Video Regex">视频正则表达式</label>
-            <input type="text" id="video_regex" class="form-control" data-i18n-placeholder="Video regex here">
-        </div>
-
-        <div class="form-group">
-            <label for="media_style" data-i18n="Style">样式</label>
-            <input type="text" id="media_style" class="form-control" data-i18n-placeholder="e.g. width:100%;height:auto">
+        
+        <!-- 样式输入 -->
+        <div class="">
+            <div><label for="media_style" class="flex1" data-i18n="Style">Style</label></div>
+            <input id="media_style" class="text_pole" placeholder="e.g. width:100%;height:auto">
         </div>
     </div>
 </div>
