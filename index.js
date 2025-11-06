@@ -261,7 +261,7 @@ async function handleIncomingMessage() {
         // 延迟执行媒体生成，确保消息首先显示出来
         setTimeout(async () => {
             let timer;
-           let seconds = 0;
+            let seconds = 0;
 
             try {
                 console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
@@ -297,23 +297,59 @@ async function handleIncomingMessage() {
                     }
                 }, 1000);
 
-
                 // 处理每个匹配的媒体标签
                 for (const match of matches) {
-                    const prompt = typeof match?.[1] === 'string' ? match[1] : '';
-                    if (!prompt.trim()) {
+                    let originalPrompt = '';
+                    let originalVideoParams = '';
+                    let finalPrompt = '';
+
+                    // 根据媒体类型处理不同的捕获组
+                    if (mediaType === 'video') {
+                        // 视频类型：match[1] 是 prompt，match[2] 是 videoParams
+                        originalPrompt = typeof match?.[1] === 'string' ? match[1] : '';
+                        originalVideoParams = typeof match?.[2] === 'string' ? match[2] : '';
+                        alert(originalPrompt)
+                        alert(originalVideoParams)
+                        console.log(`[${extensionName}] 提取的视频参数: originalPrompt="${originalPrompt}", videoParams="${originalVideoParams}"`);
+                        
+                        // 处理 videoParams：解析帧数、宽度、高度（如果有的话）
+                        if (originalVideoParams && originalVideoParams.trim()) {
+                            const params = originalVideoParams.split(',');
+                            if (params.length === 3) {
+                                const [frameCount, width, height] = params;
+                                // 构建 setvar 字符串
+                                const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
+                                // 合并 prompt：videoParams + originalPrompt
+                                finalPrompt = setvarString + originalPrompt;
+                                console.log(`[${extensionName}] 合并后的提示词: ${finalPrompt}`);
+                            } else {
+                                console.warn(`[${extensionName}] videoParams 格式错误，应为"帧数,宽度,高度": ${originalVideoParams}，将忽略videoParams`);
+                                // 格式错误时，只使用原始prompt
+                                finalPrompt = originalPrompt;
+                            }
+                        } else {
+                            console.log(`[${extensionName}] 没有videoParams，只使用原始prompt`);
+                            finalPrompt = originalPrompt;
+                        }
+                    } else {
+                        // 图片类型：保持原有逻辑
+                        originalPrompt = typeof match?.[1] === 'string' ? match[1] : '';
+                        finalPrompt = originalPrompt;
+                    }
+                    
+                    if (!finalPrompt.trim()) {
                         console.log(`[${extensionName}] 提示词为空，跳过`);
                         continue;
                     }
                     
-                    console.log(`[${extensionName}] 生成媒体，提示词: ${prompt.substring(0, 50)}...`);
+                    console.log(`[${extensionName}] 生成媒体，提示词: ${finalPrompt.substring(0, 50)}...`);
 
-                    // 调用sd命令生成媒体
+                    // 调用sd命令生成媒体（使用finalPrompt）
                     const result = await SlashCommandParser.commands['sd'].callback(
                         {
                             quiet: 'true'
                         },
-                        prompt
+                        finalPrompt
                     );
                     
                     console.log(`[${extensionName}] 媒体生成结果:`, result);
@@ -331,16 +367,23 @@ async function handleIncomingMessage() {
                         
                         console.log(`[${extensionName}] 使用${mediaType}类型，样式: ${style}`);
                         
-                        // 转义URL和prompt
+                        // 转义URL和原始prompt（不是finalPrompt）
                         const escapedUrl = escapeHtmlAttribute(result);
-                        const escapedPrompt = escapeHtmlAttribute(prompt);
+                        const escapedOriginalPrompt = escapeHtmlAttribute(originalPrompt);
                         
                         // 创建适当的媒体标签
                         let mediaTag;
                         if (mediaType === 'video') {
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`;
+                            // 转义原始的videoParams值（如果有的话）
+                            const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
+                            alert(escapedOriginalPrompt)
+                            alert(escapedVideoParams)
+                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedOriginalPrompt}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} style="${style}" loop controls autoplay muted/>`;
                         } else {
+                            // 图片标签保持不变
+                            
                             mediaTag = `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
+                     
                         }
                         
                         console.log(`[${extensionName}] 生成的媒体标签:`, mediaTag);
@@ -358,7 +401,7 @@ async function handleIncomingMessage() {
                     }
                 }
 
-                 clearInterval(timer);
+                clearInterval(timer);
                 console.log(`[${extensionName}] 生成成功，清除定时器`);
                 toastr.clear(toast);
                 toastr.success(`成功生成 ${matches.length} ${mediaTypeText},一共耗时${seconds}s`);
@@ -372,3 +415,4 @@ async function handleIncomingMessage() {
         }, 0); // 防阻塞UI渲染
     }
 }
+
