@@ -305,12 +305,12 @@ async function handleIncomingMessage() {
 
                     // 根据媒体类型处理不同的捕获组
                     if (mediaType === 'video') {
-                        // 视频类型：match[1] 是 prompt，match[2] 是 videoParams
-                        originalPrompt = typeof match?.[1] === 'string' ? match[1] : '';
-                        originalVideoParams = typeof match?.[2] === 'string' ? match[2] : '';
-                        alert(originalPrompt)
+                        // 视频类型：match[1] 是 videoParams，match[2] 是 prompt
+                        originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
+                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
                         alert(originalVideoParams)
-                        console.log(`[${extensionName}] 提取的视频参数: originalPrompt="${originalPrompt}", videoParams="${originalVideoParams}"`);
+                        alert(originalPrompt)
+                        console.log(`[${extensionName}] 提取的视频参数: originalVideoParams="${originalVideoParams}", originalPrompt="${originalPrompt}"`);
                         
                         // 处理 videoParams：解析帧数、宽度、高度（如果有的话）
                         if (originalVideoParams && originalVideoParams.trim()) {
@@ -376,9 +376,7 @@ async function handleIncomingMessage() {
                         if (mediaType === 'video') {
                             // 转义原始的videoParams值（如果有的话）
                             const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
-                            alert(escapedOriginalPrompt)
-                            alert(escapedVideoParams)
-                            mediaTag = `<video src="${escapedUrl}" prompt="${escapedOriginalPrompt}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} style="${style}" loop controls autoplay muted/>`;
+                            mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
                         } else {
                             // 图片标签保持不变
                             
@@ -415,4 +413,3 @@ async function handleIncomingMessage() {
         }, 0); // 防阻塞UI渲染
     }
 }
-
