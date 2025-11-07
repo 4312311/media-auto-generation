@@ -369,7 +369,7 @@ async function handleIncomingMessage() {
                         
                         // 转义URL和原始prompt（不是finalPrompt）
                         const escapedUrl = escapeHtmlAttribute(result);
-                        const escapedOriginalPrompt = escapeHtmlAttribute(originalPrompt);
+                        const escapedOriginalPrompt = originalPrompt;
                         
                         // 创建适当的媒体标签
                         let mediaTag;
