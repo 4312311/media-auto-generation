@@ -380,7 +380,7 @@ async function handleIncomingMessage() {
                         } else {
                             // 图片标签保持不变
                             
-                            mediaTag = `<img src="${escapedUrl}" prompt="${escapedOriginalPrompt}" style="${style}" />`;
+                            mediaTag = `<img src="${escapedUrl}" prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
                      
                         }
                         
