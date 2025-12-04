@@ -308,8 +308,7 @@ async function handleIncomingMessage() {
                         // 视频类型：match[1] 是 videoParams，match[2] 是 prompt
                         originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                        alert(originalVideoParams)
-                        alert(originalPrompt)
+                   
                         console.log(`[${extensionName}] 提取的视频参数: originalVideoParams="${originalVideoParams}", originalPrompt="${originalPrompt}"`);
                         
                         // 处理 videoParams：解析帧数、宽度、高度（如果有的话）
