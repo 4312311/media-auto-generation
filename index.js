@@ -40,7 +40,7 @@ function escapeHtmlAttribute(value) {
 const defaultSettings = {
     mediaType: 'disabled', // 默认禁用
     imageRegex: '/<[\\s\\r\\n]*img[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
-    videoRegex: '/<[\\s\\r\\n]*video[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
+    videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto', // 默认图片样式
 };
 
