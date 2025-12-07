@@ -39,7 +39,7 @@ function escapeHtmlAttribute(value) {
 // 默认设置
 const defaultSettings = {
     mediaType: 'disabled', // 默认禁用
-    imageRegex: '/<[\\s\\r\\n]*img[^>]*?prompt\\s*=\\s*"([^"]*?(?:,(?=[^"]*$)[^"j]*)?)"[^>]*?>/gis',
+     imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto', // 默认图片样式
 };
@@ -301,6 +301,7 @@ async function handleIncomingMessage() {
                 for (const match of matches) {
                     let originalPrompt = '';
                     let originalVideoParams = '';
+                    let originalLightIntensity=0;
                     let finalPrompt = '';
 
                     // 根据媒体类型处理不同的捕获组
@@ -331,9 +332,25 @@ async function handleIncomingMessage() {
                             finalPrompt = originalPrompt;
                         }
                     } else {
-                        // 图片类型：保持原有逻辑
-                        originalPrompt = typeof match?.[1] === 'string' ? match[1] : '';
-                        finalPrompt = originalPrompt;
+                      // 图片逻辑：完全对齐视频的参数解析写法
+                         originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：light_intensity
+                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // 第二个捕获组：prompt
+                        console.log(`[${extensionName}] 提取的图片参数: originalLightIntensity="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
+                        
+                        // 处理 light_intensity：可选参数，默认0（对齐视频参数处理逻辑）
+                        let lightIntensity = 0; // 默认值
+                        if (originalLightIntensity && originalLightIntensity.trim()) {
+                            const parsed = parseFloat(originalLightIntensity);
+                            if (!isNaN(parsed)) {
+                                lightIntensity = Math.round(parsed * 100) / 100; // 最多两位小数
+                                // 构建 setvar 字符串（对齐视频的setvar写法）
+                                const setvarString = `{{setvar::light_intensity::${lightIntensity}}}`;
+                                finalPrompt = setvarString + originalPrompt;
+                                console.log(`[${extensionName}] 合并后的图片提示词: ${finalPrompt}`);
+                            } else {
+                                console.warn(`[${extensionName}] light_intensity 格式错误，应为数值: ${originalLightIntensity}，将使用默认值0`);
+                                finalPrompt = originalPrompt; // 格式错误，仅用原始prompt
+                            }
                     }
                     
                     if (!finalPrompt.trim()) {
@@ -377,10 +394,10 @@ async function handleIncomingMessage() {
                             const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
                             mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
                         } else {
-                            // 图片标签保持不变
-                            
-                            mediaTag = `<img src="${escapedUrl}" prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
-                     
+                          // 图片标签：对齐视频的标签生成写法
+                            const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0'; // 无参数时显示默认值0
+                            mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
+                       
                         }
                         
                         console.log(`[${extensionName}] 生成的媒体标签:`, mediaTag);
