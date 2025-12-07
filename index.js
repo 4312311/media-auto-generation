@@ -351,6 +351,10 @@ async function handleIncomingMessage() {
                                 console.warn(`[${extensionName}] light_intensity 格式错误，应为数值: ${originalLightIntensity}，将使用默认值0`);
                                 finalPrompt = originalPrompt; // 格式错误，仅用原始prompt
                             }
+                        }else{
+                              console.log(`[${extensionName}] originalLightIntensity，只使用原始prompt`);
+                            finalPrompt = originalPrompt;
+                        }
                     }
                     
                     if (!finalPrompt.trim()) {
