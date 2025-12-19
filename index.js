@@ -362,6 +362,7 @@ async function handleIncomingMessage() {
                                 const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
                                 finalPrompt = setvarString + originalPrompt;
                                 console.log(`[${extensionName}] 合并后的图片提示词: ${finalPrompt}`);
+                                alert(setvarString)
                             } else {
                                 console.warn(`[${extensionName}] lightIntensity和sunshineIntensity 格式错误，应为"数值,数值": ${originalLightIntensity}，将使用默认值0,0`);
                                 finalPrompt = originalPrompt; // 格式错误，仅用原始prompt
