@@ -334,6 +334,8 @@ async function handleIncomingMessage() {
                     } else {
                       // 图片逻辑：完全对齐视频的参数解析写法
                          originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：lightIntensity,sunshineIntensity 组合字符串
+                                                                                    alert(originalLightIntensity)
+
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // 第二个捕获组：prompt
                         console.log(`[${extensionName}] 提取的图片参数: originalLightIntensityAndSunshine="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
                         
@@ -341,6 +343,7 @@ async function handleIncomingMessage() {
                         let lightIntensity = 0; // 第一个数值默认值
                         let sunshineIntensity = 0; // 第二个数值默认值
                         if (originalLightIntensity && originalLightIntensity.trim()) {
+
                             const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
                             // 校验是否为两个有效数值
                             if (intensityArr.length === 2) {
