@@ -333,26 +333,41 @@ async function handleIncomingMessage() {
                         }
                     } else {
                       // 图片逻辑：完全对齐视频的参数解析写法
-                         originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：light_intensity
+                         originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：lightIntensity,sunshineIntensity 组合字符串
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // 第二个捕获组：prompt
-                        console.log(`[${extensionName}] 提取的图片参数: originalLightIntensity="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
+                        console.log(`[${extensionName}] 提取的图片参数: originalLightIntensityAndSunshine="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
                         
-                        // 处理 light_intensity：可选参数，默认0（对齐视频参数处理逻辑）
-                        let lightIntensity = 0; // 默认值
+                        // 处理 lightIntensity 和 sunshineIntensity：逗号分隔的两个数值，默认均为0
+                        let lightIntensity = 0; // 第一个数值默认值
+                        let sunshineIntensity = 0; // 第二个数值默认值
                         if (originalLightIntensity && originalLightIntensity.trim()) {
-                            const parsed = parseFloat(originalLightIntensity);
-                            if (!isNaN(parsed)) {
-                                lightIntensity = Math.round(parsed * 100) / 100; // 最多两位小数
-                                // 构建 setvar 字符串（对齐视频的setvar写法）
-                                const setvarString = `{{setvar::light_intensity::${lightIntensity}}}`;
+                            const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
+                            // 校验是否为两个有效数值
+                            if (intensityArr.length === 2) {
+                                const parsedLight = parseFloat(intensityArr[0]);
+                                const parsedSunshine = parseFloat(intensityArr[1]);
+                                // 校验第一个数值是否有效
+                                if (!isNaN(parsedLight)) {
+                                    lightIntensity = Math.round(parsedLight * 100) / 100; // 最多两位小数
+                                } else {
+                                    console.warn(`[${extensionName}] lightIntensity 格式错误，应为数值: ${intensityArr[0]}，将使用默认值0`);
+                                }
+                                // 校验第二个数值是否有效
+                                if (!isNaN(parsedSunshine)) {
+                                    sunshineIntensity = Math.round(parsedSunshine * 100) / 100; // 最多两位小数
+                                } else {
+                                    console.warn(`[${extensionName}] sunshineIntensity 格式错误，应为数值: ${intensityArr[1]}，将使用默认值0`);
+                                }
+                                // 构建 setvar 字符串，包含两个变量
+                                const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
                                 finalPrompt = setvarString + originalPrompt;
                                 console.log(`[${extensionName}] 合并后的图片提示词: ${finalPrompt}`);
                             } else {
-                                console.warn(`[${extensionName}] light_intensity 格式错误，应为数值: ${originalLightIntensity}，将使用默认值0`);
+                                console.warn(`[${extensionName}] lightIntensity和sunshineIntensity 格式错误，应为"数值,数值": ${originalLightIntensity}，将使用默认值0,0`);
                                 finalPrompt = originalPrompt; // 格式错误，仅用原始prompt
                             }
                         }else{
-                              console.log(`[${extensionName}] originalLightIntensity，只使用原始prompt`);
+                              console.log(`[${extensionName}] 没有lightIntensity和sunshineIntensity参数，只使用原始prompt`);
                             finalPrompt = originalPrompt;
                         }
                     }
