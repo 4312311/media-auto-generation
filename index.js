@@ -334,7 +334,7 @@ async function handleIncomingMessage() {
                     } else {
                       // 图片逻辑：完全对齐视频的参数解析写法
                          originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：lightIntensity,sunshineIntensity 组合字符串
-                                                                                    alert(originalLightIntensity)
+                                                                                 //   alert(originalLightIntensity)
 
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // 第二个捕获组：prompt
                         console.log(`[${extensionName}] 提取的图片参数: originalLightIntensityAndSunshine="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
