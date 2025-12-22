@@ -14,12 +14,5 @@
     "Generated %d %s(s) successfully": "成功生成%d个%s",
     "Failed to generate %s": "生成%s失败",
     "Please configure regex first": "请先配置正则表达式",
-    "Plugin disabled": "插件已禁用",
-    "Streaming Generation": "流式传输生图",
-    "Enable streaming mode for generation": "启用后将在流式传输时定时扫描生成内容",
-    "Streaming Interval (s)": "扫描间隔(秒)",
-    "Interval between content scans during streaming": "流式传输时扫描内容的时间间隔",
-    "Streaming generation started, scanning every %ds": "流式生成已启动，每%d秒扫描一次",
-    "Streaming generation stopped": "流式生成已停止"
-}
+    "Plugin disabled": "插件已禁用"
 }
