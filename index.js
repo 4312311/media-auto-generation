@@ -18,6 +18,9 @@ const INSERT_TYPE = {
     REPLACE: 'replace',
 };
 
+
+
+
 /**
  * 转义HTML属性值中的特殊字符
  * @param {string} value
