@@ -238,7 +238,7 @@ $(function () {
 
 
 // 流式消息处理核心方法
-eventSource.on(event_types.STREAM_TOKEN_STARTED, handleStreamMessage);
+eventSource.on(event_types.GENERATION_STARTED, handleStreamMessage);
 	// 流式消息处理核心方法
 	
 async function handleStreamMessage() {
