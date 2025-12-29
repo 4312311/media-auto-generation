@@ -231,56 +231,104 @@ $(function () {
             }, 200);
         });
     })();
+
+	  console.log(event_types)
 });
 
 
 // 流式消息处理核心方法
 eventSource.on(event_types.STREAM_TOKEN_STARTED, handleStreamMessage);
+	// 流式消息处理核心方法
 	
 async function handleStreamMessage() {
-    console.log(`[${extensionName}] 收到流式传输开始事件`);
+    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 流式传输开始事件触发，开始执行方法`);
     
     // 重置流式状态
+    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 重置流式处理状态：清空已处理标签、生成中标签，重置消息内容`);
     streamProcessingState.processedTags.clear();
     streamProcessingState.generatingTags.clear();
     streamProcessingState.currentMessageContent = '';
 
     // 检查是否开启流式模式 + 媒体类型未禁用
     const settings = extension_settings[extensionName];
-    if (!settings || !settings.streamMode || settings.mediaType === 'disabled') {
-        console.log(`[${extensionName}] 流式模式未开启/插件禁用，跳过流式处理`);
+    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 当前插件设置：`, JSON.stringify({
+        streamMode: settings?.streamMode,
+        mediaType: settings?.mediaType,
+        streamScanInterval: settings?.streamScanInterval,
+        imageRegex: settings?.imageRegex?.substring(0, 50) + '...', // 截断避免日志过长
+        videoRegex: settings?.videoRegex?.substring(0, 50) + '...'
+    }));
+
+    if (!settings) {
+        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 插件设置未初始化，跳过流式处理`);
+        return;
+    }
+    if (!settings.streamMode) {
+        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 流式模式未开启（streamMode=false），跳过流式处理`);
+        return;
+    }
+    if (settings.mediaType === 'disabled') {
+        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 媒体类型为禁用（mediaType=disabled），跳过流式处理`);
         return;
     }
 
     // 启动定时扫描任务
     const scanInterval = settings.streamScanInterval || defaultSettings.streamScanInterval;
+    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 准备启动流式扫描定时任务，扫描间隔：${scanInterval}ms`);
+    
     streamProcessingState.timer = setInterval(async () => {
+        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 定时扫描任务触发（间隔${scanInterval}ms），开始本轮扫描`);
         try {
             const context = getContext();
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 获取上下文成功，当前聊天列表长度：${context.chat?.length || 0}`);
+            
             // 获取当前最新的消息（流式传输中的消息）
             const message = context.chat[context.chat.length - 1];
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 获取最新消息：`, {
+                messageExists: !!message,
+                isUserMessage: message?.is_user || false,
+                messageId: message?.id || '无ID',
+                currentMessageContent: message?.mes?.substring(0, 100) + '...' || '空'
+            });
+
             if (!message || message.is_user) {
-                console.log(`[${extensionName}] 流式扫描：非AI消息，跳过`);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：非AI消息（无消息/用户消息），跳过`);
                 return;
             }
 
             // 更新累积的消息内容
+            const prevContent = streamProcessingState.currentMessageContent;
             streamProcessingState.currentMessageContent = message.mes || '';
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：更新累积消息内容`, {
+                previousContent: prevContent?.substring(0, 100) + '...' || '空',
+                newContent: streamProcessingState.currentMessageContent?.substring(0, 100) + '...' || '空'
+            });
+
             const currentContent = streamProcessingState.currentMessageContent;
             if (!currentContent) {
-                console.log(`[${extensionName}] 流式扫描：消息内容为空，跳过`);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：累积消息内容为空，跳过`);
                 return;
             }
 
             // 1. 获取正则 + 匹配标签（逻辑与handleIncomingMessage一致）
             const mediaType = settings.mediaType;
             const regexStr = mediaType === 'image' ? settings.imageRegex : settings.videoRegex;
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：正则匹配准备`, {
+                mediaType,
+                regexStr: regexStr?.substring(0, 100) + '...' || '未配置'
+            });
+
             if (!regexStr) {
-                console.error(`[${extensionName}] 流式扫描：正则未配置`);
+                console.error(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：正则表达式未配置，终止扫描`);
                 return;
             }
 
             const mediaTagRegex = regexFromString(regexStr);
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：正则表达式解析完成`, {
+                regexSource: mediaTagRegex.source,
+                regexFlags: mediaTagRegex.flags
+            });
+
             let matches;
             if (mediaTagRegex.global) {
                 matches = [...currentContent.matchAll(mediaTagRegex)];
@@ -288,32 +336,61 @@ async function handleStreamMessage() {
                 const singleMatch = currentContent.match(mediaTagRegex);
                 matches = singleMatch ? [singleMatch] : [];
             }
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：正则匹配结果`, {
+                totalMatches: matches.length,
+                matchSamples: matches.map(m => ({
+                    fullMatch: m[0]?.substring(0, 100) + '...' || '空',
+                    groups: m.slice(1).map(g => g || '无')
+                })).slice(0, 3) // 只打印前3个匹配项避免日志过长
+            });
 
             if (matches.length === 0) {
-                console.log(`[${extensionName}] 流式扫描：未匹配到媒体标签`);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：未匹配到任何媒体标签，跳过`);
                 return;
             }
 
             // 2. 过滤：只处理未处理 + 未在生成中的标签
             const pendingMatches = matches.filter(match => {
                 const originalTag = match[0];
-                return !streamProcessingState.processedTags.has(originalTag) && 
-                       !streamProcessingState.generatingTags.has(originalTag);
+                const isProcessed = streamProcessingState.processedTags.has(originalTag);
+                const isGenerating = streamProcessingState.generatingTags.has(originalTag);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：标签过滤判断`, {
+                    originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                    isProcessed,
+                    isGenerating,
+                    keep: !isProcessed && !isGenerating
+                });
+                return !isProcessed && !isGenerating;
             });
 
-			
-			
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：标签过滤结果`, {
+                beforeFilter: matches.length,
+                afterFilter: pendingMatches.length,
+                processedTagsCount: streamProcessingState.processedTags.size,
+                generatingTagsCount: streamProcessingState.generatingTags.size
+            });
+
             if (pendingMatches.length === 0) {
-                console.log(`[${extensionName}] 流式扫描：无待处理的新标签`);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：无待处理的新标签（已处理/生成中），跳过`);
                 return;
             }
 
-            console.log(`[${extensionName}] 流式扫描：找到${pendingMatches.length}个待处理标签`);
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：开始处理${pendingMatches.length}个待处理标签`);
             // 3. 处理待生成的标签（串行处理，避免并发重复）
-            for (const match of pendingMatches) {
+            for (let i = 0; i < pendingMatches.length; i++) {
+                const match = pendingMatches[i];
                 const originalTag = match[0];
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：处理第${i+1}/${pendingMatches.length}个标签`, {
+                    originalTag: originalTag?.substring(0, 200) + '...' || '空',
+                    matchGroups: match.slice(1).map((g, idx) => `组${idx+1}: ${g || '无'}`)
+                });
+
                 // 标记为生成中（防止重复扫描）
                 streamProcessingState.generatingTags.add(originalTag);
+                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：标签标记为生成中`, {
+                    originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                    currentGeneratingTags: Array.from(streamProcessingState.generatingTags).map(t => t.substring(0, 50) + '...')
+                });
 
                 try {
                     // --------------------------
@@ -328,65 +405,133 @@ async function handleStreamMessage() {
                     if (mediaType === 'video') {
                         originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                        console.log(`[${extensionName}] 流式扫描-视频：提取参数: ${originalVideoParams}, ${originalPrompt}`);
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：解析视频参数`, {
+                            originalVideoParams,
+                            originalPrompt: originalPrompt?.substring(0, 100) + '...' || '空'
+                        });
                         
                         // 处理videoParams
                         if (originalVideoParams && originalVideoParams.trim()) {
                             const params = originalVideoParams.split(',');
+                            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：解析videoParams拆分结果`, {
+                                originalVideoParams,
+                                splitParams: params,
+                                paramCount: params.length
+                            });
                             if (params.length === 3) {
                                 const [frameCount, width, height] = params;
                                 const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
                                 finalPrompt = setvarString + originalPrompt;
+                                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：视频参数解析成功，拼接setvar`, {
+                                    frameCount,
+                                    width,
+                                    height,
+                                    setvarString,
+                                    finalPrompt: finalPrompt?.substring(0, 100) + '...' || '空'
+                                });
                             } else {
-                                console.warn(`[${extensionName}] 流式扫描-视频：参数格式错误，忽略`);
+                                console.warn(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：videoParams格式错误（需3个参数），忽略`, {
+                                    originalVideoParams,
+                                    paramCount: params.length
+                                });
                                 finalPrompt = originalPrompt;
                             }
                         } else {
+                            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：无videoParams，使用原始prompt`, {
+                                originalPrompt: originalPrompt?.substring(0, 100) + '...' || '空'
+                            });
                             finalPrompt = originalPrompt;
                         }
                     } else {
                         originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : '';
                         originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                        console.log(`[${extensionName}] 流式扫描-图片：提取参数: ${originalLightIntensity}, ${originalPrompt}`);
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：解析图片参数`, {
+                            originalLightIntensity,
+                            originalPrompt: originalPrompt?.substring(0, 100) + '...' || '空'
+                        });
                         
                         // 处理light_intensity
                         let lightIntensity = 0;
                         let sunshineIntensity = 0;
                         if (originalLightIntensity && originalLightIntensity.trim()) {
                             const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
+                            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：解析lightIntensity拆分结果`, {
+                                originalLightIntensity,
+                                splitIntensity: intensityArr,
+                                intensityCount: intensityArr.length
+                            });
                             if (intensityArr.length === 2) {
                                 const parsedLight = parseFloat(intensityArr[0]);
                                 const parsedSunshine = parseFloat(intensityArr[1]);
+                                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：解析亮度参数`, {
+                                    rawLight: intensityArr[0],
+                                    parsedLight,
+                                    rawSunshine: intensityArr[1],
+                                    parsedSunshine
+                                });
                                 if (!isNaN(parsedLight)) {
                                     lightIntensity = Math.round(parsedLight * 100) / 100;
+                                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：lightIntensity解析成功，值=${lightIntensity}`);
+                                } else {
+                                    console.warn(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：lightIntensity不是有效数值，使用默认值0`, {
+                                        rawValue: intensityArr[0]
+                                    });
                                 }
                                 if (!isNaN(parsedSunshine)) {
                                     sunshineIntensity = Math.round(parsedSunshine * 100) / 100;
+                                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：sunshineIntensity解析成功，值=${sunshineIntensity}`);
+                                } else {
+                                    console.warn(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：sunshineIntensity不是有效数值，使用默认值0`, {
+                                        rawValue: intensityArr[1]
+                                    });
                                 }
                                 const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
                                 finalPrompt = setvarString + originalPrompt;
+                                console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：图片参数解析成功，拼接setvar`, {
+                                    setvarString,
+                                    finalPrompt: finalPrompt?.substring(0, 100) + '...' || '空'
+                                });
                             } else {
-                                console.warn(`[${extensionName}] 流式扫描-图片：参数格式错误，忽略`);
+                                console.warn(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：lightIntensity格式错误（需2个参数），忽略`, {
+                                    originalLightIntensity,
+                                    intensityCount: intensityArr.length
+                                });
                                 finalPrompt = originalPrompt;
                             }
                         } else {
+                            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：无lightIntensity参数，使用原始prompt`, {
+                                originalPrompt: originalPrompt?.substring(0, 100) + '...' || '空'
+                            });
                             finalPrompt = originalPrompt;
                         }
                     }
 
-					alert(finalPrompt)
+                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：最终生成提示词`, {
+                        finalPrompt: finalPrompt?.substring(0, 200) + '...' || '空',
+                        isEmpty: !finalPrompt.trim()
+                    });
+                    
                     if (!finalPrompt.trim()) {
-                        console.log(`[${extensionName}] 流式扫描：提示词为空，跳过`);
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：提示词为空，跳过当前标签处理`);
                         streamProcessingState.generatingTags.delete(originalTag);
                         continue;
                     }
 
                     // 调用SD命令生成媒体
-                    console.log(`[${extensionName}] 流式扫描：开始生成媒体，提示词: ${finalPrompt.substring(0, 50)}...`);
+                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：开始调用SD命令生成媒体`, {
+                        finalPrompt: finalPrompt?.substring(0, 200) + '...' || '空',
+                        quietMode: true
+                    });
                     const result = await SlashCommandParser.commands['sd'].callback(
                         { quiet: 'true' },
                         finalPrompt
                     );
+                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：SD命令调用完成`, {
+                        resultType: typeof result,
+                        resultIsString: typeof result === 'string',
+                        resultLength: typeof result === 'string' ? result.length : 'N/A',
+                        resultPreview: typeof result === 'string' ? result.substring(0, 100) + '...' : 'N/A'
+                    });
 
                     if (typeof result === 'string' && result.trim().length > 0) {
                         // 生成成功：替换消息中的标签
@@ -403,29 +548,73 @@ async function handleStreamMessage() {
                             mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
                         }
 
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：生成媒体标签`, {
+                            mediaType,
+                            mediaTag: mediaTag?.substring(0, 200) + '...' || '空',
+                            style,
+                            escapedUrl: escapedUrl?.substring(0, 100) + '...' || '空'
+                        });
+
                         // 替换消息内容（更新到UI）
                         const newMessageContent = currentContent.replace(originalTag, mediaTag);
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：替换消息内容`, {
+                            originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                            newContentPreview: newMessageContent?.substring(0, 200) + '...' || '空',
+                            contentLengthBefore: currentContent.length,
+                            contentLengthAfter: newMessageContent.length
+                        });
+                        
                         message.mes = newMessageContent;
                         updateMessageBlock(message); // 更新前端显示
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：消息UI更新完成`);
 
-                        console.log(`[${extensionName}] 流式扫描：媒体生成成功，已替换标签`);
+                        console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：媒体生成成功，已替换标签`);
+                    } else {
+                        console.warn(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：SD命令返回空/非字符串结果，跳过标签替换`, {
+                            resultType: typeof result,
+                            resultValue: result
+                        });
                     }
 
                     // 标记为已处理
                     streamProcessingState.processedTags.add(originalTag);
+                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：标签标记为已处理`, {
+                        originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                        currentProcessedTags: Array.from(streamProcessingState.processedTags).map(t => t.substring(0, 50) + '...').slice(-3) // 只显示最后3个
+                    });
                 } catch (error) {
-                    console.error(`[${extensionName}] 流式扫描：处理标签失败`, error);
+                    console.error(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：处理标签时发生异常`, {
+                        originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                        errorMessage: error.message,
+                        errorStack: error.stack?.substring(0, 300) + '...' || '无堆栈',
+                        errorName: error.name
+                    });
                 } finally {
                     // 移除生成中标记
                     streamProcessingState.generatingTags.delete(originalTag);
+                    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：移除标签生成中标记`, {
+                        originalTag: originalTag?.substring(0, 100) + '...' || '空',
+                        currentGeneratingTags: Array.from(streamProcessingState.generatingTags).map(t => t.substring(0, 50) + '...')
+                    });
                 }
             }
+            console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：所有待处理标签处理完成`);
         } catch (error) {
-            console.error(`[${extensionName}] 流式扫描任务异常`, error);
+            console.error(`[${extensionName}] [DEBUG] handleStreamMessage - 定时扫描任务整体异常`, {
+                errorMessage: error.message,
+                errorStack: error.stack?.substring(0, 500) + '...' || '无堆栈',
+                errorName: error.name,
+                timestamp: new Date().toISOString()
+            });
         }
     }, scanInterval);
 
-    console.log(`[${extensionName}] 流式扫描任务已启动，间隔${scanInterval}ms`);
+    console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 流式扫描定时任务已成功启动`, {
+        scanInterval,
+        timerId: streamProcessingState.timer,
+        streamMode: settings.streamMode,
+        mediaType: settings.mediaType
+    });
 }
 
 
