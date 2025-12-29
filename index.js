@@ -231,6 +231,7 @@ $(function () {
             }, 200);
         });
     })();
+	  console.log("event_types--------------------------------event_types")
 
 	  console.log(event_types)
 });
