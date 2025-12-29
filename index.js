@@ -19,7 +19,13 @@ const INSERT_TYPE = {
 };
 
 
-
+// 流式传输状态管理（防止重复生成）
+const streamProcessingState = {
+    timer: null, // 定时任务ID
+    processedTags: new Set(), // 已处理完成的原始标签
+    generatingTags: new Set(), // 正在生成中的原始标签
+    currentMessageContent: '', // 流式累积的消息内容
+};
 
 /**
  * 转义HTML属性值中的特殊字符
@@ -45,6 +51,8 @@ const defaultSettings = {
      imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto', // 默认图片样式
+    streamMode: false, // 新增：是否开启流式传输生图
+    streamScanInterval: 2000, // 新增：流式扫描间隔（毫秒）
 };
 
 // 从设置更新UI
@@ -57,6 +65,8 @@ function updateUI() {
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
+		$('#streamMode').prop('checked', extension_settings[extensionName].streamMode);
+
     }
 }
 
@@ -132,6 +142,15 @@ async function createSettings(settingsHtml) {
         console.log(`[${extensionName}] 样式已更新`);
         extension_settings[extensionName].style = $(this).val();
         saveSettingsDebounced();
+    });
+	
+	  // 新增：流式开关事件绑定
+    $('#streamMode').on('change', function () {
+        const isChecked = $(this).prop('checked');
+        console.log(`[${extensionName}] 流式传输生图已${isChecked ? '开启' : '关闭'}`);
+        extension_settings[extensionName].streamMode = isChecked;
+        saveSettingsDebounced();
+        updateUI();
     });
 
     // 初始化设置值
@@ -214,11 +233,224 @@ $(function () {
     })();
 });
 
+
+// 流式消息处理核心方法
+eventSource.on(event_types.STREAM_TOKEN_STARTED, handleStreamMessage);
+	
+async function handleStreamMessage() {
+    console.log(`[${extensionName}] 收到流式传输开始事件`);
+    
+    // 重置流式状态
+    streamProcessingState.processedTags.clear();
+    streamProcessingState.generatingTags.clear();
+    streamProcessingState.currentMessageContent = '';
+
+    // 检查是否开启流式模式 + 媒体类型未禁用
+    const settings = extension_settings[extensionName];
+    if (!settings || !settings.streamMode || settings.mediaType === 'disabled') {
+        console.log(`[${extensionName}] 流式模式未开启/插件禁用，跳过流式处理`);
+        return;
+    }
+
+    // 启动定时扫描任务
+    const scanInterval = settings.streamScanInterval || defaultSettings.streamScanInterval;
+    streamProcessingState.timer = setInterval(async () => {
+        try {
+            const context = getContext();
+            // 获取当前最新的消息（流式传输中的消息）
+            const message = context.chat[context.chat.length - 1];
+            if (!message || message.is_user) {
+                console.log(`[${extensionName}] 流式扫描：非AI消息，跳过`);
+                return;
+            }
+
+            // 更新累积的消息内容
+            streamProcessingState.currentMessageContent = message.mes || '';
+            const currentContent = streamProcessingState.currentMessageContent;
+            if (!currentContent) {
+                console.log(`[${extensionName}] 流式扫描：消息内容为空，跳过`);
+                return;
+            }
+
+            // 1. 获取正则 + 匹配标签（逻辑与handleIncomingMessage一致）
+            const mediaType = settings.mediaType;
+            const regexStr = mediaType === 'image' ? settings.imageRegex : settings.videoRegex;
+            if (!regexStr) {
+                console.error(`[${extensionName}] 流式扫描：正则未配置`);
+                return;
+            }
+
+            const mediaTagRegex = regexFromString(regexStr);
+            let matches;
+            if (mediaTagRegex.global) {
+                matches = [...currentContent.matchAll(mediaTagRegex)];
+            } else {
+                const singleMatch = currentContent.match(mediaTagRegex);
+                matches = singleMatch ? [singleMatch] : [];
+            }
+
+            if (matches.length === 0) {
+                console.log(`[${extensionName}] 流式扫描：未匹配到媒体标签`);
+                return;
+            }
+
+            // 2. 过滤：只处理未处理 + 未在生成中的标签
+            const pendingMatches = matches.filter(match => {
+                const originalTag = match[0];
+                return !streamProcessingState.processedTags.has(originalTag) && 
+                       !streamProcessingState.generatingTags.has(originalTag);
+            });
+
+			
+			
+            if (pendingMatches.length === 0) {
+                console.log(`[${extensionName}] 流式扫描：无待处理的新标签`);
+                return;
+            }
+
+            console.log(`[${extensionName}] 流式扫描：找到${pendingMatches.length}个待处理标签`);
+            // 3. 处理待生成的标签（串行处理，避免并发重复）
+            for (const match of pendingMatches) {
+                const originalTag = match[0];
+                // 标记为生成中（防止重复扫描）
+                streamProcessingState.generatingTags.add(originalTag);
+
+                try {
+                    // --------------------------
+                    // 以下逻辑完全复用handleIncomingMessage的生成逻辑
+                    // --------------------------
+                    let originalPrompt = '';
+                    let originalVideoParams = '';
+                    let originalLightIntensity = 0;
+                    let finalPrompt = '';
+
+                    // 解析参数（视频/图片分支）
+                    if (mediaType === 'video') {
+                        originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
+                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
+                        console.log(`[${extensionName}] 流式扫描-视频：提取参数: ${originalVideoParams}, ${originalPrompt}`);
+                        
+                        // 处理videoParams
+                        if (originalVideoParams && originalVideoParams.trim()) {
+                            const params = originalVideoParams.split(',');
+                            if (params.length === 3) {
+                                const [frameCount, width, height] = params;
+                                const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
+                                finalPrompt = setvarString + originalPrompt;
+                            } else {
+                                console.warn(`[${extensionName}] 流式扫描-视频：参数格式错误，忽略`);
+                                finalPrompt = originalPrompt;
+                            }
+                        } else {
+                            finalPrompt = originalPrompt;
+                        }
+                    } else {
+                        originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : '';
+                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
+                        console.log(`[${extensionName}] 流式扫描-图片：提取参数: ${originalLightIntensity}, ${originalPrompt}`);
+                        
+                        // 处理light_intensity
+                        let lightIntensity = 0;
+                        let sunshineIntensity = 0;
+                        if (originalLightIntensity && originalLightIntensity.trim()) {
+                            const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
+                            if (intensityArr.length === 2) {
+                                const parsedLight = parseFloat(intensityArr[0]);
+                                const parsedSunshine = parseFloat(intensityArr[1]);
+                                if (!isNaN(parsedLight)) {
+                                    lightIntensity = Math.round(parsedLight * 100) / 100;
+                                }
+                                if (!isNaN(parsedSunshine)) {
+                                    sunshineIntensity = Math.round(parsedSunshine * 100) / 100;
+                                }
+                                const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
+                                finalPrompt = setvarString + originalPrompt;
+                            } else {
+                                console.warn(`[${extensionName}] 流式扫描-图片：参数格式错误，忽略`);
+                                finalPrompt = originalPrompt;
+                            }
+                        } else {
+                            finalPrompt = originalPrompt;
+                        }
+                    }
+
+					alert(finalPrompt)
+                    if (!finalPrompt.trim()) {
+                        console.log(`[${extensionName}] 流式扫描：提示词为空，跳过`);
+                        streamProcessingState.generatingTags.delete(originalTag);
+                        continue;
+                    }
+
+                    // 调用SD命令生成媒体
+                    console.log(`[${extensionName}] 流式扫描：开始生成媒体，提示词: ${finalPrompt.substring(0, 50)}...`);
+                    const result = await SlashCommandParser.commands['sd'].callback(
+                        { quiet: 'true' },
+                        finalPrompt
+                    );
+
+                    if (typeof result === 'string' && result.trim().length > 0) {
+                        // 生成成功：替换消息中的标签
+                        const style = settings.style || '';
+                        const escapedUrl = escapeHtmlAttribute(result);
+                        const escapedOriginalPrompt = originalPrompt;
+                        let mediaTag;
+
+                        if (mediaType === 'video') {
+                            const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
+                            mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
+                        } else {
+                            const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0';
+                            mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
+                        }
+
+                        // 替换消息内容（更新到UI）
+                        const newMessageContent = currentContent.replace(originalTag, mediaTag);
+                        message.mes = newMessageContent;
+                        updateMessageBlock(message); // 更新前端显示
+
+                        console.log(`[${extensionName}] 流式扫描：媒体生成成功，已替换标签`);
+                    }
+
+                    // 标记为已处理
+                    streamProcessingState.processedTags.add(originalTag);
+                } catch (error) {
+                    console.error(`[${extensionName}] 流式扫描：处理标签失败`, error);
+                } finally {
+                    // 移除生成中标记
+                    streamProcessingState.generatingTags.delete(originalTag);
+                }
+            }
+        } catch (error) {
+            console.error(`[${extensionName}] 流式扫描任务异常`, error);
+        }
+    }, scanInterval);
+
+    console.log(`[${extensionName}] 流式扫描任务已启动，间隔${scanInterval}ms`);
+}
+
+
 // 监听消息接收事件
 eventSource.on(event_types.MESSAGE_RECEIVED, handleIncomingMessage);
 async function handleIncomingMessage() {
     console.log(`[${extensionName}] 收到新消息事件`);
     
+	 console.log(`[${extensionName}] 收到新消息事件`);
+
+    // 1. 关闭流式定时任务（无论是否开启流式，消息结束后都清理）
+    if (streamProcessingState.timer) {
+        clearInterval(streamProcessingState.timer);
+        streamProcessingState.timer = null;
+        console.log(`[${extensionName}] 流式扫描任务已关闭`);
+    }
+
+    // 2. 如果开启流式模式，不再执行原有逻辑（流式已处理）
+    const settings = extension_settings[extensionName];
+    if (settings && settings.streamMode) {
+        console.log(`[${extensionName}] 流式模式开启，跳过一次性生成逻辑`);
+        return;
+    }
+	
+	
     // 确保设置对象存在且未被禁用
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') {
         console.log(`[${extensionName}] 插件已禁用或未找到设置，终止处理`);
