@@ -52,7 +52,7 @@ const defaultSettings = {
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto', // 默认图片样式
     streamMode: false, // 新增：是否开启流式传输生图
-    streamScanInterval: 2000, // 新增：流式扫描间隔（毫秒）
+    streamScanInterval: 10000, // 新增：流式扫描间隔（毫秒）
 };
 
 // 从设置更新UI
@@ -566,7 +566,14 @@ async function handleStreamMessage() {
                         });
                         
                         message.mes = newMessageContent;
+						                    console.log(' message.mes:---------:'+message.mes)
+
                         updateMessageBlock(message); // 更新前端显示
+
+						await eventSource.emit(event_types.MESSAGE_UPDATED, context.chat.length - 1);
+
+                        // 保存聊天
+                        await context.saveChat();
                         console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：消息UI更新完成`);
 
                         console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：媒体生成成功，已替换标签`);
@@ -584,6 +591,7 @@ async function handleStreamMessage() {
                         currentProcessedTags: Array.from(streamProcessingState.processedTags).map(t => t.substring(0, 50) + '...').slice(-3) // 只显示最后3个
                     });
                 } catch (error) {
+                    console.error(error)
                     console.error(`[${extensionName}] [DEBUG] handleStreamMessage - 本轮扫描：处理标签时发生异常`, {
                         originalTag: originalTag?.substring(0, 100) + '...' || '空',
                         errorMessage: error.message,
