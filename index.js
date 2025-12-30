@@ -274,7 +274,7 @@ async function handleStreamMessage() {
     }
 
     // 启动定时扫描任务
-    const scanInterval = settings.streamScanInterval || defaultSettings.streamScanInterval;
+    const scanInterval =defaultSettings.streamScanInterval;
     console.log(`[${extensionName}] [DEBUG] handleStreamMessage - 准备启动流式扫描定时任务，扫描间隔：${scanInterval}ms`);
     
     streamProcessingState.timer = setInterval(async () => {
