@@ -18,6 +18,12 @@ const INSERT_TYPE = {
     REPLACE: 'replace',
 };
 
+// --- 全局状态管理 (流式生成专用) ---
+let isStreamActive = false;     // 标记流是否正在进行
+let streamInterval = null;      // 定时器引用
+const processingTags = new Set(); // 正在生成的标签（防止重复提交）
+const processedTags = new Set();  // 已经完成替换的标签（防止最终检查时重复替换）
+
 /**
  * 转义HTML属性值中的特殊字符
  * @param {string} value
@@ -39,9 +45,10 @@ function escapeHtmlAttribute(value) {
 // 默认设置
 const defaultSettings = {
     mediaType: 'disabled', // 默认禁用
-     imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
+    imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto', // 默认图片样式
+    streamGeneration: false, // 默认关闭流式生成
 };
 
 // 从设置更新UI
@@ -54,6 +61,8 @@ function updateUI() {
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
+        // 更新流式开关状态
+        $('#stream_generation').prop('checked', extension_settings[extensionName].streamGeneration ?? false);
     }
 }
 
@@ -128,6 +137,14 @@ async function createSettings(settingsHtml) {
     $('#media_style').on('input', function () {
         console.log(`[${extensionName}] 样式已更新`);
         extension_settings[extensionName].style = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    // 新增：监听流式开关变更
+    $('#stream_generation').on('change', function () {
+        const newValue = $(this).prop('checked');
+        console.log(`[${extensionName}] 流式生成设置已更新: ${newValue}`);
+        extension_settings[extensionName].streamGeneration = newValue;
         saveSettingsDebounced();
     });
 
@@ -211,23 +228,22 @@ $(function () {
     })();
 });
 
-// 监听消息接收事件
-eventSource.on(event_types.MESSAGE_RECEIVED, handleIncomingMessage);
-async function handleIncomingMessage() {
-    console.log(`[${extensionName}] 收到新消息事件`);
-    
+/**
+ * 核心处理逻辑：解析并生成媒体
+ * @param {boolean} isFinal - 是否是最终检查（决定是否保存聊天等）
+ */
+async function processMessageContent(isFinal = false) {
     // 确保设置对象存在且未被禁用
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') {
-        console.log(`[${extensionName}] 插件已禁用或未找到设置，终止处理`);
         return;
     }
 
     const context = getContext();
-    const message = context.chat[context.chat.length - 1];
+    const messageIndex = context.chat.length - 1;
+    const message = context.chat[messageIndex];
 
     // 检查是否是AI消息
-    if (!message || message.is_user) {
-        console.log(`[${extensionName}] 消息来自用户，跳过处理`);
+    if (!message || message.is_user || !message.mes) {
         return;
     }
 
@@ -245,8 +261,8 @@ async function handleIncomingMessage() {
 
     // 使用正则表达式搜索
     const mediaTagRegex = regexFromString(regexStr);
-    console.log(`[${extensionName}] 使用正则表达式:`, mediaTagRegex);
     
+    // 【正则兼容性】检查是否包含 global 标志
     let matches;
     if (mediaTagRegex.global) {
         matches = [...message.mes.matchAll(mediaTagRegex)];
@@ -255,200 +271,242 @@ async function handleIncomingMessage() {
         matches = singleMatch ? [singleMatch] : [];
     }
     
-    console.log(`[${extensionName}] 找到${matches.length}个匹配项`);
-    
-    if (matches.length > 0) {
-        // 延迟执行媒体生成，确保消息首先显示出来
-        setTimeout(async () => {
+    // 如果没有匹配项，直接返回
+    if (matches.length === 0) return;
+
+    for (const match of matches) {
+        const originalTag = match[0];
+        const uniqueKey = originalTag.trim(); // 使用标签原始内容作为唯一标识
+
+        // 【去重逻辑】
+        // 1. 如果该标签正在生成中 (processingTags)，跳过
+        // 2. 如果该标签已经处理并替换完毕 (processedTags)，跳过
+        // 3. (双重保险) 检查消息内容中是否还包含原始标签，如果不包含说明已经被替换了
+        if (processingTags.has(uniqueKey) || processedTags.has(uniqueKey)) {
+            continue;
+        }
+
+        // 锁定当前标签
+        processingTags.add(uniqueKey);
+        console.log(`[${extensionName}] [DEBUG] 开始处理标签 (isFinal:${isFinal}): ${uniqueKey.substring(0, 30)}...`);
+
+        // 异步处理，避免阻塞
+        // 注意：这里我们立即执行一个异步函数，不使用 await 阻塞循环，实现并发生成
+        (async () => {
             let timer;
             let seconds = 0;
-
+            
             try {
-                console.log(`[${extensionName}] 开始生成${matches.length}个媒体项`);
+                let originalPrompt = '';
+                let originalVideoParams = '';
+                let originalLightIntensity = '';
+                let finalPrompt = '';
+
+                // 根据媒体类型处理不同的捕获组
+                if (mediaType === 'video') {
+                    // 视频类型：match[1] 是 videoParams，match[2] 是 prompt
+                    originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
+                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
                 
+                    console.log(`[${extensionName}] [DEBUG] 提取的视频参数: originalVideoParams="${originalVideoParams}", originalPrompt="${originalPrompt}"`);
+                    
+                    // 处理 videoParams
+                    if (originalVideoParams && originalVideoParams.trim()) {
+                        const params = originalVideoParams.split(',');
+                        if (params.length === 3) {
+                            const [frameCount, width, height] = params;
+                            const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
+                            finalPrompt = setvarString + originalPrompt;
+                        } else {
+                            console.warn(`[${extensionName}] videoParams 格式错误`);
+                            finalPrompt = originalPrompt;
+                        }
+                    } else {
+                        finalPrompt = originalPrompt;
+                    }
+                } else {
+                    // 图片逻辑
+                    originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // Capture Group 1
+                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // Capture Group 2
+                    
+                    console.log(`[${extensionName}] [DEBUG] 提取的图片参数: originalLightIntensity="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
+                    
+                    // 处理 lightIntensity
+                    let lightIntensity = 0;
+                    let sunshineIntensity = 0;
+                    if (originalLightIntensity && originalLightIntensity.trim()) {
+                        const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
+                        if (intensityArr.length === 2) {
+                            const parsedLight = parseFloat(intensityArr[0]);
+                            const parsedSunshine = parseFloat(intensityArr[1]);
+                            if (!isNaN(parsedLight)) lightIntensity = Math.round(parsedLight * 100) / 100;
+                            if (!isNaN(parsedSunshine)) sunshineIntensity = Math.round(parsedSunshine * 100) / 100;
+                            
+                            const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
+                            finalPrompt = setvarString + originalPrompt;
+                        } else {
+                            console.warn(`[${extensionName}] lightIntensity 格式错误`);
+                            finalPrompt = originalPrompt;
+                        }
+                    } else {
+                        finalPrompt = originalPrompt;
+                    }
+                }
+                
+                if (!finalPrompt.trim()) {
+                    console.log(`[${extensionName}] [DEBUG] 提示词为空，跳过生成`);
+                    processingTags.delete(uniqueKey);
+                    return;
+                }
+
+                // --- Toastr 进度提示逻辑 (保持原有体验) ---
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
-                const toastrOptions = {
-                    timeOut: 0,
-                    extendedTimeOut: 0,
-                    closeButton: true
-                };
-                
-                // 初始提示文本（用于定位提示框）
-                const baseText = `开始生成 ${matches.length} ${mediaTypeText}...`;
+                const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
+                // 使用唯一标识的一部分作为 baseText，防止多个生成任务混淆
+                const baseText = `生成 ${mediaTypeText} (${originalPrompt.substring(0, 10)}...)...`; 
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
-                console.log(`[${extensionName}] 生成初始提示框，文本: ${baseText} ${seconds}s`);
                 
-                // 启动定时器：通过文本特征定位提示框（不依赖data-toastr）
                 timer = setInterval(() => {
                     seconds++;
-                    console.log(`[${extensionName}] 计时器更新，当前值: ${seconds}s`);
-                    
-                    // 关键修正：通过提示框包含的基础文本定位元素（toastr默认会把文本放在.toast-message中）
+                    // 查找对应的 toast 元素
                     const $toastElement = $(`.toast-message:contains("${baseText}")`).closest('.toast');
-                    console.log(`[${extensionName}] 查找提示框元素（文本特征: ${baseText}），结果: ${$toastElement.length > 0 ? '找到' : '未找到'}`);
-                    
                     if ($toastElement.length) {
-                        const newText = `${baseText} ${seconds}s`;
-                        $toastElement.find('.toast-message').text(newText);
-                        console.log(`[${extensionName}] 提示框文本已更新: ${newText}`);
+                        $toastElement.find('.toast-message').text(`${baseText} ${seconds}s`);
                     } else {
                         clearInterval(timer);
-                        console.log(`[${extensionName}] 提示框已关闭，清除定时器`);
                     }
                 }, 1000);
 
-                // 处理每个匹配的媒体标签
-                for (const match of matches) {
-                    let originalPrompt = '';
-                    let originalVideoParams = '';
-                    let originalLightIntensity=0;
-                    let finalPrompt = '';
+                console.log(`[${extensionName}] [DEBUG] 调用SD生成，Prompt: ${finalPrompt.substring(0, 50)}...`);
 
-                    // 根据媒体类型处理不同的捕获组
+                // --- 调用 SD 生成 ---
+                const result = await SlashCommandParser.commands['sd'].callback(
+                    { quiet: 'true' },
+                    finalPrompt
+                );
+                
+                console.log(`[${extensionName}] [DEBUG] 媒体生成结果 URL:`, result);
+
+                if (typeof result === 'string' && result.trim().length > 0) {
+                    // 获取样式
+                    const style = extension_settings[extensionName].style || '';
+                    
+                    // 转义URL和原始prompt
+                    const escapedUrl = escapeHtmlAttribute(result);
+                    const escapedOriginalPrompt = originalPrompt;
+                    
+                    // 创建媒体标签
+                    let mediaTag;
                     if (mediaType === 'video') {
-                        // 视频类型：match[1] 是 videoParams，match[2] 是 prompt
-                        originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
-                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                   
-                        console.log(`[${extensionName}] 提取的视频参数: originalVideoParams="${originalVideoParams}", originalPrompt="${originalPrompt}"`);
-                        
-                        // 处理 videoParams：解析帧数、宽度、高度（如果有的话）
-                        if (originalVideoParams && originalVideoParams.trim()) {
-                            const params = originalVideoParams.split(',');
-                            if (params.length === 3) {
-                                const [frameCount, width, height] = params;
-                                // 构建 setvar 字符串
-                                const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
-                                // 合并 prompt：videoParams + originalPrompt
-                                finalPrompt = setvarString + originalPrompt;
-                                console.log(`[${extensionName}] 合并后的提示词: ${finalPrompt}`);
-                            } else {
-                                console.warn(`[${extensionName}] videoParams 格式错误，应为"帧数,宽度,高度": ${originalVideoParams}，将忽略videoParams`);
-                                // 格式错误时，只使用原始prompt
-                                finalPrompt = originalPrompt;
-                            }
-                        } else {
-                            console.log(`[${extensionName}] 没有videoParams，只使用原始prompt`);
-                            finalPrompt = originalPrompt;
-                        }
+                        const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
+                        mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
                     } else {
-                      // 图片逻辑：完全对齐视频的参数解析写法
-                         originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // 第一个捕获组：lightIntensity,sunshineIntensity 组合字符串
-                                                                                 //   alert(originalLightIntensity)
-
-                        originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // 第二个捕获组：prompt
-                        console.log(`[${extensionName}] 提取的图片参数: originalLightIntensityAndSunshine="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
-                        
-                        // 处理 lightIntensity 和 sunshineIntensity：逗号分隔的两个数值，默认均为0
-                        let lightIntensity = 0; // 第一个数值默认值
-                        let sunshineIntensity = 0; // 第二个数值默认值
-                        if (originalLightIntensity && originalLightIntensity.trim()) {
-
-                            const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
-                            // 校验是否为两个有效数值
-                            if (intensityArr.length === 2) {
-                                const parsedLight = parseFloat(intensityArr[0]);
-                                const parsedSunshine = parseFloat(intensityArr[1]);
-                                // 校验第一个数值是否有效
-                                if (!isNaN(parsedLight)) {
-                                    lightIntensity = Math.round(parsedLight * 100) / 100; // 最多两位小数
-                                } else {
-                                    console.warn(`[${extensionName}] lightIntensity 格式错误，应为数值: ${intensityArr[0]}，将使用默认值0`);
-                                }
-                                // 校验第二个数值是否有效
-                                if (!isNaN(parsedSunshine)) {
-                                    sunshineIntensity = Math.round(parsedSunshine * 100) / 100; // 最多两位小数
-                                } else {
-                                    console.warn(`[${extensionName}] sunshineIntensity 格式错误，应为数值: ${intensityArr[1]}，将使用默认值0`);
-                                }
-                                // 构建 setvar 字符串，包含两个变量
-                                const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
-                                finalPrompt = setvarString + originalPrompt;
-                                console.log(`[${extensionName}] 合并后的图片提示词: ${finalPrompt}`);
-                              //  alert(setvarString)
-                            } else {
-                                console.warn(`[${extensionName}] lightIntensity和sunshineIntensity 格式错误，应为"数值,数值": ${originalLightIntensity}，将使用默认值0,0`);
-                                finalPrompt = originalPrompt; // 格式错误，仅用原始prompt
-                            }
-                        }else{
-                              console.log(`[${extensionName}] 没有lightIntensity和sunshineIntensity参数，只使用原始prompt`);
-                            finalPrompt = originalPrompt;
-                        }
+                        const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0';
+                        mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
                     }
                     
-                    if (!finalPrompt.trim()) {
-                        console.log(`[${extensionName}] 提示词为空，跳过`);
-                        continue;
-                    }
-                    
-                    console.log(`[${extensionName}] 生成媒体，提示词: ${finalPrompt.substring(0, 50)}...`);
+                    // 【重新获取上下文】因为是异步生成，消息内容可能已经变化
+                    const currentContext = getContext();
+                    const currentMsg = currentContext.chat[messageIndex];
 
-                    // 调用sd命令生成媒体（使用finalPrompt）
-                    const result = await SlashCommandParser.commands['sd'].callback(
-                        {
-                            quiet: 'true'
-                        },
-                        finalPrompt
-                    );
-                    
-                    console.log(`[${extensionName}] 媒体生成结果:`, result);
+                    // 只有当消息里还包含原始标签时才替换
+                    if (currentMsg.mes.includes(uniqueKey)) {
+                        currentMsg.mes = currentMsg.mes.replace(uniqueKey, mediaTag);
 
-                    if (typeof result === 'string' && result.trim().length > 0) {
-                        // 处理替换逻辑
-                        const originalTag = typeof match?.[0] === 'string' ? match[0] : '';
-                        if (!originalTag) {
-                            console.log(`[${extensionName}] 未找到原始标签，跳过`);
-                            continue;
+                        // 更新消息显示（会造成一次重绘，展示图片必须步骤）
+                        updateMessageBlock(messageIndex, currentMsg);
+                        
+                        // 【事件通知】告知其他插件消息已变动
+                        await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+                        
+                        // 标记为已处理
+                        processedTags.add(uniqueKey);
+                        
+                        console.log(`[${extensionName}] [DEBUG] 媒体替换成功`);
+
+                        // 【IO安全检查】只在最终检查时保存聊天，避免流式过程中卡顿
+                        if (isFinal) {
+                            await currentContext.saveChat();
+                            console.log(`[${extensionName}] [DEBUG] 最终生成完成，聊天已保存`);
                         }
-                        
-                        // 获取样式
-                        const style = extension_settings[extensionName].style || '';
-                        
-                        console.log(`[${extensionName}] 使用${mediaType}类型，样式: ${style}`);
-                        
-                        // 转义URL和原始prompt（不是finalPrompt）
-                        const escapedUrl = escapeHtmlAttribute(result);
-                        const escapedOriginalPrompt = originalPrompt;
-                        
-                        // 创建适当的媒体标签
-                        let mediaTag;
-                        if (mediaType === 'video') {
-                            // 转义原始的videoParams值（如果有的话）
-                            const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
-                            mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
-                        } else {
-                          // 图片标签：对齐视频的标签生成写法
-                            const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0'; // 无参数时显示默认值0
-                            mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
-                       
-                        }
-                        
-                        console.log(`[${extensionName}] 生成的媒体标签:`, mediaTag);
-                        
-                        // 替换消息中的标签
-                        message.mes = message.mes.replace(originalTag, mediaTag);
-
-                        // 更新消息显示
-                        updateMessageBlock(context.chat.length - 1, message);
-                        await eventSource.emit(event_types.MESSAGE_UPDATED, context.chat.length - 1);
-
-                        // 保存聊天
-                        await context.saveChat();
-                        console.log(`[${extensionName}] 媒体替换后已保存聊天`);
                     }
                 }
 
+                // 清理 Timer 和 Toast
                 clearInterval(timer);
-                console.log(`[${extensionName}] 生成成功，清除定时器`);
                 toastr.clear(toast);
-                toastr.success(`成功生成 ${matches.length} ${mediaTypeText},一共耗时${seconds}s`);
+                toastr.success(`成功生成 ${mediaTypeText}, 耗时 ${seconds}s`);
 
             } catch (error) {
-                // 出错时也需要清除计时器
                 clearInterval(timer);
                 toastr.error(`Media generation error: ${error}`);
-                console.error(`[${extensionName}] 媒体生成错误:`, error);
+                console.error(`[${extensionName}] [ERROR] 媒体生成错误:`, error);
+            } finally {
+                // 解锁，但如果是成功的，processedTags 已经记录了，不会再次触发
+                processingTags.delete(uniqueKey);
             }
-        }, 0); // 防阻塞UI渲染
+        })();
     }
 }
+
+// --- 事件监听注册 ---
+
+// 1. 监听生成开始 (GENERATION_STARTED)
+eventSource.on(event_types.GENERATION_STARTED, () => {
+    // 检查是否开启了流式生成
+    if (!extension_settings[extensionName]?.streamGeneration) {
+        return;
+    }
+
+    console.log(`[${extensionName}] [DEBUG] 生成开始，启动流式轮询`);
+    isStreamActive = true;
+    
+    // 清空缓存，准备处理新一轮消息
+    processingTags.clear();
+    processedTags.clear();
+
+    // 清除可能存在的旧定时器
+    if (streamInterval) clearInterval(streamInterval);
+
+    // 启动定时器，每 2 秒检测一次
+    streamInterval = setInterval(() => {
+        if (!isStreamActive) {
+            clearInterval(streamInterval);
+            return;
+        }
+        processMessageContent(false); // isFinal = false，流式进行中
+    }, 2000);
+});
+
+// 2. 监听生成结束 (GENERATION_ENDED 和 GENERATION_STOPPED)
+const onGenerationFinished = async () => {
+    // 清除定时器
+    if (streamInterval) {
+        clearInterval(streamInterval);
+        streamInterval = null;
+    }
+
+    // 如果之前是活跃状态，执行最后一次检查
+    if (isStreamActive) {
+        isStreamActive = false;
+        console.log(`[${extensionName}] [DEBUG] 生成结束，执行最终检查`);
+        // 稍微延迟，确保文本完全写入
+        setTimeout(() => processMessageContent(true), 200); // isFinal = true
+    }
+};
+
+eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
+eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
+
+// 3. 监听消息接收 (MESSAGE_RECEIVED) - 兜底逻辑
+eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
+    // 如果未开启流式生成，或者作为双重保险
+    if (!extension_settings[extensionName]?.streamGeneration) {
+        console.log(`[${extensionName}] [DEBUG] 收到消息事件 (非流式模式)`);
+        await processMessageContent(true);
+    } else {
+        // 即使流式开启，也可以再做一次确保
+        // 因为 processedTags 存在，所以不会重复生成
+        await processMessageContent(true);
+    }
+});
