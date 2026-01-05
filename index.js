@@ -452,7 +452,9 @@ async function processMessageContent(isFinal = false) {
 // --- 事件监听注册 ---
 
 // 1. 监听生成开始 (GENERATION_STARTED)
-eventSource.on(event_types.GENERATION_STARTED, () => {
+eventSource.on(event_types.GENERATION_STARTED, () => 
+                    console.log(`EVENT GENERATION_STARTED`);
+
     // 检查是否开启了流式生成
     if (!extension_settings[extensionName]?.streamGeneration) {
         return;
@@ -480,6 +482,8 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 
 // 2. 监听生成结束 (GENERATION_ENDED 和 GENERATION_STOPPED)
 const onGenerationFinished = async () => {
+                console.log(`EVENT GENERATION_FIN`);
+
     // 清除定时器
     if (streamInterval) {
         clearInterval(streamInterval);
@@ -499,7 +503,9 @@ eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
 // 3. 监听消息接收 (MESSAGE_RECEIVED) - 兜底逻辑
-eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
+eventSource.on(event_types.MESSAGE_RECEIVED, async () => { 
+            console.log(`EVENT MESSAGE_RECEIVED`);
+
     // 如果未开启流式生成，或者作为双重保险
     if (!extension_settings[extensionName]?.streamGeneration) {
         console.log(`[${extensionName}] [DEBUG] 收到消息事件 (非流式模式)`);
