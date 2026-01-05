@@ -452,7 +452,7 @@ async function processMessageContent(isFinal = false) {
 // --- 事件监听注册 ---
 
 // 1. 监听生成开始 (GENERATION_STARTED)
-eventSource.on(event_types.GENERATION_STARTED, () => 
+eventSource.on(event_types.GENERATION_STARTED, () => {
                     console.log(`EVENT GENERATION_STARTED`);
 
     // 检查是否开启了流式生成
