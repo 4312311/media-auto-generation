@@ -23,6 +23,7 @@ let isStreamActive = false;     // 标记流是否正在进行
 let streamInterval = null;      // 定时器引用
 const processingTags = new Set(); // 正在生成的标签（防止重复提交）
 const processedTags = new Set();  // 已经完成替换的标签（防止最终检查时重复替换）
+let currentProcessingIndex = -1; // 【修复】记录当前处理的消息索引，用于识别续写
 
 /**
  * 转义HTML属性值中的特殊字符
@@ -233,7 +234,6 @@ $(function () {
  * @param {boolean} isFinal - 是否是最终检查（决定是否保存聊天等）
  */
 async function processMessageContent(isFinal = false) {
-    // 确保设置对象存在且未被禁用
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') {
         return;
     }
@@ -242,27 +242,22 @@ async function processMessageContent(isFinal = false) {
     const messageIndex = context.chat.length - 1;
     const message = context.chat[messageIndex];
 
-    // 检查是否是AI消息
     if (!message || message.is_user || !message.mes) {
         return;
     }
 
-    // 获取当前媒体类型和对应正则
     const mediaType = extension_settings[extensionName].mediaType;
     const regexStr = mediaType === 'image' 
         ? extension_settings[extensionName].imageRegex 
         : extension_settings[extensionName].videoRegex;
 
-    // 确保正则属性存在
     if (!regexStr) {
         console.error(`[${extensionName}] 正则表达式设置未正确初始化`);
         return;
     }
 
-    // 使用正则表达式搜索
     const mediaTagRegex = regexFromString(regexStr);
     
-    // 【正则兼容性】检查是否包含 global 标志
     let matches;
     if (mediaTagRegex.global) {
         matches = [...message.mes.matchAll(mediaTagRegex)];
@@ -271,27 +266,26 @@ async function processMessageContent(isFinal = false) {
         matches = singleMatch ? [singleMatch] : [];
     }
     
-    // 如果没有匹配项，直接返回
     if (matches.length === 0) return;
 
     for (const match of matches) {
         const originalTag = match[0];
-        const uniqueKey = originalTag.trim(); // 使用标签原始内容作为唯一标识
+        const uniqueKey = originalTag.trim(); 
 
-        // 【去重逻辑】
-        // 1. 如果该标签正在生成中 (processingTags)，跳过
-        // 2. 如果该标签已经处理并替换完毕 (processedTags)，跳过
-        // 3. (双重保险) 检查消息内容中是否还包含原始标签，如果不包含说明已经被替换了
+        // 【去重核心】
+        // 1. 如果 processingTags 包含它，说明正在生成，跳过。
+        // 2. 如果 processedTags 包含它，说明【本次会话中】已经生成过，跳过。
+        // 注意：因为我们现在在 GENERATION_STARTED 中保留了 processedTags（如果是续写），
+        // 所以这里能正确拦截之前已经生成过的第一张图。
         if (processingTags.has(uniqueKey) || processedTags.has(uniqueKey)) {
+            // console.log(`[${extensionName}] [DEBUG] 跳过已存在的标签: ${uniqueKey.substring(0, 10)}...`);
             continue;
         }
 
         // 锁定当前标签
         processingTags.add(uniqueKey);
-        console.log(`[${extensionName}] [DEBUG] 开始处理标签 (isFinal:${isFinal}): ${uniqueKey.substring(0, 30)}...`);
+        console.log(`[${extensionName}] [DEBUG] 发现新标签，开始生成 (isFinal:${isFinal}): ${uniqueKey.substring(0, 30)}...`);
 
-        // 异步处理，避免阻塞
-        // 注意：这里我们立即执行一个异步函数，不使用 await 阻塞循环，实现并发生成
         (async () => {
             let timer;
             let seconds = 0;
@@ -302,15 +296,10 @@ async function processMessageContent(isFinal = false) {
                 let originalLightIntensity = '';
                 let finalPrompt = '';
 
-                // 根据媒体类型处理不同的捕获组
                 if (mediaType === 'video') {
-                    // 视频类型：match[1] 是 videoParams，match[2] 是 prompt
                     originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
                     originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                
-                    console.log(`[${extensionName}] [DEBUG] 提取的视频参数: originalVideoParams="${originalVideoParams}", originalPrompt="${originalPrompt}"`);
                     
-                    // 处理 videoParams
                     if (originalVideoParams && originalVideoParams.trim()) {
                         const params = originalVideoParams.split(',');
                         if (params.length === 3) {
@@ -318,20 +307,15 @@ async function processMessageContent(isFinal = false) {
                             const setvarString = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}`;
                             finalPrompt = setvarString + originalPrompt;
                         } else {
-                            console.warn(`[${extensionName}] videoParams 格式错误`);
                             finalPrompt = originalPrompt;
                         }
                     } else {
                         finalPrompt = originalPrompt;
                     }
                 } else {
-                    // 图片逻辑
-                    originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : ''; // Capture Group 1
-                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : ''; // Capture Group 2
+                    originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : '';
+                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
                     
-                    console.log(`[${extensionName}] [DEBUG] 提取的图片参数: originalLightIntensity="${originalLightIntensity}", originalPrompt="${originalPrompt}"`);
-                    
-                    // 处理 lightIntensity
                     let lightIntensity = 0;
                     let sunshineIntensity = 0;
                     if (originalLightIntensity && originalLightIntensity.trim()) {
@@ -345,7 +329,6 @@ async function processMessageContent(isFinal = false) {
                             const setvarString = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}`;
                             finalPrompt = setvarString + originalPrompt;
                         } else {
-                            console.warn(`[${extensionName}] lightIntensity 格式错误`);
                             finalPrompt = originalPrompt;
                         }
                     } else {
@@ -354,21 +337,18 @@ async function processMessageContent(isFinal = false) {
                 }
                 
                 if (!finalPrompt.trim()) {
-                    console.log(`[${extensionName}] [DEBUG] 提示词为空，跳过生成`);
                     processingTags.delete(uniqueKey);
                     return;
                 }
 
-                // --- Toastr 进度提示逻辑 (保持原有体验) ---
+                // Toastr
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
-                // 使用唯一标识的一部分作为 baseText，防止多个生成任务混淆
                 const baseText = `生成 ${mediaTypeText} (${originalPrompt.substring(0, 10)}...)...`; 
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
                 
                 timer = setInterval(() => {
                     seconds++;
-                    // 查找对应的 toast 元素
                     const $toastElement = $(`.toast-message:contains("${baseText}")`).closest('.toast');
                     if ($toastElement.length) {
                         $toastElement.find('.toast-message').text(`${baseText} ${seconds}s`);
@@ -377,25 +357,16 @@ async function processMessageContent(isFinal = false) {
                     }
                 }, 1000);
 
-                console.log(`[${extensionName}] [DEBUG] 调用SD生成，Prompt: ${finalPrompt.substring(0, 50)}...`);
-
-                // --- 调用 SD 生成 ---
                 const result = await SlashCommandParser.commands['sd'].callback(
                     { quiet: 'true' },
                     finalPrompt
                 );
                 
-                console.log(`[${extensionName}] [DEBUG] 媒体生成结果 URL:`, result);
-
                 if (typeof result === 'string' && result.trim().length > 0) {
-                    // 获取样式
                     const style = extension_settings[extensionName].style || '';
-                    
-                    // 转义URL和原始prompt
                     const escapedUrl = escapeHtmlAttribute(result);
                     const escapedOriginalPrompt = originalPrompt;
                     
-                    // 创建媒体标签
                     let mediaTag;
                     if (mediaType === 'video') {
                         const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
@@ -405,34 +376,28 @@ async function processMessageContent(isFinal = false) {
                         mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
                     }
                     
-                    // 【重新获取上下文】因为是异步生成，消息内容可能已经变化
+                    // 获取最新上下文
                     const currentContext = getContext();
                     const currentMsg = currentContext.chat[messageIndex];
 
-                    // 只有当消息里还包含原始标签时才替换
                     if (currentMsg.mes.includes(uniqueKey)) {
                         currentMsg.mes = currentMsg.mes.replace(uniqueKey, mediaTag);
-
-                        // 更新消息显示（会造成一次重绘，展示图片必须步骤）
                         updateMessageBlock(messageIndex, currentMsg);
-                        
-                        // 【事件通知】告知其他插件消息已变动
                         await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
                         
-                        // 标记为已处理
+                        // 标记为已完成
                         processedTags.add(uniqueKey);
-                        
-                        console.log(`[${extensionName}] [DEBUG] 媒体替换成功`);
+                        console.log(`[${extensionName}] [DEBUG] 生成完成: ${uniqueKey.substring(0, 15)}...`);
 
-                        // 【IO安全检查】只在最终检查时保存聊天，避免流式过程中卡顿
                         if (isFinal) {
                             await currentContext.saveChat();
-                            console.log(`[${extensionName}] [DEBUG] 最终生成完成，聊天已保存`);
                         }
+                    } else {
+                         // 特殊情况：如果消息里找不到key了（可能被替换了，或者被截断了），我们也标记为完成，防止死循环
+                         processedTags.add(uniqueKey);
                     }
                 }
 
-                // 清理 Timer 和 Toast
                 clearInterval(timer);
                 toastr.clear(toast);
                 toastr.success(`成功生成 ${mediaTypeText}, 耗时 ${seconds}s`);
@@ -440,9 +405,8 @@ async function processMessageContent(isFinal = false) {
             } catch (error) {
                 clearInterval(timer);
                 toastr.error(`Media generation error: ${error}`);
-                console.error(`[${extensionName}] [ERROR] 媒体生成错误:`, error);
+                console.error(`[${extensionName}] [ERROR]`, error);
             } finally {
-                // 解锁，但如果是成功的，processedTags 已经记录了，不会再次触发
                 processingTags.delete(uniqueKey);
             }
         })();
@@ -451,68 +415,79 @@ async function processMessageContent(isFinal = false) {
 
 // --- 事件监听注册 ---
 
-// 1. 监听生成开始 (GENERATION_STARTED)
+// 1. 监听生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
-                    console.log(`EVENT GENERATION_STARTED`);
 
-    // 检查是否开启了流式生成
-    if (!extension_settings[extensionName]?.streamGeneration) {
-        return;
+      console.log('EVENT GENERATION_STARTED')
+    if (!extension_settings[extensionName]?.streamGeneration) return;
+
+    const context = getContext();
+    const newIndex = context.chat.length - 1;
+
+    // 【修复核心】：
+    // 只有当消息索引改变时（说明是新的一轮对话），才清空缓存。
+    // 如果索引没变（说明是自动续写/Auto-continue），保留缓存，这样就记得"第一张图已经生成过了"。
+    if (newIndex !== currentProcessingIndex) {
+        console.log(`[${extensionName}] [DEBUG] 检测到新消息 (Index: ${newIndex})，清空缓存`);
+        processingTags.clear();
+        processedTags.clear();
+        currentProcessingIndex = newIndex;
+    } else {
+        console.log(`[${extensionName}] [DEBUG] 检测到消息续写 (Index: ${newIndex})，保留缓存`);
     }
 
-    console.log(`[${extensionName}] [DEBUG] 生成开始，启动流式轮询`);
     isStreamActive = true;
     
-    // 清空缓存，准备处理新一轮消息
-    processingTags.clear();
-    processedTags.clear();
-
-    // 清除可能存在的旧定时器
     if (streamInterval) clearInterval(streamInterval);
-
-    // 启动定时器，每 2 秒检测一次
     streamInterval = setInterval(() => {
         if (!isStreamActive) {
             clearInterval(streamInterval);
             return;
         }
-        processMessageContent(false); // isFinal = false，流式进行中
+        processMessageContent(false);
     }, 2000);
 });
 
-// 2. 监听生成结束 (GENERATION_ENDED 和 GENERATION_STOPPED)
+// 2. 监听生成结束
 const onGenerationFinished = async () => {
-                console.log(`EVENT GENERATION_FIN`);
+          console.log('EVENT GENERATION_FIN')
 
-    // 清除定时器
     if (streamInterval) {
         clearInterval(streamInterval);
         streamInterval = null;
     }
 
-    // 如果之前是活跃状态，执行最后一次检查
     if (isStreamActive) {
         isStreamActive = false;
-        console.log(`[${extensionName}] [DEBUG] 生成结束，执行最终检查`);
-        // 稍微延迟，确保文本完全写入
-        setTimeout(() => processMessageContent(true), 200); // isFinal = true
+        console.log(`[${extensionName}] [DEBUG] 生成流结束，执行最终检查`);
+        // 这里不重置 currentProcessingIndex，因为 MESSAGE_RECEIVED 可能会紧接着触发
+        // 或者用户可能会手动再次续写
+        setTimeout(() => processMessageContent(true), 200);
     }
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 3. 监听消息接收 (MESSAGE_RECEIVED) - 兜底逻辑
-eventSource.on(event_types.MESSAGE_RECEIVED, async () => { 
-            console.log(`EVENT MESSAGE_RECEIVED`);
+// 3. 监听消息接收 - 兜底逻辑
+eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
+              console.log('EVENT MESSAGE_RECEIVED')
 
-    // 如果未开启流式生成，或者作为双重保险
-    if (!extension_settings[extensionName]?.streamGeneration) {
-        console.log(`[${extensionName}] [DEBUG] 收到消息事件 (非流式模式)`);
+    // 即使流式开启，这里也做一个最终检查
+    // 此时 context 已经确定，且 processedTags 依然保留了状态
+    if (extension_settings[extensionName]?.streamGeneration) {
         await processMessageContent(true);
     } else {
-        // 即使流式开启，也可以再做一次确保
-        // 因为 processedTags 存在，所以不会重复生成
+        // 非流式模式
+        const context = getContext();
+        const newIndex = context.chat.length - 1;
+        // 非流式模式下，每次收到消息都视为新的（或者需要重置）
+        // 因为非流式没有 STARTED 事件来设置 index
+        if (newIndex !== currentProcessingIndex) {
+            processingTags.clear();
+            processedTags.clear();
+            currentProcessingIndex = newIndex;
+        }
         await processMessageContent(true);
     }
 });
