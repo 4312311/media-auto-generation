@@ -449,6 +449,8 @@ async function processMessageContent(isFinal = false) {
 
 // 1. 监听生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
+               console.log(`EVENT GENERATION_STARTED`);
+
     if (!extension_settings[extensionName]?.streamGeneration) return;
 
     const context = getContext();
@@ -482,6 +484,8 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 
 // 2. 监听生成结束
 const onGenerationFinished = async () => {
+           console.log(`EVENT MESSAGE_FIN`);
+
     if (streamInterval) {
         clearInterval(streamInterval);
         streamInterval = null;
@@ -499,6 +503,7 @@ eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
 // 3. 监听消息接收 - 兜底逻辑
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
+       console.log(`EVENT MESSAGE_RECEIVED`);
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
     const newIndex = context.chat.length - 1;
