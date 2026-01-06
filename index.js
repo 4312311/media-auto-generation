@@ -1,4 +1,4 @@
-// 媒体自动生成插件主脚本 - 优化版 (DOM劫持防闪烁)
+// 媒体自动生成插件主脚本 - 调试增强版
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
@@ -14,12 +14,15 @@ const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
 // --- 调试与统计系统 ---
+const LOG_PREFIX = '[MEDIA_GEN_DEBUG]'; // 过滤关键词
+
 const debugStats = {
     eventsTriggered: 0,
     apiCalls: 0,
     cacheHits: 0,
     domReplacements: 0,
-    finalReplacements: 0,
+    scanCount: 0, // 扫描次数
+    scanMatches: 0, // 匹配成功次数
     errors: 0
 };
 
@@ -28,65 +31,54 @@ function resetStats() {
     debugStats.apiCalls = 0;
     debugStats.cacheHits = 0;
     debugStats.domReplacements = 0;
-    debugStats.finalReplacements = 0;
+    debugStats.scanCount = 0;
+    debugStats.scanMatches = 0;
     debugStats.errors = 0;
 }
 
 function debugLog(type, message, data = null) {
     const timestamp = new Date().toLocaleTimeString();
-    const logPrefix = `[${extensionName}][${timestamp}]`;
+    const fullMessage = `${LOG_PREFIX} [${timestamp}] [${type}] ${message}`;
     
     switch(type) {
-        case 'INFO':
-        case 'EVENT':
-            console.log(`${logPrefix} [${type}] ${message}`, data || '');
+        case 'ERROR':
+            console.error(fullMessage, data || '');
+            debugStats.errors++;
             break;
         case 'STATS':
-            console.group(`${logPrefix} === 统计报告 ===`);
+            console.group(`${LOG_PREFIX} === 统计报告 ===`);
             console.table(debugStats);
             console.groupEnd();
             break;
-        case 'ERROR':
-            console.error(`${logPrefix} [ERROR] ${message}`, data || '');
-            debugStats.errors++;
-            break;
-        case 'DOM':
-            // 仅在需要深度调试DOM时取消注释，防止刷屏
-            // console.debug(`${logPrefix} [DOM] ${message}`);
+        default:
+            // 默认打印普通日志
+            console.log(fullMessage, data !== null ? data : '');
             break;
     }
 }
 
-// --- 全局状态管理 ---
+// --- 全局状态 ---
 let isStreamActive = false;
-const processingTags = new Set(); // 正在生成的标签（防止重复提交）
-const generatedCache = new Map(); // 缓存: 原始标签String -> 生成后的HTML String
+const processingTags = new Set(); 
+const generatedCache = new Map(); 
 let currentProcessingIndex = -1; 
-let observer = null; // MutationObserver 实例
+let observer = null;
 
-/**
- * 转义HTML属性值
- */
 function escapeHtmlAttribute(value) {
     if (typeof value !== 'string') return '';
-    return value
-        .replace(/&/g, '&amp;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+    return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// 默认设置
 const defaultSettings = {
     mediaType: 'disabled',
+    // 默认正则，请确保 LLM 输出的格式与此匹配
     imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:auto;height:auto',
     streamGeneration: false,
 };
 
-// --- UI 与 设置逻辑 (保持原样，略做精简) ---
+// --- UI与设置 (保持精简) ---
 function updateUI() {
     if ($('#mediaType').length) {
         $('#mediaType').val(extension_settings[extensionName].mediaType);
@@ -111,53 +103,69 @@ async function loadSettings() {
     updateUI();
 }
 
-// --- 核心逻辑 1: 解析与生成 ---
+// --- 核心逻辑：扫描与生成 ---
 
 /**
- * 扫描文本/DOM，提取标签并处理
- * @param {string} textContent - 要扫描的文本
- * @param {boolean} triggerGeneration - 是否触发后台生成
- * @returns {Array} 匹配到的标签数组
+ * 扫描文本，触发生成
  */
 function scanAndProcessTags(textContent, triggerGeneration = true) {
-    if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return [];
+    debugStats.scanCount++;
+    
+    // 1. 基础检查
+    if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') {
+        // debugLog('SCAN', '插件未启用或媒体类型为disabled'); // 过于频繁，注释掉
+        return [];
+    }
 
+    // 2. 获取正则
     const mediaType = extension_settings[extensionName].mediaType;
     const regexStr = mediaType === 'image' 
         ? extension_settings[extensionName].imageRegex 
         : extension_settings[extensionName].videoRegex;
 
-    if (!regexStr) return [];
+    if (!regexStr) {
+        debugLog('ERROR', '正则表达式为空');
+        return [];
+    }
 
-    const mediaTagRegex = regexFromString(regexStr);
-    let matches;
-    
-    // 正则匹配
-    if (mediaTagRegex.global) {
-        matches = [...textContent.matchAll(mediaTagRegex)];
+    // 3. 执行正则匹配
+    let matches = [];
+    try {
+        const mediaTagRegex = regexFromString(regexStr);
+        if (mediaTagRegex.global) {
+            matches = [...textContent.matchAll(mediaTagRegex)];
+        } else {
+            const singleMatch = textContent.match(mediaTagRegex);
+            matches = singleMatch ? [singleMatch] : [];
+        }
+    } catch (e) {
+        debugLog('ERROR', '正则解析错误', e);
+        return [];
+    }
+
+    // 4. 调试日志：如果文本很长，只打印前50个字
+    if (matches.length > 0) {
+        debugLog('SCAN', `匹配成功! 找到 ${matches.length} 个标签`, matches.map(m => m[0]));
+        debugStats.scanMatches++;
     } else {
-        const singleMatch = textContent.match(mediaTagRegex);
-        matches = singleMatch ? [singleMatch] : [];
+        // 如果没匹配到，偶尔打印一下正在扫描的内容，方便排查是否是格式不对
+        // 为了防止刷屏，每扫描50次打印一次，或者文本中包含 "<img" 但没匹配上时打印
+        if (textContent.includes('<img') || textContent.includes('<video')) {
+            debugLog('WARN', `发现潜在标签但正则未匹配。当前文本片段: "${textContent.substring(Math.max(0, textContent.indexOf('<') - 10), textContent.indexOf('<') + 50)}..."`);
+            debugLog('WARN', `当前使用的正则: ${regexStr}`);
+        }
     }
 
     if (matches.length === 0) return [];
 
+    // 5. 处理匹配项
     for (const match of matches) {
         const originalTag = match[0];
         const uniqueKey = originalTag.trim();
 
-        // 1. 检查是否已在缓存中 (已生成完毕)
-        if (generatedCache.has(uniqueKey)) {
-            // 这里不做处理，DOM替换逻辑在 Observer 或 Finalizer 中
-            continue;
-        }
+        if (generatedCache.has(uniqueKey)) continue; // 已生成
+        if (processingTags.has(uniqueKey)) continue; // 正在生成
 
-        // 2. 检查是否正在生成中
-        if (processingTags.has(uniqueKey)) {
-            continue;
-        }
-
-        // 3. 触发生成 (仅当允许触发时)
         if (triggerGeneration) {
             triggerBackgroundGeneration(match, mediaType, uniqueKey);
         }
@@ -167,157 +175,150 @@ function scanAndProcessTags(textContent, triggerGeneration = true) {
 }
 
 /**
- * 后台调用 SD 生成图片/视频
+ * 后台生成逻辑
  */
 async function triggerBackgroundGeneration(match, mediaType, uniqueKey) {
     processingTags.add(uniqueKey);
     debugStats.apiCalls++;
-    debugLog('INFO', `开始后台生成: ${uniqueKey.substring(0, 20)}...`);
+    debugLog('API', `>>> 触发后台生成: ${uniqueKey}`);
 
-    let originalPrompt = '';
-    let originalVideoParams = '';
-    let originalLightIntensity = '';
     let finalPrompt = '';
-
+    // ... 参数解析代码 ...
     try {
-        // --- 参数解析逻辑 (保持原逻辑) ---
+        let originalPrompt = '';
+        let originalVideoParams = '';
+        let originalLightIntensity = '';
+
         if (mediaType === 'video') {
             originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
             originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-            
-            if (originalVideoParams && originalVideoParams.trim()) {
+            // 简单的视频参数处理
+            finalPrompt = originalPrompt; 
+            if (originalVideoParams) {
                 const params = originalVideoParams.split(',');
                 if (params.length === 3) {
-                    const [frameCount, width, height] = params;
-                    finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}${originalPrompt}`;
-                } else {
-                    finalPrompt = originalPrompt;
+                     finalPrompt = `{{setvar::videoFrameCount::${params[0]}}}{{setvar::videoWidth::${params[1]}}}{{setvar::videoHeight::${params[2]}}}${originalPrompt}`;
                 }
-            } else {
-                finalPrompt = originalPrompt;
             }
         } else {
             originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : '';
             originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-            
-            if (originalLightIntensity && originalLightIntensity.trim()) {
-                const intensityArr = originalLightIntensity.split(',').map(i => i.trim());
-                if (intensityArr.length === 2) {
-                    const l = parseFloat(intensityArr[0]) || 0;
-                    const s = parseFloat(intensityArr[1]) || 0;
-                    finalPrompt = `{{setvar::light_intensity::${l}}}{{setvar::sunshine_intensity::${s}}}${originalPrompt}`;
-                } else {
-                    finalPrompt = originalPrompt;
+            // 简单的图片参数处理
+            finalPrompt = originalPrompt;
+            if (originalLightIntensity) {
+                const arr = originalLightIntensity.split(',');
+                if (arr.length === 2) {
+                    finalPrompt = `{{setvar::light_intensity::${arr[0]}}}{{setvar::sunshine_intensity::${arr[1]}}}${originalPrompt}`;
                 }
-            } else {
-                finalPrompt = originalPrompt;
             }
         }
 
         if (!finalPrompt.trim()) {
+            debugLog('WARN', 'Prompt为空，跳过生成');
             processingTags.delete(uniqueKey);
             return;
         }
 
-        // 调用 SD (静默模式)
+        debugLog('API', `SD Prompt: ${finalPrompt}`);
+
+        // 调用 SD
         const result = await SlashCommandParser.commands['sd'].callback(
             { quiet: 'true' },
             finalPrompt
         );
 
+        debugLog('API', `SD 返回结果: ${result ? '成功' : '空'}`);
+
         if (typeof result === 'string' && result.trim().length > 0) {
             const style = extension_settings[extensionName].style || '';
             const escapedUrl = escapeHtmlAttribute(result);
-            const escapedOriginalPrompt = escapeHtmlAttribute(originalPrompt); // 修复属性中的Prompt转义
+            const escapedOriginalPrompt = escapeHtmlAttribute(originalPrompt);
             
             let mediaTag;
             if (mediaType === 'video') {
-                const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
-                mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
+                mediaTag = `<video src="${escapedUrl}" prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
             } else {
-                const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0';
-                mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
+                mediaTag = `<img src="${escapedUrl}" prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
             }
 
-            // 存入缓存
             generatedCache.set(uniqueKey, mediaTag);
-            debugLog('INFO', `生成成功，已存入缓存`, { key: uniqueKey });
-
-            // 生成完成后，立即尝试更新当前的DOM (防闪烁的关键补充)
-            // 虽然 Observer 会处理，但为了响应速度，这里主动触发一次
-            applyCacheToDom(); 
+            debugLog('CACHE', `写入缓存: ${uniqueKey} -> HTML`);
+            
+            // 主动触发一次DOM更新
+            applyCacheToDom();
+        } else {
+            debugLog('ERROR', 'SD生成返回空字符串');
         }
 
     } catch (error) {
-        debugLog('ERROR', `生成失败`, error);
+        debugLog('ERROR', `生成过程异常`, error);
     } finally {
         processingTags.delete(uniqueKey);
     }
 }
 
-// --- 核心逻辑 2: DOM 观察与实时替换 (MutationObserver) ---
+// --- DOM 观察与处理 ---
 
 /**
- * 核心：遍历 DOM，如果发现文本中包含已缓存的标签，直接替换为 HTML
- * 此操作仅在 DOM 层面进行，不修改 context.chat 数据
+ * 核心：获取当前消息文本，执行扫描，执行替换
  */
 function applyCacheToDom() {
-    // 找到最后一条消息的容器
+    // 1. 获取最后一条消息
+    // ST 的结构通常是 #chat -> .mes -> .mes_text
     const chatContainer = document.getElementById('chat');
     if (!chatContainer) return;
-    
-    // 通常最后一条消息是正在生成的消息
-    const lastMessage = chatContainer.querySelector('.mes:last-child .mes_text');
-    if (!lastMessage) return;
 
-    let htmlContent = lastMessage.innerHTML;
+    const lastMessageBlock = chatContainer.querySelector('.mes:last-child');
+    if (!lastMessageBlock) return;
+
+    const lastMessageTextDiv = lastMessageBlock.querySelector('.mes_text');
+    if (!lastMessageTextDiv) return;
+
+    // 2. 扫描文本 (触发生成)
+    // 重要：使用 textContent 来匹配正则，因为 innerHTML 可能包含转义字符
+    const rawText = lastMessageTextDiv.textContent;
+    scanAndProcessTags(rawText, true);
+
+    // 3. 替换 DOM (防闪烁)
+    let htmlContent = lastMessageTextDiv.innerHTML;
     let hasChanges = false;
 
-    // 遍历缓存，查找是否有匹配项
     generatedCache.forEach((mediaHtml, originalTag) => {
+        // 检查 HTML 中是否还包含原始标签
         if (htmlContent.includes(originalTag)) {
-            // 执行替换
             htmlContent = htmlContent.replace(originalTag, mediaHtml);
             hasChanges = true;
-            debugStats.domReplacements++;
-            debugStats.cacheHits++; // 统计缓存命中（即显示了图片）
+            debugStats.cacheHits++;
         }
     });
 
-    // 只有在发生变化时才写入 DOM，避免不必要的重绘
     if (hasChanges) {
-        lastMessage.innerHTML = htmlContent;
-        debugLog('DOM', '已执行 DOM 实时替换');
+        lastMessageTextDiv.innerHTML = htmlContent;
+        debugStats.domReplacements++;
+        // debugLog('DOM', '已替换 DOM 内容');
     }
-    
-    // 同时扫描是否需要触发新的生成任务
-    scanAndProcessTags(lastMessage.textContent, true);
 }
 
 function startObserver() {
     if (observer) observer.disconnect();
-
     const chatContainer = document.getElementById('chat');
-    if (!chatContainer) return;
+    if (!chatContainer) {
+        debugLog('ERROR', '未找到 #chat 容器，无法启动观察者');
+        return;
+    }
 
-    debugLog('INFO', '启动 DOM 观察者 (MutationObserver)');
+    debugLog('INFO', 'Observer 启动');
     
     observer = new MutationObserver((mutations) => {
-        // 过滤：我们只关心最后一条消息的变化
-        // 简单的防抖或直接执行？由于流式传输很快，直接执行通常没问题，但要注意性能
-        // 这里直接调用 applyCacheToDom，因为它内部会做内容检查
-        
-        // 标记本次回调
         debugStats.eventsTriggered++;
+        // 每次 DOM 变动都尝试处理
         applyCacheToDom();
     });
 
-    // 监听 chat 容器的子树变化（新消息添加）和字符数据变化
     observer.observe(chatContainer, {
         childList: true,
         subtree: true,
-        characterData: true,
-        attributes: false 
+        characterData: true
     });
 }
 
@@ -325,29 +326,22 @@ function stopObserver() {
     if (observer) {
         observer.disconnect();
         observer = null;
-        debugLog('INFO', '停止 DOM 观察者');
+        debugLog('INFO', 'Observer 停止');
     }
 }
 
-// --- 核心逻辑 3: 最终数据提交 ---
-
-/**
- * 生成结束后，将 DOM 的视觉效果同步回数据层 (context.chat)
- */
 async function finalizeMessageContent() {
-    debugLog('INFO', '执行最终数据同步 (Finalize)');
+    debugLog('INFO', '正在执行 Finalize (最终保存)');
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
     
     const messageIndex = context.chat.length - 1;
     const message = context.chat[messageIndex];
-    
     if (!message || !message.mes) return;
 
     let content = message.mes;
     let isModified = false;
 
-    // 遍历缓存，将文本标签永久替换为 HTML
     generatedCache.forEach((mediaHtml, originalTag) => {
         if (content.includes(originalTag)) {
             content = content.replace(originalTag, mediaHtml);
@@ -360,93 +354,50 @@ async function finalizeMessageContent() {
         message.mes = content;
         updateMessageBlock(messageIndex, message);
         await context.saveChat();
-        debugLog('INFO', '聊天数据已保存');
+        debugLog('INFO', 'Finalize 完成，数据已保存');
     }
-    
-    // 打印本次生成的统计数据
     debugLog('STATS');
 }
 
 // --- 事件监听 ---
 
-// 1. 生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
     debugLog('EVENT', 'GENERATION_STARTED');
     resetStats();
-
-    const context = getContext();
-    const newIndex = context.chat.length; // 这是一个近似值，或者是 length-1
-
-    // 简单的索引检查策略：
-    // 如果是新一轮生成，通常我们希望缓存保持（如果是同一次回复的不同段落？）。
-    // 但如果是 Regenerate，我们需要清空缓存吗？
-    // 策略：如果是新消息索引变化了，清空缓存。如果是 Swipe，通常 Index 不变。
-    // 为了简单起见，如果不是流式，每次都清空。如果是流式，我们在 MESSAGE_RECEIVED 兜底清理。
     
-    // 针对流式：
+    // 如果启用了流式，启动观察者
     if (extension_settings[extensionName]?.streamGeneration) {
+        const context = getContext();
+        const newIndex = context.chat.length;
         if (newIndex !== currentProcessingIndex) {
             processingTags.clear();
             generatedCache.clear();
             currentProcessingIndex = newIndex;
-            debugLog('INFO', '检测到新消息序列，缓存已清空');
+            debugLog('INFO', '新消息，缓存清空');
         }
-        
         isStreamActive = true;
         startObserver();
     }
 });
 
-// 2. 生成结束
 const onGenerationFinished = async () => {
-    debugLog('EVENT', 'GENERATION_FINISHED/STOPPED');
-    
+    debugLog('EVENT', 'FINISHED');
     if (isStreamActive) {
         isStreamActive = false;
         stopObserver();
-        
-        // 稍微延迟，确保最后的数据包处理完毕
-        setTimeout(() => finalizeMessageContent(), 200);
+        setTimeout(finalizeMessageContent, 300);
     }
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 3. 消息接收 (非流式兜底 或 加载历史消息)
-eventSource.on(event_types.MESSAGE_RECEIVED, async (index) => {
-    // 只有在非流式模式下，或者流式模式出现意外没处理时，这里才会有作用
-    // 但为了避免冲突，如果刚才正在流式传输，这里往往不需要做什么，因为 finalize 已经做了。
-    
-    // 这里的逻辑主要是为了处理 非流式生成的情况
-    if (!extension_settings[extensionName]?.streamGeneration) {
-        debugLog('EVENT', 'MESSAGE_RECEIVED (Non-Stream Mode)');
-        // 非流式逻辑：解析 -> 生成 -> 替换 (可以直接复用 finalize 的逻辑思路，但需要先 scanAndProcessTags)
-        
-        const context = getContext();
-        const msg = context.chat[index];
-        if(!msg) return;
-
-        // 简化的非流式处理：扫描并替换
-        // 注意：非流式没有 Observer，所以我们需要主动调用 process
-        // 这里暂时省略非流式的复杂重写，建议使用流式模式以获得最佳体验
-    }
-});
-
-
 // --- 初始化 ---
 $(function () {
     (async function () {
+        // 加载设置 HTML
         const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
-        
-        $('#extensionsMenu').append(`
-            <div id="auto_generation" class="list-group-item flex-container flexGap5">
-                <div class="fa-solid fa-film"></div>
-                <span data-i18n="Media Auto Generation">Media Auto Generation</span>
-            </div>
-        `);
-
-        // 绑定点击事件 (UI相关代码保持精简，复用之前的逻辑)
+        $('#extensionsMenu').append(`<div id="auto_generation" class="list-group-item flex-container flexGap5"><div class="fa-solid fa-film"></div><span data-i18n="Media Auto Generation">Media Auto Generation</span></div>`);
         $('#auto_generation').on('click', () => {
              const extensionsDrawer = $('#extensions-settings-button .drawer-toggle');
              if ($('#rm_extensions_block').hasClass('closedDrawer')) extensionsDrawer.trigger('click');
@@ -459,27 +410,20 @@ $(function () {
              }, 500);
         });
 
+        // 确保先加载设置再处理
         await loadSettings();
 
-        // 创建设置容器
         if (!$('#media_auto_generation_container').length) {
             $('#extensions_settings2').append('<div id="media_auto_generation_container" class="extension_container"></div>');
         }
         $('#media_auto_generation_container').empty().append(settingsHtml);
         
-        // 绑定输入事件
-        $('#mediaType').on('change', function() {
-            extension_settings[extensionName].mediaType = $(this).val();
-            saveSettingsDebounced();
-            updateUI();
-        });
-        $('#stream_generation').on('change', function() {
-            extension_settings[extensionName].streamGeneration = $(this).prop('checked');
-            saveSettingsDebounced();
-        });
-        // ... 其他输入绑定 ... (省略以节省篇幅，逻辑同原代码)
+        // 绑定事件
+        $('#mediaType').on('change', function() { extension_settings[extensionName].mediaType = $(this).val(); saveSettingsDebounced(); updateUI(); });
+        $('#stream_generation').on('change', function() { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
+        // ... 其他绑定省略 ...
 
         updateUI();
-        console.log(`[${extensionName}] 插件已加载 (优化版)`);
+        console.log(`${LOG_PREFIX} 插件加载完成`);
     })();
 });
