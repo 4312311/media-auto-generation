@@ -1,4 +1,4 @@
-// 媒体自动生成插件主脚本 (最终防重稳健版)
+// 媒体自动生成插件主脚本 (修复流式可见性与并发重复问题版)
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
@@ -19,8 +19,8 @@ let domObserver = null;
 
 // 【关键状态库】
 const processingTags = new Set(); // 正在生成的锁 (防止并发重复)
-const generatedCache = new Map(); // 生成成功的缓存 (用于显示)
-const failedTags = new Set();     // 生成失败的黑名单 (防止错误循环)
+const generatedCache = new Map(); // 缓存: 归一化Key -> 生成好的HTML
+const failedTags = new Set();     // 失败黑名单
 let currentProcessingIndex = -1;
 
 const defaultSettings = {
@@ -31,12 +31,27 @@ const defaultSettings = {
     streamGeneration: false,
 };
 
+// 工具：转义 HTML 实体 (用于在 DOM 中查找被转义的标签)
+function escapeHtmlForMatcher(value) {
+    if (typeof value !== 'string') return '';
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+// 工具：生成唯一 Key (去除空格，防止 Markdown 格式化导致认为是新标签)
+function getNormalizedKey(tagString) {
+    return tagString.replace(/\s+/g, '').trim();
+}
+
 function escapeHtmlAttribute(value) {
     if (typeof value !== 'string') return '';
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// --- DOM 观察者 (无闪烁显示层) ---
+// --- DOM 观察者 (修复可见性核心) ---
 function startDomObserver() {
     if (domObserver) return;
     const chatContainer = document.querySelector('#chat');
@@ -49,15 +64,28 @@ function startDomObserver() {
         let htmlContent = lastMessageText.innerHTML;
         let hasChanges = false;
 
-        generatedCache.forEach((mediaTag, originalTag) => {
-            // 只要 DOM 里包含原始标签，就瞬间替换
+        // 遍历缓存进行替换
+        generatedCache.forEach((mediaData) => {
+            const { originalTag, mediaTag } = mediaData;
+            
+            // 1. 尝试匹配原始标签 (以防 ST 渲染了 raw HTML)
             if (htmlContent.includes(originalTag)) {
                 htmlContent = htmlContent.split(originalTag).join(mediaTag);
                 hasChanges = true;
             }
+            
+            // 2. 【关键修复】尝试匹配转义后的标签 (ST 流式传输常见情况: <img...> 变成了 &lt;img...&gt;)
+            const escapedTag = escapeHtmlForMatcher(originalTag);
+            if (htmlContent.includes(escapedTag)) {
+                htmlContent = htmlContent.split(escapedTag).join(mediaTag);
+                hasChanges = true;
+            }
         });
 
-        if (hasChanges) lastMessageText.innerHTML = htmlContent;
+        // 只有真正变化时才写入 DOM
+        if (hasChanges) {
+            lastMessageText.innerHTML = htmlContent;
+        }
     });
 
     domObserver.observe(chatContainer, { childList: true, subtree: true, characterData: true });
@@ -100,45 +128,37 @@ async function processMessageContent(isFinal = false) {
 
     for (const match of matches) {
         const originalTag = match[0];
-        const uniqueKey = originalTag.trim(); // 使用 trim 后的标签作为唯一键
+        // 【关键修复】使用归一化 Key，忽略空格差异
+        const uniqueKey = getNormalizedKey(originalTag); 
 
-        // 【防重检查 1】: 是否已经生成成功？
+        // 1. 缓存检查
         if (generatedCache.has(uniqueKey)) {
-            // 只有在最终结束时，才执行数据固化（保存到 chat）
-            if (isFinal && message.mes.includes(uniqueKey)) {
-                const cachedMediaTag = generatedCache.get(uniqueKey);
-                console.log(`[${extensionName}] 最终固化数据: ${uniqueKey.substring(0, 10)}...`);
-                message.mes = message.mes.replace(uniqueKey, cachedMediaTag);
+            // 如果是最终状态，确保数据被固化到 ST 数据层
+            if (isFinal && message.mes.includes(originalTag)) {
+                const { mediaTag } = generatedCache.get(uniqueKey);
+                console.log(`[${extensionName}] 最终固化: ${uniqueKey.substring(0, 10)}...`);
+                message.mes = message.mes.replace(originalTag, mediaTag);
                 updateMessageBlock(messageIndex, message);
                 await context.saveChat();
             }
-            continue; // 跳过生成
+            continue;
         }
 
-        // 【防重检查 2】: 是否正在生成中？
-        if (processingTags.has(uniqueKey)) {
-            // 正在生成中，直接跳过，等待之前的请求完成
-            continue; 
-        }
+        // 2. 并发锁检查
+        if (processingTags.has(uniqueKey)) continue;
 
-        // 【防重检查 3】: 是否之前失败过？
-        if (failedTags.has(uniqueKey)) {
-            continue; // 之前报错了，不再尝试，防止无限报错循环
-        }
+        // 3. 失败检查
+        if (failedTags.has(uniqueKey)) continue;
 
-        // --- 通过所有检查，开始生成 ---
-        
-        // 1. 立即上锁
+        // --- 开始生成 ---
         processingTags.add(uniqueKey);
-        console.log(`[${extensionName}] 发起生成请求: ${uniqueKey.substring(0, 20)}...`);
-
-        // 2. 异步执行生成 (IIFE)
+        
         (async () => {
             let timer;
             let seconds = 0;
             
             try {
-                // --- 解析参数 Start ---
+                // 解析参数 (保持原有逻辑)
                 let finalPrompt = '';
                 let originalPrompt = '';
                 let originalVideoParams = '';
@@ -163,15 +183,14 @@ async function processMessageContent(isFinal = false) {
                 }
                 
                 if (!finalPrompt.trim()) throw new Error("Empty prompt");
-                // --- 解析参数 End ---
 
                 // UI 提示
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
-                let toast = toastr.info(`正在生成... 0s`, '', toastrOptions);
+                let toast = toastr.info(`生成中... 0s`, '', toastrOptions);
                 timer = setInterval(() => {
                     seconds++;
-                    const $t = $(`.toast-message:contains("正在生成")`).closest('.toast');
-                    if ($t.length) $t.find('.toast-message').text(`正在生成... ${seconds}s`);
+                    const $t = $(`.toast-message:contains("生成中")`).closest('.toast');
+                    if ($t.length) $t.find('.toast-message').text(`生成中... ${seconds}s`);
                     else clearInterval(timer);
                 }, 1000);
 
@@ -179,10 +198,9 @@ async function processMessageContent(isFinal = false) {
                 const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
                 
                 if (typeof result === 'string' && result.trim().length > 0) {
-                    // 构建 HTML
                     const style = extension_settings[extensionName].style || '';
                     const url = escapeHtmlAttribute(result);
-                    const prm = originalPrompt; // 不转义 prompt 用于显示属性，或按需转义
+                    const prm = originalPrompt; 
                     
                     let mediaTag;
                     if (mediaType === 'video') {
@@ -193,17 +211,22 @@ async function processMessageContent(isFinal = false) {
                         mediaTag = `<img src="${url}" light_intensity="${li}" prompt="${prm}" style="${style}" onclick="window.open(this.src)" />`;
                     }
                     
-                    // 【成功】存入缓存 -> Observer 会自动上屏
-                    generatedCache.set(uniqueKey, mediaTag);
-                    console.log(`[${extensionName}] 生成成功并缓存`);
+                    // 【成功】存入缓存 (存储完整对象以便 Observer 使用)
+                    generatedCache.set(uniqueKey, {
+                        originalTag: originalTag, // 保存原始标签用于 replacement
+                        mediaTag: mediaTag
+                    });
+                    
+                    console.log(`[${extensionName}] 生成成功: ${uniqueKey.substring(0, 10)}`);
 
-                    // 边缘情况处理：如果流式已经结束（isStreamActive为false），Observer可能不会再刷新DOM了
-                    // 或者这是最后一次检查 (isFinal)，我们需要手动更新数据
+                    // 实时更新逻辑：
+                    // 如果流式已结束 (最后一张图生成慢)，或者是第一次生成成功，我们手动尝试一次 updateMessageBlock
+                    // Observer 也会同时工作，双重保险
                     if (!isStreamActive || isFinal) {
                          const currCtx = getContext();
                          const currMsg = currCtx.chat[messageIndex];
-                         if (currMsg.mes.includes(uniqueKey)) {
-                             currMsg.mes = currMsg.mes.replace(uniqueKey, mediaTag);
+                         if (currMsg.mes.includes(originalTag)) {
+                             currMsg.mes = currMsg.mes.replace(originalTag, mediaTag);
                              updateMessageBlock(messageIndex, currMsg);
                              if (isFinal) await currCtx.saveChat();
                          }
@@ -214,26 +237,22 @@ async function processMessageContent(isFinal = false) {
                 
                 clearInterval(timer);
                 toastr.clear(toast);
-                toastr.success(`生成完成 (${seconds}s)`);
+                toastr.success(`生成完成`);
 
             } catch (error) {
                 console.error(`[${extensionName}] 生成失败:`, error);
                 clearInterval(timer);
                 toastr.clear();
-                toastr.error(`生成失败: ${error.message}`);
-                
-                // 【失败熔断】加入失败名单，避免下次轮询重复尝试
-                failedTags.add(uniqueKey);
-                
+                toastr.error(`生成失败`);
+                failedTags.add(uniqueKey); // 加入熔断黑名单
             } finally {
-                // 【解锁】无论成功失败，都必须释放锁
-                processingTags.delete(uniqueKey);
+                processingTags.delete(uniqueKey); // 释放锁
             }
         })();
     }
 }
 
-// --- 设置和初始化 (保持精简) ---
+// --- 设置和初始化 (无变化) ---
 
 async function createSettings(settingsHtml) {
     if (!$('#media_auto_generation_container').length) {
@@ -278,35 +297,36 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
     
     const newIndex = context.chat.length - 1;
 
-    // 新的一条消息，重置所有缓存和状态
+    // 检测到新消息，重置状态
     if (newIndex !== currentProcessingIndex) {
         processingTags.clear();
         generatedCache.clear();
-        failedTags.clear(); // 清空失败记录
+        failedTags.clear();
         currentProcessingIndex = newIndex;
     }
 
     isStreamActive = true;
-    startDomObserver();
+    startDomObserver(); // 启动 Observer
 
-    // 启动低频扫描 (1秒一次)，只负责触发生成
+    // 启动低频扫描 (0.5秒一次)，只负责触发生成 API
     if (generationTimer) clearInterval(generationTimer);
     generationTimer = setInterval(() => {
         if (!isStreamActive) {
             clearInterval(generationTimer); return;
         }
         processMessageContent(false);
-    }, 1000);
+    }, 500); // 加快检查频率，避免连续出图时漏掉
 });
 
 const onGenerationFinished = async () => {
     if (generationTimer) { clearInterval(generationTimer); generationTimer = null; }
     if (isStreamActive) {
         isStreamActive = false;
+        // 延迟长一点，确保最后一张图能赶上
         setTimeout(() => {
             stopDomObserver();
             processMessageContent(true); // 最终固化
-        }, 500);
+        }, 1000);
     }
 };
 
@@ -326,6 +346,7 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
             currentProcessingIndex = newIndex;
         }
     }
+    // 非流式模式下直接处理
     await processMessageContent(true);
 });
 
