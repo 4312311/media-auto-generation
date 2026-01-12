@@ -1,4 +1,5 @@
-// 媒体自动生成插件主脚本 - Hash锁 + 时间戳延时清理版
+// 媒体自动生成插件主脚本 - 修复版 (防抖+强制回填)
+
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
@@ -13,39 +14,59 @@ const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
 // --- 全局状态管理 ---
+
 let isStreamActive = false;
 let streamInterval = null;
-const processingTags = new Set();
-const generatedCache = new Map(); 
-
-// 【核心修改】：Prompt 历史记录 Map
-// Key: Prompt的Hash值
-// Value: 上次生成的时间戳 (Date.now())
-const promptHistory = new Map();
-
-// 冷却时间设置：3分钟 (180000毫秒)
-// 在这段时间内，相同的 Prompt 即使被正则再次扫到，也不会重复生成
-const PROMPT_COOLDOWN_MS = 180000;
-
 let currentProcessingIndex = -1;
 let realStreamingDetected = false;
 let finalCheckTimer = null;
 
+// 1. 生成结果缓存
+// Key: Prompt Hash, Value: 完整的HTML标签 (<img src="..." ...>)
+const generatedCache = new Map();
+
+// 2. 历史记录 (冷却锁)
+// Key: Prompt Hash, Value: 上次生成的时间戳
+const promptHistory = new Map();
+
+// 3. 并发处理锁 (内存锁)
+// Key: Prompt Hash. 存在于此集合中表示正在生成中，绝对禁止再次触发
+const processingHashes = new Set();
+
+// 冷却时间设置：3分钟
+const PROMPT_COOLDOWN_MS = 180000;
+
+// 默认设置
+const defaultSettings = {
+    mediaType: 'disabled',
+    imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
+    videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
+    style: 'width:auto;height:auto',
+    streamGeneration: false,
+};
+
 /**
  * 简单的字符串 Hash 函数 (DJB2 算法)
- * 用于将长 Prompt 转换为短字符串作为 Key
  */
 function simpleHash(str) {
     let hash = 5381;
     for (let i = 0; i < str.length; i++) {
         hash = (hash * 33) ^ str.charCodeAt(i);
     }
-    return (hash >>> 0).toString(16); // 转为无符号 hex 字符串
+    return (hash >>> 0).toString(16);
+}
+
+/**
+ * 标准化 Prompt
+ * 去除首尾空格，将连续空格合并为一个，转小写（可选，视模型敏感度而定，这里为了缓存命中率建议转小写）
+ */
+function normalizePrompt(str) {
+    if (!str) return "";
+    return str.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /**
  * 清理过期的 Prompt 历史
- * 只删除 3 分钟以前的记录，保留近期的记录以防止流式回滚导致的重复
  */
 function pruneOldPrompts() {
     const now = Date.now();
@@ -53,12 +74,12 @@ function pruneOldPrompts() {
     for (const [hash, timestamp] of promptHistory.entries()) {
         if (now - timestamp > PROMPT_COOLDOWN_MS) {
             promptHistory.delete(hash);
+            // 同时清理缓存，防止内存无限膨胀
+            generatedCache.delete(hash);
             deletedCount++;
         }
     }
-    if (deletedCount > 0) {
-        console.log(`[${extensionName}] 清理了 ${deletedCount} 个过期的 Prompt 记录`);
-    }
+    // if (deletedCount > 0) console.log(`[${extensionName}] 清理了 ${deletedCount} 个过期记录`);
 }
 
 function escapeHtmlAttribute(value) {
@@ -66,13 +87,7 @@ function escapeHtmlAttribute(value) {
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-const defaultSettings = {
-    mediaType: 'disabled',
-    imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
-    videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
-    style: 'width:auto;height:auto',
-    streamGeneration: false, 
-};
+// --- 设置与UI逻辑 (保持不变) ---
 
 function updateUI() {
     if ($('#mediaType').length) {
@@ -150,9 +165,8 @@ $(function () {
     })();
 });
 
-/**
- * 核心处理逻辑
- */
+// --- 核心处理逻辑 (修复版) ---
+
 async function processMessageContent(isFinal = false) {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
 
@@ -167,127 +181,99 @@ async function processMessageContent(isFinal = false) {
     if (!regexStr) return;
 
     const mediaTagRegex = regexFromString(regexStr);
-    let matches;
-    if (mediaTagRegex.global) {
-        matches = [...message.mes.matchAll(mediaTagRegex)];
-    } else {
-        const singleMatch = message.mes.match(mediaTagRegex);
-        matches = singleMatch ? [singleMatch] : [];
-    }
     
+    // 使用 matchAll 获取所有匹配项
+    const matches = [...message.mes.matchAll(mediaTagRegex)];
     if (matches.length === 0) return;
+
+    let contentModified = false;
+    let currentMessageText = message.mes; // 在本地副本上操作
 
     for (const match of matches) {
         const originalTag = match[0];
-        // 1. 基础防御：如果已有 src=，跳过
+
+        // 如果已经是带 src 的完整标签，通常跳过。
+        // 但为了防止流式回滚，如果它符合我们的正则且包含 src，我们暂时不管它。
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
-        
-        const uniqueKey = originalTag.trim();
 
-        // 2. 缓存回填 (优先尝试恢复图片)
-        if (generatedCache.has(uniqueKey)) {
-            const cachedMediaTag = generatedCache.get(uniqueKey);
-            if (message.mes.includes(uniqueKey)) {
-                // console.log(`[${extensionName}] [DEBUG] 缓存命中，恢复显示`);
-                message.mes = message.mes.replace(uniqueKey, cachedMediaTag);
-                updateMessageBlock(messageIndex, message);
-                if (isFinal) await context.saveChat();
+        // 提取 Prompt
+        let rawPrompt = (match[2] || "").trim();
+        let rawExtraParams = match[1] || ""; // light_intensity 或 videoParams
+
+        // 兼容性提取 (如果正则组顺序不同)
+        if (!rawPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
+            rawPrompt = match[1].trim();
+            rawExtraParams = match[2] || "";
+        }
+
+        if (!rawPrompt) continue;
+
+        // 【核心修复1】计算 Hash Key
+        const promptHash = simpleHash(normalizePrompt(rawPrompt));
+
+        // 【核心修复2】缓存回填 (优先权最高)
+        // 只要缓存里有，说明生成过，强制替换文本，防止流式刷新导致图片消失
+        if (generatedCache.has(promptHash)) {
+            const cachedMediaTag = generatedCache.get(promptHash);
+            // 只替换当前的 originalTag
+            currentMessageText = currentMessageText.replace(originalTag, cachedMediaTag);
+            contentModified = true;
+            // 继续处理下一个标签
+            continue; 
+        }
+
+        // 【核心修复3】并发控制
+        // 如果正在处理这个 Hash，跳过
+        if (processingHashes.has(promptHash)) continue;
+
+        // 【核心修复4】冷却检查
+        const now = Date.now();
+        if (promptHistory.has(promptHash)) {
+            const lastGenTime = promptHistory.get(promptHash);
+            if (now - lastGenTime < PROMPT_COOLDOWN_MS) {
+                // 还在冷却中，跳过
+                continue;
             }
-            continue;
         }
 
-        // 3. 并发保护
-        if (processingTags.has(uniqueKey)) continue;
+        // 【核心修复5】同步加锁 (Critical Section)
+        // 在 await 之前立即加锁，防止后续的流式 token 再次触发
+        processingHashes.add(promptHash);
+        promptHistory.set(promptHash, now);
 
-        // 4. 【核心逻辑】Prompt Hash + 时间戳锁
-        // 即使文本回滚，只要 Prompt Hash 在冷却时间内，就视为“已生成”
-        
-        // 提取 Prompt (兼容不同正则组)
-        let extractedPrompt = (match[2] || "").trim();
-        if (!extractedPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
-             extractedPrompt = match[1].trim();
-        }
-        
-        let promptHash = null;
-
-        if (extractedPrompt) {
-            promptHash = simpleHash(extractedPrompt);
-            const now = Date.now();
-            
-            // 检查历史记录
-            if (promptHistory.has(promptHash)) {
-                const lastGenTime = promptHistory.get(promptHash);
-                // 如果距离上次生成还没过冷却时间 (3分钟)
-                if (now - lastGenTime < PROMPT_COOLDOWN_MS) {
-                    console.log(`[${extensionName}] [冷却中] Prompt已在3分钟内生成过，跳过: ${extractedPrompt.substring(0, 10)}... (Hash: ${promptHash})`);
-                    continue; // 跳过，不生成！
-                }
-            }
-            
-            // 如果通过了检查，记录当前时间 (相当于加锁)
-            // 注意：这里先记录，防止并发请求。如果生成失败，catch里再删掉。
-            promptHistory.set(promptHash, now);
-        }
-
-        processingTags.add(uniqueKey);
-        
-        // 生成逻辑
+        // --- 开始异步生成 ---
         (async () => {
             let timer;
             let seconds = 0;
             try {
-                let originalPrompt = '';
-                let originalVideoParams = '';
-                let originalLightIntensity = '';
-                let finalPrompt = '';
-
+                let finalPrompt = rawPrompt;
+                
+                // 处理参数 (Video / Image)
                 if (mediaType === 'video') {
-                    originalVideoParams = typeof match?.[1] === 'string' ? match[1] : '';
-                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                    if (originalVideoParams && originalVideoParams.trim()) {
-                        const params = originalVideoParams.split(',');
+                    if (rawExtraParams && rawExtraParams.trim()) {
+                        const params = rawExtraParams.split(',');
                         if (params.length === 3) {
                             const [frameCount, width, height] = params;
-                            finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}` + originalPrompt;
-                        } else {
-                            finalPrompt = originalPrompt;
+                            finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}` + rawPrompt;
                         }
-                    } else {
-                        finalPrompt = originalPrompt;
                     }
                 } else {
-                    originalLightIntensity = typeof match?.[1] === 'string' ? match[1] : '';
-                    originalPrompt = typeof match?.[2] === 'string' ? match[2] : '';
-                    let lightIntensity = 0;
-                    let sunshineIntensity = 0;
-                    if (originalLightIntensity && originalLightIntensity.trim()) {
-                        const intensityArr = originalLightIntensity.split(',').map(item => item.trim());
+                    // Image params
+                    if (rawExtraParams && rawExtraParams.trim()) {
+                        const intensityArr = rawExtraParams.split(',').map(item => item.trim());
                         if (intensityArr.length === 2) {
-                            const parsedLight = parseFloat(intensityArr[0]);
-                            const parsedSunshine = parseFloat(intensityArr[1]);
-                            if (!isNaN(parsedLight)) lightIntensity = Math.round(parsedLight * 100) / 100;
-                            if (!isNaN(parsedSunshine)) sunshineIntensity = Math.round(parsedSunshine * 100) / 100;
-                            finalPrompt = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}` + originalPrompt;
-                        } else {
-                            finalPrompt = originalPrompt;
+                            const lightIntensity = Math.round(parseFloat(intensityArr[0]) * 100) / 100 || 0;
+                            const sunshineIntensity = Math.round(parseFloat(intensityArr[1]) * 100) / 100 || 0;
+                            finalPrompt = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}` + rawPrompt;
                         }
-                    } else {
-                        finalPrompt = originalPrompt;
                     }
-                }
-                
-                if (!finalPrompt.trim()) {
-                    processingTags.delete(uniqueKey);
-                    // Prompt无效，解除Hash锁
-                    if(promptHash) promptHistory.delete(promptHash);
-                    return;
                 }
 
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
-                const baseText = `生成 ${mediaTypeText} (${originalPrompt.substring(0, 10)}...)...`; 
+                const baseText = `生成 ${mediaTypeText} (${rawPrompt.substring(0, 10)}...)...`;
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
-                
+
                 timer = setInterval(() => {
                     seconds++;
                     const $toastElement = $(`.toast-message:contains("${baseText}")`).closest('.toast');
@@ -295,48 +281,64 @@ async function processMessageContent(isFinal = false) {
                     else clearInterval(timer);
                 }, 1000);
 
+                // 调用 ST 的 /sd 命令
                 const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
-                
-                if (typeof result === 'string' && result.trim().length > 0) {
-                    const style = extension_settings[extensionName].style || '';
-                    const escapedUrl = escapeHtmlAttribute(result);
-                    const escapedOriginalPrompt = originalPrompt;
-                    
-                    let mediaTag;
-                    if (mediaType === 'video') {
-                        const escapedVideoParams = originalVideoParams ? escapeHtmlAttribute(originalVideoParams) : '';
-                        mediaTag = `<video src="${escapedUrl}" ${originalVideoParams ? `videoParams="${escapedVideoParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
-                    } else {
-                        const escapedLightIntensity = originalLightIntensity ? escapeHtmlAttribute(originalLightIntensity) : '0';
-                        mediaTag = `<img src="${escapedUrl}" ${originalLightIntensity ? `light_intensity="${escapedLightIntensity}"` : 'light_intensity="0"'} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />` ;
-                    }
-                    
-                    generatedCache.set(uniqueKey, mediaTag);
-
-                    const currentContext = getContext();
-                    const currentMsg = currentContext.chat[messageIndex];
-
-                    if (currentMsg.mes.includes(uniqueKey)) {
-                        currentMsg.mes = currentMsg.mes.replace(uniqueKey, mediaTag);
-                        updateMessageBlock(messageIndex, currentMsg);
-                        await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
-                        if (isFinal) await currentContext.saveChat();
-                    }
-                }
 
                 clearInterval(timer);
                 toastr.clear(toast);
-                toastr.success(`成功生成 ${mediaTypeText}, 耗时 ${seconds}s`);
+
+                if (typeof result === 'string' && result.trim().length > 0) {
+                    toastr.success(`成功生成 ${mediaTypeText}, 耗时 ${seconds}s`);
+                    
+                    const style = extension_settings[extensionName].style || '';
+                    const escapedUrl = escapeHtmlAttribute(result);
+                    const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
+                    const escapedParams = escapeHtmlAttribute(rawExtraParams);
+
+                    let mediaTag;
+                    if (mediaType === 'video') {
+                        mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
+                    } else {
+                        const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
+                        mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
+                    }
+
+                    // 写入缓存
+                    generatedCache.set(promptHash, mediaTag);
+
+                    // 主动触发一次更新，确保图片立刻显示
+                    // 通过重新调用 processMessageContent，利用上方的缓存回填逻辑来更新 DOM
+                    await processMessageContent(isFinal);
+                    
+                    // 通知 ST 消息已更新 (解决显示滞后)
+                    await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+                    if (isFinal) {
+                        const finalContext = getContext();
+                        await finalContext.saveChat();
+                    }
+                } else {
+                    // 返回空字符串视为失败
+                     throw new Error("Empty result from SD");
+                }
 
             } catch (error) {
-                clearInterval(timer);
+                console.error(`[${extensionName}] Generation failed:`, error);
+                if (timer) clearInterval(timer);
                 toastr.error(`Media generation error: ${error}`);
-                // 生成失败，解除Hash锁，允许重试
-                if (promptHash) promptHistory.delete(promptHash);
+                
+                // 失败回滚：删除 History 记录，允许用户稍后重试（或修改 prompt 后重试）
+                promptHistory.delete(promptHash);
             } finally {
-                processingTags.delete(uniqueKey);
+                // 无论成功失败，一定要释放内存锁
+                processingHashes.delete(promptHash);
             }
         })();
+    }
+
+    // 如果我们在这一轮同步循环中修改了文本（回填了缓存），更新 DOM
+    if (contentModified) {
+        message.mes = currentMessageText;
+        updateMessageBlock(messageIndex, message);
     }
 }
 
@@ -349,10 +351,7 @@ const triggerFinalCheck = () => {
         
         const pluginStreamSetting = extension_settings[extensionName]?.streamGeneration;
         if (pluginStreamSetting && !realStreamingDetected) {
-            const context = getContext();
-            if (context.chat && context.chat.length > 0) {
-                 // console.warn("【Media Auto Gen】检测到开启了插件流式生成，但ST实际未流式传输。");
-            }
+             // console.warn("Stream setting mismatch (Plugin ON, ST OFF)");
         } else if (!pluginStreamSetting && realStreamingDetected) {
             alert("【Media Auto Gen 警告】\n检测到SillyTavern正在流式传输，但本插件「流式生成」未开启。\n建议开启插件的 Stream Generation 以获得最佳体验。");
         }
@@ -361,27 +360,23 @@ const triggerFinalCheck = () => {
 
 // 1. 生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
-    // console.log(`[${extensionName}] GENERATION_STARTED`);
     realStreamingDetected = false;
-    
-    // 【修改】：这里不做任何清空操作，完全依赖时间戳自动过期
-    // 即使是新的一轮对话，如果Prompt和3分钟前的一模一样，也应该被视为重复
-    // 除非用户手动去清理缓存，或者等待3分钟
 
+    // 清空内存锁，防止上一轮意外卡死的任务阻塞这一轮
+    processingHashes.clear();
+    
+    // 【重要】不要清空 generatedCache，以便在“重新生成”时复用图片
+    // 只有当 index 变化时才考虑重置上下文，但在这里我们依赖 Hash 即使换了 index 也能复用
+    
     if (!extension_settings[extensionName]?.streamGeneration) return;
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
-    const newIndex = context.chat.length - 1;
-
-    if (newIndex !== currentProcessingIndex) {
-        processingTags.clear();
-        generatedCache.clear();
-        currentProcessingIndex = newIndex;
-    }
-
+    
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
+    
+    // 启动轮询，实时检测流式输出中的标签
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
         processMessageContent(false);
@@ -390,6 +385,7 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 
 eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
     realStreamingDetected = true;
+    // 可以在这里增加高频检测，但为了性能通常保留 interval 或仅在这里做标记
 });
 
 // 2. 生成结束
@@ -397,7 +393,7 @@ const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
     
-    // 【关键】：只清理过期的 Hash，保留近期的
+    // 清理过期数据
     pruneOldPrompts();
     
     triggerFinalCheck();
@@ -406,20 +402,9 @@ const onGenerationFinished = async () => {
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 3. 消息接收
+// 3. 消息接收 (用于非流式或加载聊天记录时)
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
-    const context = getContext();
-    if (!context.chat || context.chat.length === 0) return;
-    const newIndex = context.chat.length - 1;
-    
-    if (newIndex !== currentProcessingIndex) {
-        processingTags.clear();
-        generatedCache.clear();
-        currentProcessingIndex = newIndex;
-    }
-    
-    // 【关键】：只清理过期的 Hash
+    // 清理过期数据
     pruneOldPrompts();
-
     await processMessageContent(true);
 });
