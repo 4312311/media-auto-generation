@@ -1,4 +1,4 @@
-// 媒体自动生成插件主脚本 - 死锁修复版
+// 媒体自动生成插件主脚本 - Hash锁 + 时间戳延时清理版
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
@@ -16,14 +16,50 @@ const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 let isStreamActive = false;
 let streamInterval = null;
 const processingTags = new Set();
-// 缓存：HTML代码
 const generatedCache = new Map(); 
-// 历史：本轮对话已处理过的Prompt (死锁用)
-const currentSessionPrompts = new Set();
+
+// 【核心修改】：Prompt 历史记录 Map
+// Key: Prompt的Hash值
+// Value: 上次生成的时间戳 (Date.now())
+const promptHistory = new Map();
+
+// 冷却时间设置：3分钟 (180000毫秒)
+// 在这段时间内，相同的 Prompt 即使被正则再次扫到，也不会重复生成
+const PROMPT_COOLDOWN_MS = 180000;
 
 let currentProcessingIndex = -1;
 let realStreamingDetected = false;
 let finalCheckTimer = null;
+
+/**
+ * 简单的字符串 Hash 函数 (DJB2 算法)
+ * 用于将长 Prompt 转换为短字符串作为 Key
+ */
+function simpleHash(str) {
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+        hash = (hash * 33) ^ str.charCodeAt(i);
+    }
+    return (hash >>> 0).toString(16); // 转为无符号 hex 字符串
+}
+
+/**
+ * 清理过期的 Prompt 历史
+ * 只删除 3 分钟以前的记录，保留近期的记录以防止流式回滚导致的重复
+ */
+function pruneOldPrompts() {
+    const now = Date.now();
+    let deletedCount = 0;
+    for (const [hash, timestamp] of promptHistory.entries()) {
+        if (now - timestamp > PROMPT_COOLDOWN_MS) {
+            promptHistory.delete(hash);
+            deletedCount++;
+        }
+    }
+    if (deletedCount > 0) {
+        console.log(`[${extensionName}] 清理了 ${deletedCount} 个过期的 Prompt 记录`);
+    }
+}
 
 function escapeHtmlAttribute(value) {
     if (typeof value !== 'string') return '';
@@ -143,7 +179,7 @@ async function processMessageContent(isFinal = false) {
 
     for (const match of matches) {
         const originalTag = match[0];
-        // 1. 绝对防御：如果已有 src=，跳过
+        // 1. 基础防御：如果已有 src=，跳过
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
         
         const uniqueKey = originalTag.trim();
@@ -151,9 +187,8 @@ async function processMessageContent(isFinal = false) {
         // 2. 缓存回填 (优先尝试恢复图片)
         if (generatedCache.has(uniqueKey)) {
             const cachedMediaTag = generatedCache.get(uniqueKey);
-            // 双重检查：只有当文本里确实还是原始标签时才替换
             if (message.mes.includes(uniqueKey)) {
-                console.log(`[${extensionName}] [DEBUG] 缓存命中，恢复显示: ${uniqueKey.substring(0, 15)}...`);
+                // console.log(`[${extensionName}] [DEBUG] 缓存命中，恢复显示`);
                 message.mes = message.mes.replace(uniqueKey, cachedMediaTag);
                 updateMessageBlock(messageIndex, message);
                 if (isFinal) await context.saveChat();
@@ -164,22 +199,34 @@ async function processMessageContent(isFinal = false) {
         // 3. 并发保护
         if (processingTags.has(uniqueKey)) continue;
 
-        // 4. 【死锁检查】 Prompt 幂等性
-        // 只要这个 Prompt 在本轮对话中出现过，无论现在文本变成了什么样，都禁止再次生成
+        // 4. 【核心逻辑】Prompt Hash + 时间戳锁
+        // 即使文本回滚，只要 Prompt Hash 在冷却时间内，就视为“已生成”
+        
+        // 提取 Prompt (兼容不同正则组)
         let extractedPrompt = (match[2] || "").trim();
         if (!extractedPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
              extractedPrompt = match[1].trim();
         }
         
+        let promptHash = null;
+
         if (extractedPrompt) {
-            if (currentSessionPrompts.has(extractedPrompt)) {
-                // 如果在历史里，但没命中上面的缓存(generatedCache)，说明可能出了怪事(如格式微变)
-                // 但为了不重复生图，这里必须直接 abort
-                console.log(`[${extensionName}] [死锁拦截] 阻止重复生成: ${extractedPrompt.substring(0, 10)}...`);
-                continue; 
+            promptHash = simpleHash(extractedPrompt);
+            const now = Date.now();
+            
+            // 检查历史记录
+            if (promptHistory.has(promptHash)) {
+                const lastGenTime = promptHistory.get(promptHash);
+                // 如果距离上次生成还没过冷却时间 (3分钟)
+                if (now - lastGenTime < PROMPT_COOLDOWN_MS) {
+                    console.log(`[${extensionName}] [冷却中] Prompt已在3分钟内生成过，跳过: ${extractedPrompt.substring(0, 10)}... (Hash: ${promptHash})`);
+                    continue; // 跳过，不生成！
+                }
             }
-            // 加入历史记录
-            currentSessionPrompts.add(extractedPrompt);
+            
+            // 如果通过了检查，记录当前时间 (相当于加锁)
+            // 注意：这里先记录，防止并发请求。如果生成失败，catch里再删掉。
+            promptHistory.set(promptHash, now);
         }
 
         processingTags.add(uniqueKey);
@@ -231,7 +278,8 @@ async function processMessageContent(isFinal = false) {
                 
                 if (!finalPrompt.trim()) {
                     processingTags.delete(uniqueKey);
-                    if(extractedPrompt) currentSessionPrompts.delete(extractedPrompt);
+                    // Prompt无效，解除Hash锁
+                    if(promptHash) promptHistory.delete(promptHash);
                     return;
                 }
 
@@ -283,7 +331,8 @@ async function processMessageContent(isFinal = false) {
             } catch (error) {
                 clearInterval(timer);
                 toastr.error(`Media generation error: ${error}`);
-                if (finalPrompt && extractedPrompt) currentSessionPrompts.delete(extractedPrompt);
+                // 生成失败，解除Hash锁，允许重试
+                if (promptHash) promptHistory.delete(promptHash);
             } finally {
                 processingTags.delete(uniqueKey);
             }
@@ -298,13 +347,11 @@ const triggerFinalCheck = () => {
     finalCheckTimer = setTimeout(() => {
         processMessageContent(true);
         
-        // 报警逻辑
         const pluginStreamSetting = extension_settings[extensionName]?.streamGeneration;
         if (pluginStreamSetting && !realStreamingDetected) {
             const context = getContext();
             if (context.chat && context.chat.length > 0) {
-                 // 限制报警频率，避免烦人
-                 console.warn("【Media Auto Gen】检测到开启了插件流式生成，但ST实际未流式传输。");
+                 // console.warn("【Media Auto Gen】检测到开启了插件流式生成，但ST实际未流式传输。");
             }
         } else if (!pluginStreamSetting && realStreamingDetected) {
             alert("【Media Auto Gen 警告】\n检测到SillyTavern正在流式传输，但本插件「流式生成」未开启。\n建议开启插件的 Stream Generation 以获得最佳体验。");
@@ -312,11 +359,14 @@ const triggerFinalCheck = () => {
     }, 300);
 };
 
-// 1. 生成开始：这是唯一允许清空 Prompt 历史的地方！
+// 1. 生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
-    console.log(`[${extensionName}] GENERATION_STARTED - 清空 Prompt 锁`);
+    // console.log(`[${extensionName}] GENERATION_STARTED`);
     realStreamingDetected = false;
-    currentSessionPrompts.clear(); // <--- 只有这里清空！
+    
+    // 【修改】：这里不做任何清空操作，完全依赖时间戳自动过期
+    // 即使是新的一轮对话，如果Prompt和3分钟前的一模一样，也应该被视为重复
+    // 除非用户手动去清理缓存，或者等待3分钟
 
     if (!extension_settings[extensionName]?.streamGeneration) return;
 
@@ -346,6 +396,10 @@ eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
+    
+    // 【关键】：只清理过期的 Hash，保留近期的
+    pruneOldPrompts();
+    
     triggerFinalCheck();
 };
 
@@ -358,13 +412,14 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     if (!context.chat || context.chat.length === 0) return;
     const newIndex = context.chat.length - 1;
     
-    // 如果索引变了，说明换了条消息，清理缓存
     if (newIndex !== currentProcessingIndex) {
         processingTags.clear();
         generatedCache.clear();
-        // currentSessionPrompts.clear(); // 【绝对禁止】在这里清空！这是bug的根源
         currentProcessingIndex = newIndex;
     }
+    
+    // 【关键】：只清理过期的 Hash
+    pruneOldPrompts();
 
     await processMessageContent(true);
 });
