@@ -1,4 +1,4 @@
-// 媒体自动生成插件主脚本 - 修复版
+// 媒体自动生成插件主脚本 - 死锁修复版
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
     saveSettingsDebounced,
@@ -9,7 +9,6 @@ import {
 import { regexFromString } from '../../../utils.js';
 import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
 
-// 扩展名称和路径
 const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
@@ -17,9 +16,12 @@ const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 let isStreamActive = false;
 let streamInterval = null;
 const processingTags = new Set();
+// 缓存：HTML代码
 const generatedCache = new Map(); 
-let currentProcessingIndex = -1;
+// 历史：本轮对话已处理过的Prompt (死锁用)
 const currentSessionPrompts = new Set();
+
+let currentProcessingIndex = -1;
 let realStreamingDetected = false;
 let finalCheckTimer = null;
 
@@ -114,10 +116,8 @@ $(function () {
 
 /**
  * 核心处理逻辑
- * @param {boolean} isFinal - 是否是最终检查
- * @param {boolean} onlyFromCache - 【关键参数】如果为 true，只执行缓存替换，绝对不发起新生成
  */
-async function processMessageContent(isFinal = false, onlyFromCache = false) {
+async function processMessageContent(isFinal = false) {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
 
     const context = getContext();
@@ -143,17 +143,17 @@ async function processMessageContent(isFinal = false, onlyFromCache = false) {
 
     for (const match of matches) {
         const originalTag = match[0];
-        
-        // 绝对防御：如果已有 src=，跳过
+        // 1. 绝对防御：如果已有 src=，跳过
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
         
         const uniqueKey = originalTag.trim();
 
-        // 1. 缓存回填 (最优先)
+        // 2. 缓存回填 (优先尝试恢复图片)
         if (generatedCache.has(uniqueKey)) {
             const cachedMediaTag = generatedCache.get(uniqueKey);
+            // 双重检查：只有当文本里确实还是原始标签时才替换
             if (message.mes.includes(uniqueKey)) {
-                console.log(`[${extensionName}] [DEBUG] 缓存命中，恢复图片: ${uniqueKey.substring(0, 15)}...`);
+                console.log(`[${extensionName}] [DEBUG] 缓存命中，恢复显示: ${uniqueKey.substring(0, 15)}...`);
                 message.mes = message.mes.replace(uniqueKey, cachedMediaTag);
                 updateMessageBlock(messageIndex, message);
                 if (isFinal) await context.saveChat();
@@ -161,17 +161,11 @@ async function processMessageContent(isFinal = false, onlyFromCache = false) {
             continue;
         }
 
-        // 2. 如果开启了【仅缓存模式】，在此处拦截，不进行后续生成
-        // 这是解决 message_received 重复生成的关键
-        if (onlyFromCache) {
-            console.log(`[${extensionName}] [DEBUG] 仅缓存模式跳过新生成: ${uniqueKey.substring(0, 15)}...`);
-            continue;
-        }
-
         // 3. 并发保护
         if (processingTags.has(uniqueKey)) continue;
 
-        // 4. Prompt 幂等性检查
+        // 4. 【死锁检查】 Prompt 幂等性
+        // 只要这个 Prompt 在本轮对话中出现过，无论现在文本变成了什么样，都禁止再次生成
         let extractedPrompt = (match[2] || "").trim();
         if (!extractedPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
              extractedPrompt = match[1].trim();
@@ -179,9 +173,12 @@ async function processMessageContent(isFinal = false, onlyFromCache = false) {
         
         if (extractedPrompt) {
             if (currentSessionPrompts.has(extractedPrompt)) {
-                console.log(`[${extensionName}] [拦截] 重复 Prompt: ${extractedPrompt.substring(0, 10)}...`);
-                continue;
+                // 如果在历史里，但没命中上面的缓存(generatedCache)，说明可能出了怪事(如格式微变)
+                // 但为了不重复生图，这里必须直接 abort
+                console.log(`[${extensionName}] [死锁拦截] 阻止重复生成: ${extractedPrompt.substring(0, 10)}...`);
+                continue; 
             }
+            // 加入历史记录
             currentSessionPrompts.add(extractedPrompt);
         }
 
@@ -299,15 +296,15 @@ async function processMessageContent(isFinal = false, onlyFromCache = false) {
 const triggerFinalCheck = () => {
     if (finalCheckTimer) clearTimeout(finalCheckTimer);
     finalCheckTimer = setTimeout(() => {
-        // GENERATION_ENDED 触发的检查：isFinal=true, onlyFromCache=false (允许补漏生成)
-        processMessageContent(true, false);
+        processMessageContent(true);
         
         // 报警逻辑
         const pluginStreamSetting = extension_settings[extensionName]?.streamGeneration;
         if (pluginStreamSetting && !realStreamingDetected) {
             const context = getContext();
             if (context.chat && context.chat.length > 0) {
-                 alert("【Media Auto Gen 警告】\n检测到您开启了插件的「流式生成」，但SillyTavern实际未进行流式传输。\n请在SillyTavern设置中开启Stream，或关闭本插件的流式选项。");
+                 // 限制报警频率，避免烦人
+                 console.warn("【Media Auto Gen】检测到开启了插件流式生成，但ST实际未流式传输。");
             }
         } else if (!pluginStreamSetting && realStreamingDetected) {
             alert("【Media Auto Gen 警告】\n检测到SillyTavern正在流式传输，但本插件「流式生成」未开启。\n建议开启插件的 Stream Generation 以获得最佳体验。");
@@ -315,9 +312,11 @@ const triggerFinalCheck = () => {
     }, 300);
 };
 
+// 1. 生成开始：这是唯一允许清空 Prompt 历史的地方！
 eventSource.on(event_types.GENERATION_STARTED, () => {
+    console.log(`[${extensionName}] GENERATION_STARTED - 清空 Prompt 锁`);
     realStreamingDetected = false;
-    currentSessionPrompts.clear(); // 新生成开始，清空 Prompt 历史
+    currentSessionPrompts.clear(); // <--- 只有这里清空！
 
     if (!extension_settings[extensionName]?.streamGeneration) return;
 
@@ -335,8 +334,7 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
     if (streamInterval) clearInterval(streamInterval);
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
-        // 流式过程中：isFinal=false, onlyFromCache=false (允许生成)
-        processMessageContent(false, false);
+        processMessageContent(false);
     }, 2000);
 });
 
@@ -344,7 +342,7 @@ eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
     realStreamingDetected = true;
 });
 
-// 生成结束：通过防抖触发 Active Check
+// 2. 生成结束
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
@@ -354,26 +352,19 @@ const onGenerationFinished = async () => {
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 消息接收：【关键修改】
+// 3. 消息接收
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
     const newIndex = context.chat.length - 1;
     
-    // 如果索引变了，说明是新消息，清理环境
+    // 如果索引变了，说明换了条消息，清理缓存
     if (newIndex !== currentProcessingIndex) {
         processingTags.clear();
         generatedCache.clear();
-        currentSessionPrompts.clear();
+        // currentSessionPrompts.clear(); // 【绝对禁止】在这里清空！这是bug的根源
         currentProcessingIndex = newIndex;
     }
 
-    // 判断是否处于流式模式（根据设置）
-    const isStreamingMode = extension_settings[extensionName]?.streamGeneration;
-
-    // 如果开启了流式模式，MESSAGE_RECEIVED 强制开启【仅缓存模式】
-    // 也就是：processMessageContent(true, true);
-    // 这样它只能恢复图片，绝对不会发起生成，解决了你的重复生成问题
-    // 如果没开流式模式，则保持默认行为 (false)，允许生成
-    await processMessageContent(true, isStreamingMode);
+    await processMessageContent(true);
 });
