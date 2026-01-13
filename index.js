@@ -1,5 +1,5 @@
-// 媒体自动生成插件主脚本 - 最终并发修复版
-// 修复了流式传输结束后，后台仍在生成的图片无法上屏的问题
+// 媒体自动生成插件主脚本 - 最终完善版
+// 修复并发显示 + 优化进度提示逻辑（移除误导性的总数显示）
 
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
@@ -186,7 +186,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     
     let replacementStats = { image: 0, video: 0 };
 
-    for (const match of matches) {
+    // 使用 entries() 获取当前是第几个匹配项 (index)
+    for (const [index, match] of matches.entries()) {
         const originalTag = match[0];
         // 跳过已经是成品的标签
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
@@ -256,10 +257,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     }
                 }
 
-                const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
+                const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
                 
-                const baseText = `⏳ 生成 ${mediaTypeText} (${rawPrompt.substring(0, 10)}...)...`;
+                // 【修改点】：只显示当前是第几张 (基于文本顺序)，不显示未知总数
+                const baseText = `⏳ 生成第 ${index + 1} 张${mediaTypeText}...`;
                 toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
 
                 timer = setInterval(() => {
@@ -291,11 +293,10 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
                     generatedCache.set(promptHash, mediaTag);
 
-                    // 【关键修复 1】：成功后立即从队列移除，确保后续的 update 逻辑能立刻查到这是“已完成”状态
+                    // 成功后立即解锁
                     processingHashes.delete(promptHash);
 
-                    // 【关键修复 2】：如果是非流式，或者 队列已经空了（所有并发图片都好了），强制更新
-                    // 这保证了即使流式已经结束，迟到的图片也能触发界面刷新
+                    // 兜底更新：非流式 或 队列清空时强制更新
                     if (!isStreamActive || processingHashes.size === 0) {
                         requestDebouncedUpdate(true); 
                     }
@@ -309,11 +310,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 if (toast) toastr.clear(toast);
                 toastr.error(`Media generation error: ${error}`);
                 
-                // 出错也要清理状态
+                // 出错清理
                 promptHistory.delete(promptHash);
                 processingHashes.delete(promptHash);
             } finally {
-                // 安全兜底
+                // 兜底清理
                 if (processingHashes.has(promptHash)) {
                     processingHashes.delete(promptHash);
                 }
@@ -347,7 +348,6 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 // --- 事件监听 ---
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
-    // 每次新生成开始，清空锁，防止上一轮残留
     processingHashes.clear();
     
     if (!extension_settings[extensionName]?.streamGeneration) return;
