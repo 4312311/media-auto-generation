@@ -1,4 +1,4 @@
-// 媒体自动生成插件主脚本 - 终极修复版 (静默预生成+统一替换+成功统计)
+// 媒体自动生成插件主脚本 - 并发修复版 (防抖队列+原子化更新)
 
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
@@ -17,19 +17,15 @@ const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
 let isStreamActive = false;
 let streamInterval = null;
-let realStreamingDetected = false;
-let finalCheckTimer = null;
+let updateDebounceTimer = null; // 【新增】更新请求的防抖定时器
 
 // 1. 生成结果缓存
-// Key: Prompt Hash, Value: 完整的HTML标签 (<img src="..." ...>)
 const generatedCache = new Map();
 
 // 2. 历史记录 (冷却锁)
-// Key: Prompt Hash, Value: 上次生成的时间戳
 const promptHistory = new Map();
 
-// 3. 并发处理锁 (内存锁)
-// Key: Prompt Hash. 存在于此集合中表示正在生成中
+// 3. 并发处理锁 (生成锁)
 const processingHashes = new Set();
 
 // 冷却时间设置：3分钟
@@ -44,9 +40,6 @@ const defaultSettings = {
     streamGeneration: false,
 };
 
-/**
- * 简单的字符串 Hash 函数 (DJB2 算法)
- */
 function simpleHash(str) {
     let hash = 5381;
     for (let i = 0; i < str.length; i++) {
@@ -55,17 +48,11 @@ function simpleHash(str) {
     return (hash >>> 0).toString(16);
 }
 
-/**
- * 标准化 Prompt
- */
 function normalizePrompt(str) {
     if (!str) return "";
     return str.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-/**
- * 清理过期的 Prompt 历史
- */
 function pruneOldPrompts() {
     const now = Date.now();
     for (const [hash, timestamp] of promptHistory.entries()) {
@@ -81,7 +68,7 @@ function escapeHtmlAttribute(value) {
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// --- 设置与UI逻辑 (保持不变) ---
+// --- 设置与UI逻辑 ---
 
 function updateUI() {
     if ($('#mediaType').length) {
@@ -159,12 +146,23 @@ $(function () {
     })();
 });
 
-// --- 核心处理逻辑 (静默预生成 + 统一替换) ---
+// --- 核心处理逻辑 ---
+
+/**
+ * 请求一次防抖更新
+ * 当多张图片几乎同时生成完毕时，这会合并更新操作，防止并发写入导致部分图片丢失
+ */
+function requestDebouncedUpdate(isFinal = false) {
+    if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
+    updateDebounceTimer = setTimeout(() => {
+        processMessageContent(isFinal, false); // 执行真正的替换
+    }, 200); // 200ms 的缓冲期
+}
 
 /**
  * 处理消息内容
- * @param {boolean} isFinal 是否是最终检查（生成结束）
- * @param {boolean} onlyTrigger 如果为 true，只触发后台生成，不执行文本替换（用于流式防抖）
+ * @param {boolean} isFinal 是否是最终检查
+ * @param {boolean} onlyTrigger true=只触发生成不修改界面; false=允许修改界面
  */
 async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
@@ -186,14 +184,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     let contentModified = false;
     let currentMessageText = message.mes;
     
-    // 统计本次替换数量
     let replacementStats = { image: 0, video: 0 };
 
     for (const match of matches) {
         const originalTag = match[0];
+        // 跳过已经是成品的标签
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
 
-        // 提取 Prompt
         let rawPrompt = (match[2] || "").trim();
         let rawExtraParams = match[1] || "";
 
@@ -206,11 +203,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
         const promptHash = simpleHash(normalizePrompt(rawPrompt));
 
-        // 【逻辑 A：缓存回填】
-        // 如果 onlyTrigger 为 true (流式传输中)，我们跳过替换，防止闪烁
-        // 只有当 onlyTrigger 为 false (结束时或手动触发) 才执行替换
+        // --- 逻辑 A：替换已完成的图片 ---
         if (!onlyTrigger && generatedCache.has(promptHash)) {
             const cachedMediaTag = generatedCache.get(promptHash);
+            
+            // 执行文本替换
             currentMessageText = currentMessageText.replace(originalTag, cachedMediaTag);
             contentModified = true;
             
@@ -221,7 +218,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             continue; 
         }
 
-        // 【逻辑 B：并发与冷却控制】
+        // --- 逻辑 B：触发新生成 ---
         if (processingHashes.has(promptHash)) continue;
 
         const now = Date.now();
@@ -230,18 +227,15 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             if (now - lastGenTime < PROMPT_COOLDOWN_MS) continue;
         }
 
-        // 锁定
         processingHashes.add(promptHash);
         promptHistory.set(promptHash, now);
 
-        // --- 开始异步生成 (后台任务) ---
+        // 异步生成任务
         (async () => {
             let timer;
             let seconds = 0;
             try {
                 let finalPrompt = rawPrompt;
-                
-                // 参数处理
                 if (mediaType === 'video') {
                     if (rawExtraParams && rawExtraParams.trim()) {
                         const params = rawExtraParams.split(',');
@@ -264,7 +258,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
                 
-                // 【Loading 占位符 - 倒计时通知】
+                // Loading 占位符 (Toast)
                 const baseText = `⏳ 生成 ${mediaTypeText} (${rawPrompt.substring(0, 10)}...)...`;
                 let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
 
@@ -275,7 +269,6 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     else clearInterval(timer);
                 }, 1000);
 
-                // 调用 SD
                 const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
 
                 clearInterval(timer);
@@ -295,20 +288,14 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                         mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
                     }
 
-                    // 写入缓存
                     generatedCache.set(promptHash, mediaTag);
 
-                    // 【核心逻辑：迟到的图片更新】
-                    // 如果流式传输已经结束 (isStreamActive === false)，
-                    // 说明图片生成比文字慢，现在需要主动刷新界面把图片贴上去。
-                    // 传入 onlyTrigger=false 允许替换。
+                    // 【核心修复】：图片生成好了，如果不处于流式传输中，申请一次防抖更新
+                    // 这样即使 7 张图同时完成，也只会触发一次最终的 DOM 更新
                     if (!isStreamActive) {
-                        await processMessageContent(true, false); 
-                        await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
-                        if (isFinal) {
-                            const finalContext = getContext();
-                            await finalContext.saveChat();
-                        }
+                        requestDebouncedUpdate(true); 
+                        // 通知保存是在 update 逻辑里做的，但为了保险，可以在 requestDebouncedUpdate 之后触发 save
+                        // 但由于 requestDebouncedUpdate 是异步的，这里只要确保界面更新即可
                     }
                 } else {
                      throw new Error("Empty result from SD");
@@ -325,14 +312,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         })();
     }
 
-    // 【DOM 更新】
-    // 只有在非 onlyTrigger 模式下（即流式结束或手动更新时），且内容确实发生变化才更新
+    // --- 提交更新 ---
     if (!onlyTrigger && contentModified) {
         message.mes = currentMessageText;
+        // 同步更新 UI，确保本次操作是原子的（在 JS 单线程模型下）
         updateMessageBlock(messageIndex, message);
 
-        // 【成功提示】
-        // 汇总本次替换的数量和类型
+        // 成功提示
         let successMsgParts = [];
         if (replacementStats.image > 0) successMsgParts.push(`${replacementStats.image} 张图片`);
         if (replacementStats.video > 0) successMsgParts.push(`${replacementStats.video} 个视频`);
@@ -340,22 +326,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         if (successMsgParts.length > 0) {
             toastr.success(`替换完成: ${successMsgParts.join(', ')}`);
         }
+        
+        // 触发保存
+        await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+        if (isFinal) {
+            const finalContext = getContext();
+            await finalContext.saveChat();
+        }
     }
 }
 
 // --- 事件监听 ---
 
-const triggerFinalCheck = () => {
-    if (finalCheckTimer) clearTimeout(finalCheckTimer);
-    finalCheckTimer = setTimeout(() => {
-        // 最终检查：流式结束，传入 onlyTrigger=false，允许替换所有已生成的图片
-        processMessageContent(true, false);
-    }, 300);
-};
-
-// 1. 生成开始
 eventSource.on(event_types.GENERATION_STARTED, () => {
-    realStreamingDetected = false;
     processingHashes.clear();
     
     if (!extension_settings[extensionName]?.streamGeneration) return;
@@ -366,35 +349,31 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
     
-    // 启动高频轮询
+    // 流式期间只触发生成 (onlyTrigger=true)，不修改界面，不闪烁
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
-        
-        // 【核心修改】：传入 onlyTrigger=true
-        // 意思是：快去后台生成图片，但不要动界面！保持静默！
         processMessageContent(false, true); 
-    }, 500); // 频率提高到 0.5秒，因为不会闪烁了，越快越好
+    }, 500);
 });
 
 eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
-    realStreamingDetected = true;
+    // 可以在这里加逻辑，目前由 setInterval 处理已足够
 });
 
-// 2. 生成结束
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
     
     pruneOldPrompts();
-    triggerFinalCheck(); // 这里会触发一次最终的统一替换
+    // 流式结束，申请一次更新（处理那些比文字生成快的图片）
+    requestDebouncedUpdate(true);
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 3. 消息接收 (非流式/加载时)
+// 非流式/加载时，直接允许替换
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     pruneOldPrompts();
-    // 非流式直接允许替换
     await processMessageContent(true, false);
 });
