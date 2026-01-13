@@ -1,4 +1,5 @@
-// 媒体自动生成插件主脚本 - 并发修复版 (防抖队列+原子化更新)
+// 媒体自动生成插件主脚本 - 最终并发修复版
+// 修复了流式传输结束后，后台仍在生成的图片无法上屏的问题
 
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
@@ -17,9 +18,9 @@ const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
 let isStreamActive = false;
 let streamInterval = null;
-let updateDebounceTimer = null; // 【新增】更新请求的防抖定时器
+let updateDebounceTimer = null; 
 
-// 1. 生成结果缓存
+// 1. 生成结果缓存 (Key: Hash -> Value: HTML Tag)
 const generatedCache = new Map();
 
 // 2. 历史记录 (冷却锁)
@@ -150,13 +151,12 @@ $(function () {
 
 /**
  * 请求一次防抖更新
- * 当多张图片几乎同时生成完毕时，这会合并更新操作，防止并发写入导致部分图片丢失
  */
 function requestDebouncedUpdate(isFinal = false) {
     if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
     updateDebounceTimer = setTimeout(() => {
         processMessageContent(isFinal, false); // 执行真正的替换
-    }, 200); // 200ms 的缓冲期
+    }, 200); // 200ms 缓冲
 }
 
 /**
@@ -211,7 +211,6 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             currentMessageText = currentMessageText.replace(originalTag, cachedMediaTag);
             contentModified = true;
             
-            // 统计
             if (cachedMediaTag.includes('<video')) replacementStats.video++;
             else replacementStats.image++;
             
@@ -234,6 +233,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         (async () => {
             let timer;
             let seconds = 0;
+            let toast = null;
+
             try {
                 let finalPrompt = rawPrompt;
                 if (mediaType === 'video') {
@@ -258,21 +259,21 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 const mediaTypeText = mediaType === 'image' ? 'image' : 'video';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
                 
-                // Loading 占位符 (Toast)
                 const baseText = `⏳ 生成 ${mediaTypeText} (${rawPrompt.substring(0, 10)}...)...`;
-                let toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
+                toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
 
                 timer = setInterval(() => {
                     seconds++;
-                    const $toastElement = $(`.toast-message:contains("${baseText}")`).closest('.toast');
-                    if ($toastElement.length) $toastElement.find('.toast-message').text(`${baseText} ${seconds}s`);
-                    else clearInterval(timer);
+                    if (toast && toast.find) {
+                        toast.find('.toast-message').text(`${baseText} ${seconds}s`);
+                    }
                 }, 1000);
 
+                // 调用 SD 接口
                 const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
 
                 clearInterval(timer);
-                toastr.clear(toast);
+                if (toast) toastr.clear(toast);
 
                 if (typeof result === 'string' && result.trim().length > 0) {
                     const style = extension_settings[extensionName].style || '';
@@ -290,12 +291,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
                     generatedCache.set(promptHash, mediaTag);
 
-                    // 【核心修复】：图片生成好了，如果不处于流式传输中，申请一次防抖更新
-                    // 这样即使 7 张图同时完成，也只会触发一次最终的 DOM 更新
-                    if (!isStreamActive) {
+                    // 【关键修复 1】：成功后立即从队列移除，确保后续的 update 逻辑能立刻查到这是“已完成”状态
+                    processingHashes.delete(promptHash);
+
+                    // 【关键修复 2】：如果是非流式，或者 队列已经空了（所有并发图片都好了），强制更新
+                    // 这保证了即使流式已经结束，迟到的图片也能触发界面刷新
+                    if (!isStreamActive || processingHashes.size === 0) {
                         requestDebouncedUpdate(true); 
-                        // 通知保存是在 update 逻辑里做的，但为了保险，可以在 requestDebouncedUpdate 之后触发 save
-                        // 但由于 requestDebouncedUpdate 是异步的，这里只要确保界面更新即可
                     }
                 } else {
                      throw new Error("Empty result from SD");
@@ -304,10 +306,17 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             } catch (error) {
                 console.error(`[${extensionName}] Generation failed:`, error);
                 if (timer) clearInterval(timer);
+                if (toast) toastr.clear(toast);
                 toastr.error(`Media generation error: ${error}`);
+                
+                // 出错也要清理状态
                 promptHistory.delete(promptHash);
-            } finally {
                 processingHashes.delete(promptHash);
+            } finally {
+                // 安全兜底
+                if (processingHashes.has(promptHash)) {
+                    processingHashes.delete(promptHash);
+                }
             }
         })();
     }
@@ -315,7 +324,6 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     // --- 提交更新 ---
     if (!onlyTrigger && contentModified) {
         message.mes = currentMessageText;
-        // 同步更新 UI，确保本次操作是原子的（在 JS 单线程模型下）
         updateMessageBlock(messageIndex, message);
 
         // 成功提示
@@ -339,6 +347,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 // --- 事件监听 ---
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
+    // 每次新生成开始，清空锁，防止上一轮残留
     processingHashes.clear();
     
     if (!extension_settings[extensionName]?.streamGeneration) return;
@@ -349,30 +358,27 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
     
-    // 流式期间只触发生成 (onlyTrigger=true)，不修改界面，不闪烁
+    // 流式期间只触发生成，不修改界面
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
         processMessageContent(false, true); 
     }, 500);
 });
 
-eventSource.on(event_types.STREAM_TOKEN_RECEIVED, () => {
-    // 可以在这里加逻辑，目前由 setInterval 处理已足够
-});
-
+// 流式传输结束的回调
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
     
     pruneOldPrompts();
-    // 流式结束，申请一次更新（处理那些比文字生成快的图片）
+    // 流式结束，申请一次最终更新
     requestDebouncedUpdate(true);
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 非流式/加载时，直接允许替换
+// 非流式/加载时
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     pruneOldPrompts();
     await processMessageContent(true, false);
