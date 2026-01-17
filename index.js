@@ -1,9 +1,11 @@
-// 媒体自动生成插件主脚本 - V4.0 (并发修正版)
-// 特性：
-// 1. 恢复全异步并行触发 (Fire-and-Forget)，解决阻塞问题。
-// 2. 引入 Mutex 互斥锁，仅在设置变量的微秒级瞬间串行，确保 LoRA 强度不冲突。
-// 3. 非流式模式下，消息立即显示，图片在后台生成后动态“上屏”。
-// 4. 恢复每个任务独立的 Toast 倒计时。
+// 媒体自动生成插件主脚本 - V5.0 (终极体验优化版)
+// 核心特性：
+// 1. 严格顺序调度 (Sequential Dispatch)：按文本顺序发送请求，确保后台接收顺序。
+// 2. 异步并行执行 (Async Execution)：发送请求后不等待结果，直接处理下一张，最大化并发。
+// 3. 智能 UI 隔离：
+//    - 流式传输时：完全静默，结束后统一上屏 (解决闪烁)。
+//    - 非流式时：生成一张显示一张 (解决等待焦虑)。
+// 4. 变量安全：通过调度链保证 SetVar 绝对不冲突。
 
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
@@ -25,14 +27,15 @@ let isStreamActive = false;
 let streamInterval = null;
 let updateDebounceTimer = null;
 
-// 1. 缓存与状态锁
-const generatedCache = new Map(); // Hash -> HTML Tag
-const promptHistory = new Map();  // Hash -> Timestamp
-const processingHashes = new Set(); // Hash (正在处理中)
+// 1. 缓存 (Hash -> HTML Tag)
+const generatedCache = new Map();
+// 2. 历史记录 (Hash -> Timestamp)
+const promptHistory = new Map();
+// 3. 正在处理集合 (Hash) - 防止重复提交
+const processingHashes = new Set();
 
-// 2. 关键：变量设置互斥锁 (Promise Chain)
-// 只有拿到这个锁的任务才能执行 setvar，防止并发覆盖
-let variableLock = Promise.resolve();
+// 4. 调度链 (关键)：保证请求按顺序发出
+let dispatchChain = Promise.resolve();
 
 const PROMPT_COOLDOWN_MS = 180000;
 
@@ -75,9 +78,11 @@ function escapeHtmlAttribute(value) {
 }
 
 function extractPromptInfo(match, mediaType) {
+    // 兼容不同的正则捕获组位置
     let rawExtraParams = match[1] || "";
     let rawPrompt = (match[2] || "").trim();
 
+    // 尝试交换捕获组容错
     if (!rawPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
         rawPrompt = match[1].trim();
         rawExtraParams = match[2] || "";
@@ -119,8 +124,7 @@ function buildMediaTag(resultUrl, rawPrompt, rawParams, mediaType) {
     }
 }
 
-// --- 设置逻辑 (UI) ---
-// (这部分保持不变，省略以节省篇幅，与之前版本一致)
+// --- 设置逻辑 (保持简洁) ---
 async function loadSettings() {
     extension_settings[extensionName] = extension_settings[extensionName] || {};
     if (Object.keys(extension_settings[extensionName]).length === 0) Object.assign(extension_settings[extensionName], defaultSettings);
@@ -129,11 +133,18 @@ async function loadSettings() {
 async function createSettings(settingsHtml) {
     if (!$('#media_auto_generation_container').length) $('#extensions_settings2').append('<div id="media_auto_generation_container" class="extension_container"></div>');
     $('#media_auto_generation_container').empty().append(settingsHtml);
-    $('#mediaType').on('change', function () { extension_settings[extensionName].mediaType = $(this).val(); saveSettingsDebounced(); });
-    $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
-    $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
-    $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
-    $('#stream_generation').on('change', function () { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
+    // Bind events
+    const bindSave = (sel, prop) => $(sel).on('input change', function() { 
+        extension_settings[extensionName][prop] = prop === 'streamGeneration' ? $(this).prop('checked') : $(this).val(); 
+        saveSettingsDebounced(); 
+    });
+    bindSave('#mediaType', 'mediaType');
+    bindSave('#image_regex', 'imageRegex');
+    bindSave('#video_regex', 'videoRegex');
+    bindSave('#media_style', 'style');
+    bindSave('#stream_generation', 'streamGeneration');
+    
+    // Init values
     if ($('#mediaType').length) {
         $('#mediaType').val(extension_settings[extensionName].mediaType);
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
@@ -152,14 +163,16 @@ $(function () {
     })();
 });
 
-
-// --- 核心业务逻辑 (V4 架构) ---
+// --- 核心业务逻辑 (V5 架构) ---
 
 /**
- * 通用：刷新当前消息界面
- * 只要缓存里有图，就替换进去。非阻塞。
+ * 刷新 UI 界面
+ * @param {boolean} force 是否强制刷新 (忽略流式状态)
  */
-function refreshCurrentMessageUI() {
+function refreshCurrentMessageUI(force = false) {
+    // 关键控制：如果是流式传输中，且不是强制刷新，则坚决不更新 UI，防止闪烁
+    if (isStreamActive && !force) return;
+
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
 
     const context = getContext();
@@ -173,16 +186,13 @@ function refreshCurrentMessageUI() {
     let currentMessageText = message.mes;
     let contentModified = false;
     
-    // 使用 replace 的回调函数进行一次性扫描替换
     const mediaTagRegex = regexFromString(regexStr);
+    
+    // 扫描并替换已缓存的内容
     currentMessageText = currentMessageText.replace(mediaTagRegex, (match, ...args) => {
-        // 重构 match 对象以复用 extractPromptInfo
-        // match 是完整字符串，args 包含捕获组，最后一个是 offset，倒数第二个是原字符串
-        // 我们需要手动构造类似 matchAll 返回的数组结构
         const captureGroups = args.slice(0, -2);
         const matchObj = [match, ...captureGroups];
         
-        // 如果是成品，不处理
         if (match.includes('src=') || match.includes('src =')) return match;
 
         const info = extractPromptInfo(matchObj, mediaType);
@@ -190,71 +200,45 @@ function refreshCurrentMessageUI() {
 
         const promptHash = simpleHash(normalizePrompt(info.rawPrompt));
         
-        // 只有缓存里有的才替换
         if (generatedCache.has(promptHash)) {
             contentModified = true;
             return generatedCache.get(promptHash);
         }
-        
-        // 还没生成的，保持原样（显示为 <pic...> 标签或者用户自定义的文本）
         return match;
     });
 
     if (contentModified) {
         message.mes = currentMessageText;
         updateMessageBlock(messageIndex, message);
-        // 触发保存
+        
+        // 如果是流式结束后的全量更新，可以稍微激进一点，否则防抖
         if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
+        const delay = force ? 50 : 200; 
         updateDebounceTimer = setTimeout(async () => {
             await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
-        }, 500);
+        }, delay);
     }
 }
 
 /**
- * 核心任务执行器：线程安全地获取Prompt，然后并发生成
+ * 后台执行生成任务 (异步，不阻塞调度链)
  */
-async function triggerGenerationTask(index, info, mediaType, promptHash) {
-    // 再次检查 (Double Check)
-    if (processingHashes.has(promptHash) || generatedCache.has(promptHash)) return;
-
-    // 标记为正在处理
-    processingHashes.add(promptHash);
-    promptHistory.set(promptHash, Date.now());
-
-    const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
-    let finalPrompt = "";
+async function runBackgroundGeneration(index, finalPrompt, info, mediaType, promptHash) {
     let toast = null;
     let timer = null;
     let seconds = 0;
+    const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
 
     try {
-        // =================================================================
-        // 关键互斥区 (CRITICAL SECTION)
-        // 无论流式还是非流式，进入这里必须排队。
-        // 这样保证 setvar A -> substituteParams -> setvar B 不会乱序覆盖
-        // =================================================================
-        await (variableLock = variableLock.then(async () => {
-            // 1. 设置变量
-            if (info.macroString) await substituteParams(info.macroString);
-            // 2. 获取替换后的 Prompt (此时变量是正确的)
-            finalPrompt = await substituteParams(info.rawPrompt);
-        }).catch(e => console.error("Lock error", e))); 
-        // =================================================================
-        // 互斥区结束。此时 finalPrompt 已经拿到了正确的 LoRA 参数。
-        // 我们可以释放锁，让下一个任务进 critical section，
-        // 同时当前任务继续往下跑网络请求 (并发)。
-        // =================================================================
-
-        // UI: 独立的倒计时 Toast
-        const baseText = `正在生成第 ${index + 1} 张${mediaTypeText}...`;
+        // UI: 独立的倒计时 (任务开始执行才弹出)
+        const baseText = `生成第 ${index + 1} 张${mediaTypeText}...`;
         toast = toastr.info(`${baseText} ${seconds}s`, '', { timeOut: 0, extendedTimeOut: 0 });
         timer = setInterval(() => {
             seconds++;
             if (toast && toast.find) toast.find('.toast-message').text(`${baseText} ${seconds}s`);
         }, 1000);
 
-        // 调用 SD (耗时操作，完全异步并发)
+        // 调用 SD (耗时操作)
         const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
 
         // 清理 UI
@@ -263,33 +247,63 @@ async function triggerGenerationTask(index, info, mediaType, promptHash) {
 
         if (result && result.trim().length > 0) {
             const tag = buildMediaTag(result, info.rawPrompt, info.rawExtraParams, mediaType);
-            
-            // 写入缓存
             generatedCache.set(promptHash, tag);
             
-            // 立即刷新界面！
-            // 无论是在流式中间，还是非流式结束后，只要生成完一张，就刷一张。
-            refreshCurrentMessageUI();
+            // 【关键策略】：生成完一张，尝试刷新 UI
+            // 如果 isStreamActive 为 true，refreshCurrentMessageUI 会自动拦截，不刷新
+            // 如果流式已结束 (isStreamActive = false)，会立即刷新，实现"后来居上"
+            refreshCurrentMessageUI(false); 
         }
 
     } catch (err) {
-        console.error('Generation failed:', err);
+        console.error(`[${extensionName}] Task ${index+1} failed:`, err);
         if (timer) clearInterval(timer);
         if (toast) toastr.clear(toast);
-        toastr.error(`生成第 ${index + 1} 张失败`);
         // 失败允许重试
         promptHistory.delete(promptHash);
-    } finally {
-        // 任务结束，释放 Hash 锁
         processingHashes.delete(promptHash);
+    } finally {
+        // 任务彻底结束，移除锁
+        // 注意：processingHashes 主要用于防止重复提交，不影响调度链
+        // 调度链已经在提交请求后就释放了
     }
 }
 
 /**
- * 统一扫描与触发逻辑
- * 这是一个非阻塞函数。调用它会瞬间遍历文本，触发所有未开始的任务，然后立即返回。
+ * 调度器：将任务加入顺序执行链
+ * 核心逻辑：Promise Chain 只负责 (SetVar -> GetPrompt -> CallAPI)，不等待 Response
  */
-function scanAndTrigger(isStreaming) {
+function scheduleTask(index, info, mediaType, promptHash) {
+    if (processingHashes.has(promptHash) || generatedCache.has(promptHash)) return;
+
+    processingHashes.add(promptHash);
+    promptHistory.set(promptHash, Date.now());
+
+    // 链接到调度链尾部
+    dispatchChain = dispatchChain.then(async () => {
+        try {
+            // 1. 设置变量 (串行，确保安全)
+            if (info.macroString) await substituteParams(info.macroString);
+            
+            // 2. 获取 Prompt (串行，确保拿到当前变量下的 Prompt)
+            const finalPrompt = await substituteParams(info.rawPrompt);
+
+            // 3. 启动后台任务 (Fire-and-Forget)
+            // 关键：这里不 await runBackgroundGeneration，
+            // 只要请求发出了，或者参数准备好了，就立刻返回，让链条处理下一个任务
+            runBackgroundGeneration(index, finalPrompt, info, mediaType, promptHash);
+            
+        } catch (e) {
+            console.error("Dispatch error:", e);
+            processingHashes.delete(promptHash);
+        }
+    });
+}
+
+/**
+ * 文本扫描器
+ */
+function scanAndSchedule() {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
     
     const context = getContext();
@@ -300,6 +314,7 @@ function scanAndTrigger(isStreaming) {
     const regexStr = mediaType === 'image' ? extension_settings[extensionName].imageRegex : extension_settings[extensionName].videoRegex;
     const matches = [...message.mes.matchAll(regexFromString(regexStr))];
 
+    // 按文本顺序遍历，依次加入调度链
     for (const [index, match] of matches.entries()) {
         const originalTag = match[0];
         if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
@@ -308,63 +323,51 @@ function scanAndTrigger(isStreaming) {
         if (!info) continue;
 
         const promptHash = simpleHash(normalizePrompt(info.rawPrompt));
-
-        // 检查是否已缓存/正在运行/冷却中
-        if (generatedCache.has(promptHash)) {
-             // 如果在缓存里但界面上没显示（极端情况），这里不处理，交给 refreshCurrentMessageUI
-             continue;
-        }
-        if (processingHashes.has(promptHash)) continue;
-        
-        const now = Date.now();
-        if (promptHistory.has(promptHash)) {
-             if (now - promptHistory.get(promptHash) < PROMPT_COOLDOWN_MS) continue;
-        }
-
-        // 触发并发任务 (Fire-and-Forget)
-        // 我们不 await 这个任务，直接让循环继续，去触发下一张图
-        triggerGenerationTask(index, info, mediaType, promptHash);
+        scheduleTask(index, info, mediaType, promptHash);
     }
 }
 
 // --- 事件监听 ---
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
-    processingHashes.clear();
+    // 每次开始新生成，重置部分状态
+    // 注意：不清除 generatedCache，因为可能有上一轮没跑完的图（虽然概率小）
+    // processingHashes 也不清除，维持任务状态
     
-    // 只有勾选了流式才启动定时器
     if (!extension_settings[extensionName]?.streamGeneration) return;
 
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
     
-    // 流式监听：高频扫描，实时触发
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
-        scanAndTrigger(true); // isStreaming = true
-        // 流式期间也可以尝试刷新界面，把已经好的图显示出来
-        refreshCurrentMessageUI(); 
+        // 1. 扫描并调度新出现的标签 (后台执行)
+        scanAndSchedule();
+        // 2. 流式期间绝不调用 refreshCurrentMessageUI，防止闪烁
     }, 500);
 });
 
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
+    
     pruneOldPrompts();
+    
+    // 【关键】：流式结束时刻
+    // 1. 立即强制刷新一次 UI，把所有流式期间在后台生成好的图显示出来
+    refreshCurrentMessageUI(true); // force = true
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
-// 非流式/消息接收完毕
-// 这里的逻辑现在变成了：立即扫描并触发所有任务，绝不阻塞用户看字
+// 非流式场景 / 历史加载 / 兜底
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
-    onGenerationFinished();
-    
-    // 1. 尝试先把缓存里的图刷出来
-    refreshCurrentMessageUI();
-    
-    // 2. 扫描并触发所有剩余的图 (非阻塞)
-    // 这一步会瞬间启动所有后台任务
-    scanAndTrigger(false); 
+    // 确保流式标志位关闭
+    isStreamActive = false;
+    if (streamInterval) clearInterval(streamInterval);
+
+    // 1. 扫描并调度所有任务
+    // 因为 isStreamActive = false，runBackgroundGeneration 内部会在生成完一张后立即刷新 UI
+    scanAndSchedule();
 });
