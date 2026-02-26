@@ -4,12 +4,13 @@
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
     <div class="inline-drawer-content">
+        
         <div class="flex-container flexnowrap align_center margin-top-5">
             <label for="stream_generation" class="flex1" data-i18n="Stream Generation">Stream Generation (Experimental)</label>
             <input type="checkbox" id="stream_generation" class="checkbox_simple">
         </div>
-        <!-- 媒体类型选择（包含禁用选项） -->
-        <div class="flex-container flexnowrap">
+        
+        <div class="flex-container flexnowrap margin-top-5">
             <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
             <select id="mediaType" class="text_pole widthNatural margin0">
                 <option value="disabled" data-i18n="Disabled" selected>Disabled</option>
@@ -18,22 +19,43 @@
             </select>
         </div>
         
-        <!-- 图片正则表达式输入 -->
-        <div class="">
+        <div class="margin-top-5">
             <div><label for="image_regex" class="flex1" data-i18n="Image Regex">Image Regex</label></div>
             <textarea id="image_regex" class="text_pole textarea_compact" rows="2" placeholder="Image regex here"></textarea>
         </div>
         
-        <!-- 视频正则表达式输入 -->
-        <div class="">
+        <div class="margin-top-5">
             <div><label for="video_regex" class="flex1" data-i18n="Video Regex">Video Regex</label></div>
             <textarea id="video_regex" class="text_pole textarea_compact" rows="2" placeholder="Video regex here"></textarea>
         </div>
         
-        <!-- 样式输入 -->
-        <div class="">
+        <div class="margin-top-5">
             <div><label for="media_style" class="flex1" data-i18n="Style">Style</label></div>
             <input id="media_style" class="text_pole" placeholder="e.g. width:100%;height:auto">
         </div>
+
+        <hr style="margin: 15px 0; border-color: var(--SmartThemeBorderColor);">
+
+        <div class="margin-top-5">
+            <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
+                <b data-i18n="Character Fixed Tags">Character Fixed Tags</b>
+                <small style="opacity: 0.7;" data-i18n="Auto inject tags to prompt">Auto inject tags to prompt</small>
+            </div>
+            
+            <div class="flex-container flexGap5 align_center margin-bottom-10">
+                <input id="new_char_name" class="text_pole" style="flex: 1; min-width: 80px;" placeholder="Name (e.g. Lisa)">
+                <input id="new_char_tags" class="text_pole" style="flex: 2;" placeholder="Tags (e.g. 1girl, chestnut hair...)">
+                <div id="add_char_tag_btn" class="menu_button menu_button_icon" title="Add Character Tag" style="margin: 0;">
+                    <i class="fa-solid fa-plus"></i>
+                </div>
+            </div>
+
+            <div id="character_tags_list" class="flex-container flex-column flexGap5" style="max-height: 150px; overflow-y: auto; padding: 5px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; background: var(--SmartThemeBlurTintColor);">
+                <div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip">
+                    No characters added yet.
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
