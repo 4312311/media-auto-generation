@@ -32,13 +32,14 @@ const processingHashes = new Set();
 // 冷却时间设置：3分钟
 const PROMPT_COOLDOWN_MS = 180000;
 
-// 默认设置
+// 默认设置 (新增 characterTags)
 const defaultSettings = {
     mediaType: 'disabled',
     imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
-    style: 'width:auto;height:auto',
+    style: 'width:100%;height:100%',
     streamGeneration: false,
+    characterTags: {}, // --- 新增: 角色固定特征字典 ---
 };
 
 function simpleHash(str) {
@@ -69,7 +70,85 @@ function escapeHtmlAttribute(value) {
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+// --- 新增: 核心注入工具函数 ---
+
+// 正则转义工具，防止角色名中包含特殊符号导致正则报错
+function escapeRegExp(string) {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 角色特征自动注入逻辑
+ * @param {string} rawPrompt 原始提示词
+ * @param {object} tagsDict 角色特征字典
+ * @returns {object} { modifiedPrompt: string, injected: boolean }
+ */
+function injectCharacterTags(rawPrompt, tagsDict) {
+    if (!tagsDict || Object.keys(tagsDict).length === 0) return { modifiedPrompt: rawPrompt, injected: false };
+    
+    let modifiedPrompt = rawPrompt;
+    let injected = false;
+    
+    for (const [charName, tags] of Object.entries(tagsDict)) {
+        if (!charName.trim() || !tags.trim()) continue;
+        
+        // 使用单词边界 \b 进行精确匹配，忽略大小写 (gi)
+        const regex = new RegExp(`\\b${escapeRegExp(charName)}\\b`, 'gi');
+        
+        if (regex.test(modifiedPrompt)) {
+            // 将匹配到的名字替换为 "名字, 特征tag" 格式
+            modifiedPrompt = modifiedPrompt.replace(regex, (match) => {
+                return `${match}, ${tags}`;
+            });
+            injected = true;
+        }
+    }
+    return { modifiedPrompt, injected };
+}
+
 // --- 设置与UI逻辑 ---
+
+// --- 新增: 渲染角色列表UI ---
+function renderCharacterTagsList() {
+    const container = $('#character_tags_list');
+    if (!container.length) return;
+    
+    container.empty();
+    const tagsDict = extension_settings[extensionName].characterTags || {};
+    const keys = Object.keys(tagsDict);
+    
+    if (keys.length === 0) {
+        container.append('<div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip" data-i18n="No characters added yet.">No characters added yet.</div>');
+        return;
+    }
+
+    for (const charName of keys) {
+        const tags = tagsDict[charName];
+        const escapedName = escapeHtmlAttribute(charName);
+        const escapedTags = escapeHtmlAttribute(tags);
+        
+        const rowHtml = `
+            <div class="flex-container align_center flexGap5 char-tag-row" style="padding: 3px; border-bottom: 1px dashed var(--SmartThemeBorderColor);">
+                <span style="flex: 1; font-weight: bold; overflow: hidden; text-overflow: ellipsis;" title="${escapedName}">${escapedName}</span>
+                <span style="flex: 2; font-size: 0.9em; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapedTags}">${escapedTags}</span>
+                <div class="menu_button menu_button_icon delete-char-tag-btn" data-name="${escapedName}" title="Delete" style="margin: 0; padding: 5px;">
+                    <i class="fa-solid fa-trash interactable"></i>
+                </div>
+            </div>
+        `;
+        container.append(rowHtml);
+    }
+
+    // 绑定删除按钮事件
+    container.find('.delete-char-tag-btn').off('click').on('click', function() {
+        const nameToDelete = $(this).attr('data-name');
+        if (nameToDelete && extension_settings[extensionName].characterTags[nameToDelete]) {
+            delete extension_settings[extensionName].characterTags[nameToDelete];
+            saveSettingsDebounced();
+            renderCharacterTagsList(); // 重新渲染列表
+        }
+    });
+}
 
 function updateUI() {
     if ($('#mediaType').length) {
@@ -78,6 +157,9 @@ function updateUI() {
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
         $('#stream_generation').prop('checked', extension_settings[extensionName].streamGeneration ?? false);
+        
+        // --- 新增: 更新UI时一并渲染角色列表 ---
+        renderCharacterTagsList();
     }
 }
 
@@ -118,6 +200,27 @@ async function createSettings(settingsHtml) {
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
     $('#stream_generation').on('change', function () { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
+
+    // --- 新增: 绑定添加角色按钮事件 ---
+    $('#add_char_tag_btn').off('click').on('click', function() {
+        const nameInput = $('#new_char_name').val().trim();
+        const tagsInput = $('#new_char_tags').val().trim();
+        
+        if (!nameInput || !tagsInput) {
+            toastr.warning('角色名称和特征Tags不能为空 / Name and Tags cannot be empty.');
+            return;
+        }
+
+        extension_settings[extensionName].characterTags = extension_settings[extensionName].characterTags || {};
+        extension_settings[extensionName].characterTags[nameInput] = tagsInput;
+        
+        saveSettingsDebounced();
+        
+        // 清空输入框并刷新列表
+        $('#new_char_name').val('');
+        $('#new_char_tags').val('');
+        renderCharacterTagsList();
+    });
 
     updateUI();
 }
@@ -202,7 +305,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
         if (!rawPrompt) continue;
 
-        const promptHash = simpleHash(normalizePrompt(rawPrompt));
+        // --- 新增: 角色固定特征拦截与注入 ---
+        const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
+        const modifiedPrompt = injectionResult.modifiedPrompt;
+        
+        // 打印日志：仅在成功注入且非流式频繁检测时打印，避免刷屏
+        if (injectionResult.injected && !onlyTrigger) {
+            console.log(`[${extensionName}] 🎯 角色特征匹配成功，已自动注入！`);
+            console.log(`[${extensionName}] Original Prompt:`, rawPrompt);
+            console.log(`[${extensionName}] Modified Prompt:`, modifiedPrompt);
+        }
+
+        // 注意：使用注入后的 modifiedPrompt 计算 Hash，确保特征修改后能重新生成
+        const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
 
         // --- 逻辑 A：替换已完成的图片 ---
         if (!onlyTrigger && generatedCache.has(promptHash)) {
@@ -237,13 +352,15 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             let toast = null;
 
             try {
-                let finalPrompt = rawPrompt;
+                // 注意：这里发送给后台的是注入了固定Tag的 modifiedPrompt
+                let finalPrompt = modifiedPrompt; 
+                
                 if (mediaType === 'video') {
                     if (rawExtraParams && rawExtraParams.trim()) {
                         const params = rawExtraParams.split(',');
                         if (params.length === 3) {
                             const [frameCount, width, height] = params;
-                            finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}` + rawPrompt;
+                            finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}` + finalPrompt;
                         }
                     }
                 } else {
@@ -252,7 +369,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                         if (intensityArr.length === 2) {
                             const lightIntensity = Math.round(parseFloat(intensityArr[0]) * 100) / 100 || 0;
                             const sunshineIntensity = Math.round(parseFloat(intensityArr[1]) * 100) / 100 || 0;
-                            finalPrompt = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}` + rawPrompt;
+                            finalPrompt = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}` + finalPrompt;
                         }
                     }
                 }
@@ -280,7 +397,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 if (typeof result === 'string' && result.trim().length > 0) {
                     const style = extension_settings[extensionName].style || '';
                     const escapedUrl = escapeHtmlAttribute(result);
-                    const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
+                    // HTML标签上依然保留原始的 rawPrompt 避免文本污染，后台生成使用 modifiedPrompt
+                    const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt); 
                     const escapedParams = escapeHtmlAttribute(rawExtraParams);
 
                     let mediaTag;
