@@ -14,5 +14,15 @@
     "Generated %d %s(s) successfully": "成功生成%d个%s",
     "Failed to generate %s": "生成%s失败",
     "Please configure regex first": "请先配置正则表达式",
-    "Plugin disabled": "插件已禁用"
+    "Plugin disabled": "插件已禁用",
+
+    "Stream Generation": "流式生成",
+    "Stream Generation (Experimental)": "流式生成（实验性）",
+    "Character Fixed Tags": "角色固定特征",
+    "Auto inject tags to prompt": "自动将特征注入到提示词中",
+    "Name (e.g. Lisa)": "角色名 (例如: Lisa)",
+    "Tags (e.g. 1girl, chestnut hair...)": "特征 (例如: 1girl, chestnut hair...)",
+    "Add Character Tag": "添加角色特征",
+    "No characters added yet.": "暂未配置任何角色。",
+    "Delete": "删除"
 }
