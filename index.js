@@ -35,9 +35,9 @@ const PROMPT_COOLDOWN_MS = 180000;
 // 默认设置 (新增 characterTags)
 const defaultSettings = {
     mediaType: 'disabled',
-    imageRegex: '/<img\\b(?:(?:(?!\\bprompt\\b)[^>])*\\blight_intensity\\s*=\\s*"([^"]*)")?(?:(?!\\bprompt\\b)[^>])*\\bprompt\\s*=\\s*"([^"]*)"[^>]*>/gi',
+    imageRegex: '/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
-    style: 'width:100%;height:100%',
+    style: 'width:100%;height:auto',
     streamGeneration: false,
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
 };
