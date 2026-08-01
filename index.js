@@ -974,12 +974,21 @@ function initFloatBtnDrag() {
     let elW = 0, elH = 0;
     let isDragging = false;
     let wasDocked = false;
+    let lastTouchTs = 0;  // 阻止手机端 touchend 后浏览器合成的 mouse 兼容事件双触发
 
     function getPoint(e) {
         return (e.touches && e.touches[0]) ? e.touches[0] : e;
     }
 
     btn.on('mousedown touchstart', function (e) {
+        // 手机端:touchend 后浏览器会自动合成 mousedown/mouseup/click,
+        // 不去重会导致 toggleFloatingPanel 被调 2 次(先开后关,用户看到"闪一下又消失")
+        if (e.type === 'touchstart') {
+            lastTouchTs = Date.now();
+        } else if (Date.now() - lastTouchTs < 500) {
+            return;
+        }
+
         // 若吸附态:先解除 + 立即关 transition,避免拖动首帧被 .18s 过渡抢跑导致位置跳变;
         // 记 wasDocked 供 onUp 区分"残影 click"与"普通 click"
         wasDocked = dockedEdge !== null;
