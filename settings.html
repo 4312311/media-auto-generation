@@ -287,6 +287,39 @@
     #media_auto_gen_float_btn.mag-docked-left { transform: translateX(-65%); opacity: .5; }
     #media_auto_gen_float_btn.mag-docked-right { transform: translateX(65%); opacity: .5; }
     #media_auto_gen_float_btn.mag-dragging { transition: none; }
+
+    /* --- 工作流 JSON 占位符帮助 popover + 实时校验 --- */
+    .mag_workflow_help_icon { cursor: pointer; opacity: 0.7; font-size: 0.9em; }
+    .mag_workflow_help_icon:hover { opacity: 1; }
+    #comfy_workflow.mag_workflow_invalid { border-color: var(--red) !important; }
+    .mag_workflow_error { color: var(--red); font-size: 0.85em; margin-top: 4px; display: none; word-break: break-word; }
+    .mag_workflow_popover {
+        position: absolute;
+        top: 28px;
+        left: 0;
+        z-index: 1000;
+        min-width: 200px;
+        max-width: 320px;
+        padding: 8px 10px;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        font-size: 0.85em;
+        display: none;
+    }
+    .mag_workflow_popover .mag_ph_item { padding: 2px 0; display: flex; align-items: center; gap: 6px; }
+    .mag_workflow_popover code {
+        background: rgba(127,127,127,0.2);
+        padding: 0 4px;
+        border-radius: 3px;
+        font-family: monospace;
+    }
+    .mag_workflow_popover .mag_ph_divider {
+        border: none;
+        border-top: 1px solid var(--SmartThemeBorderColor);
+        margin: 6px 0;
+    }
 </style>
 
 <div class="mag-tabs-header">
@@ -431,10 +464,14 @@
         <label for="comfy_neg_prefix" data-i18n="Negative Prompt Prefix">Negative Prompt Prefix</label>
         <textarea id="comfy_neg_prefix" class="text_pole textarea_compact" rows="2" placeholder="lowres, bad anatomy, ..."></textarea>
     </div>
-    <div class="margin-top-5">
-        <label for="comfy_workflow" data-i18n="Workflow JSON (API format)">Workflow JSON (API format)</label>
-        <textarea id="comfy_workflow" class="text_pole textarea_compact" rows="8" style="font-family: monospace; font-size: 0.85em;" placeholder='{"3": {"class_type": "KSampler", "inputs": {"seed": "%seed%"}}}'>
-        </textarea>
+    <div class="margin-top-5" style="position: relative;">
+        <div style="display:flex; align-items:center; gap:5px;">
+            <label for="comfy_workflow" data-i18n="Workflow JSON (API format)">Workflow JSON (API format)</label>
+            <i id="comfy_workflow_help" class="fa-solid fa-circle-question mag_workflow_help_icon" title="Supported placeholders" data-i18n="[title]mag_placeholder_help"></i>
+        </div>
+        <textarea id="comfy_workflow" class="text_pole textarea_compact" rows="8" style="font-family: monospace; font-size: 0.85em;" placeholder='{"3": {"class_type": "KSampler", "inputs": {"seed": "%seed%"}}}'></textarea>
+        <div id="comfy_workflow_error" class="mag_workflow_error"></div>
+        <div id="comfy_workflow_popover" class="mag_workflow_popover"></div>
     </div>
 
     <div class="margin-top-5" style="text-align: right;">

@@ -150,6 +150,17 @@ async function comfyProxy(path, body) {
 const VIDEO_FORMATS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
 
 /**
+ * 工作流 JSON 中受插件支持的占位符清单。顺序即 popover 显示顺序。
+ * 与 applyWorkflowPlaceholders 中的 replacements 字段保持一致。
+ */
+const SUPPORTED_PLACEHOLDERS = [
+    'model', 'sampler', 'scheduler', 'width', 'height', 'steps',
+    'scale', 'denoise', 'seed', 'prompt', 'negative_prompt',
+];
+
+let _wfValidateTimer = null;
+
+/**
  * 工作流占位符替换。占位符在 JSON 里带引号("%key%"),用 JSON.stringify 自动转义。
  */
 function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt) {
@@ -253,6 +264,7 @@ function renderPresetFields() {
     $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
     $('#comfy_neg_prefix').val(preset?.negativePromptPrefix || '');
     $('#comfy_workflow').val(preset?.workflowJson || '');
+    validateComfyWorkflow();
     $('#comfy_width').val(preset?.width ?? 640);
     $('#comfy_height').val(preset?.height ?? 960);
     $('#comfy_steps').val(preset?.steps ?? 20);
@@ -584,6 +596,62 @@ function bindPresetPreviewEvents() {
     });
 }
 
+function getWorkflowPlaceholderUsage(text) {
+    const used = new Set();
+    const all = new Set();
+    const matches = text.match(/%[a-zA-Z_][a-zA-Z0-9_]*%/g) || [];
+    for (const m of matches) {
+        const k = m.slice(1, -1);
+        all.add(k);
+        if (SUPPORTED_PLACEHOLDERS.includes(k)) used.add(k);
+    }
+    const invalid = [...all].filter(k => !SUPPORTED_PLACEHOLDERS.includes(k));
+    return { used, invalid };
+}
+
+function validateComfyWorkflow() {
+    const val = $('#comfy_workflow').val() || '';
+    let jsonError = null;
+    const trimmed = val.trim();
+    if (trimmed) {
+        try { JSON.parse(trimmed); }
+        catch (e) { jsonError = e.message; }
+    }
+    $('#comfy_workflow').toggleClass('mag_workflow_invalid', !!jsonError);
+    const $err = $('#comfy_workflow_error');
+    if (jsonError) {
+        $err.text('JSON: ' + jsonError).css('display', 'block');
+    } else {
+        $err.empty().css('display', 'none');
+    }
+    const $pop = $('#comfy_workflow_popover');
+    if ($pop.is(':visible')) renderWorkflowPopover(val);
+}
+
+function renderWorkflowPopover(val) {
+    const { used, invalid } = getWorkflowPlaceholderUsage(val || '');
+    const phRow = (icon, color, k) =>
+        `<div class="mag_ph_item"><i class="fa-solid ${icon}" style="color:${color}; width:14px; text-align:center;"></i><code>%${k}%</code></div>`;
+    const rows = SUPPORTED_PLACEHOLDERS.map(k => {
+        const ok = used.has(k);
+        return phRow(ok ? 'fa-check' : 'fa-xmark', ok ? 'var(--green)' : 'var(--red)', k);
+    });
+    const invalidHtml = invalid.length
+        ? `<hr class="mag_ph_divider">${invalid.map(k => phRow('fa-triangle-exclamation', 'var(--red)', k)).join('')}`
+        : '';
+    $('#comfy_workflow_popover').html(rows.join('') + invalidHtml);
+}
+
+function toggleWorkflowPopover() {
+    const $pop = $('#comfy_workflow_popover');
+    if ($pop.is(':visible')) {
+        $pop.css('display', 'none');
+    } else {
+        renderWorkflowPopover($('#comfy_workflow').val() || '');
+        $pop.css('display', 'block');
+    }
+}
+
 function bindPresetEvents() {
     $('#comfy_preset_new').off('click').on('click', createPreset);
     $('#comfy_preset_dup').off('click').on('click', duplicatePreset);
@@ -600,6 +668,27 @@ function bindPresetEvents() {
         }
     });
     bindPresetPreviewEvents();
+
+    // --- 工作流 JSON 占位符帮助 + 实时校验 ---
+    $('#comfy_workflow_help').off('click.workflowHelp').on('click.workflowHelp', function (e) {
+        e.stopPropagation();  // 防 ST 浮窗"点外部自动收起"
+        toggleWorkflowPopover();
+    });
+    $('#comfy_workflow_popover').off('click.workflowPopover').on('click.workflowPopover', function (e) {
+        e.stopPropagation();  // popover 内部点击不触发"点外部关闭"
+    });
+    $(document).off('click.workflowPopoverClose').on('click.workflowPopoverClose', function (e) {
+        const $pop = $('#comfy_workflow_popover');
+        if (!$pop.is(':visible')) return;
+        if (!$(e.target).closest('#comfy_workflow_popover, #comfy_workflow_help').length) {
+            $pop.css('display', 'none');
+        }
+    });
+    $('#comfy_workflow').off('input.workflowValidate').on('input.workflowValidate', function () {
+        clearTimeout(_wfValidateTimer);
+        _wfValidateTimer = setTimeout(validateComfyWorkflow, 200);
+    });
+    validateComfyWorkflow();
 }
 
 // --- 新增: 渲染角色列表UI ---

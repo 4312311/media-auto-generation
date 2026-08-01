@@ -80,5 +80,7 @@
     "mag_char_edit": "编辑",
     "mag_char_delete": "删除",
     "mag_char_save": "保存",
-    "mag_char_cancel": "取消"
+    "mag_char_cancel": "取消",
+
+    "mag_placeholder_help": "支持的占位符"
 }
