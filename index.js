@@ -3,13 +3,14 @@
 
 import { extension_settings, getContext } from '../../../extensions.js';
 import {
+    saveSettings,
     saveSettingsDebounced,
     eventSource,
     event_types,
     updateMessageBlock,
+    getRequestHeaders,
 } from '../../../../script.js';
-import { regexFromString } from '../../../utils.js';
-import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
+import { regexFromString, clamp, getUniqueName, saveBase64AsFile } from '../../../utils.js';
 
 const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
@@ -40,6 +41,9 @@ const defaultSettings = {
     style: 'width:100%;height:auto',
     streamGeneration: false,
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
+    floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
+    comfyPresets: [], // ComfyUI 配置档列表
+    activePresetName: null, // 当前激活的配置档名字
 };
 
 function simpleHash(str) {
@@ -106,7 +110,486 @@ function injectCharacterTags(rawPrompt, tagsDict) {
     return { modifiedPrompt, injected };
 }
 
+// --- ComfyUI 直连工具函数 ---
+
+/** 当前激活的配置档,失败返回 null */
+function getActivePreset() {
+    const s = extension_settings[extensionName];
+    if (!s || !Array.isArray(s.comfyPresets)) return null;
+    return s.comfyPresets.find(p => p.name === s.activePresetName) || null;
+}
+
+/**
+ * 通用 ComfyUI 代理调用,body 已含 url(+ 可选 auth),passthrough 给 /api/sd/comfy/<path>
+ * @param {string} path ping/samplers/models/schedulers/vaes/generate
+ * @param {object} body
+ */
+async function comfyProxy(path, body) {
+    const res = await fetch(`/api/sd/comfy/${path}`, {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`ComfyUI ${path} failed: ${text}`);
+    }
+    return await res.json();
+}
+
+const VIDEO_FORMATS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
+
+/**
+ * 工作流占位符替换。占位符在 JSON 里带引号("%key%"),用 JSON.stringify 自动转义。
+ */
+function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt) {
+    const seed = Number.isFinite(preset.seed) && preset.seed >= 0
+        ? preset.seed
+        : Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
+    const replacements = {
+        model: preset.model,
+        sampler: preset.sampler,
+        scheduler: preset.scheduler,
+        width: preset.width,
+        height: preset.height,
+        steps: preset.steps,
+        scale: preset.scale,
+        denoise: preset.denoise,
+        seed,
+        prompt,
+        negative_prompt: negativePrompt,
+    };
+    let workflow = workflowJson;
+    for (const [key, value] of Object.entries(replacements)) {
+        workflow = workflow.replaceAll(`"%${key}%"`, JSON.stringify(value));
+    }
+    return workflow;
+}
+
+/**
+ * 直接调远程 ComfyUI 生成媒体。返回 { url, format }。
+ * url 是 ST 后端落盘后的文件路径(/user/images/...),避免 data URI 撑爆 DOM 和聊天存档。
+ */
+async function generateViaComfy(modifiedPrompt, mediaType) {
+    const preset = getActivePreset();
+    if (!preset) throw new Error('No active ComfyUI preset configured');
+    if (!preset.comfyUrl) throw new Error('Active preset has no ComfyUI URL');
+    if (!preset.model) throw new Error('Active preset has no model selected');
+
+    const finalPrompt = (preset.positivePromptPrefix || '') + modifiedPrompt;
+    const negativePrompt = preset.negativePromptPrefix || '';
+    const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt);
+
+    const body = { url: preset.comfyUrl, prompt: `{ "prompt": ${workflow} }` };
+    if (preset.comfyAuth) body.auth = preset.comfyAuth;
+
+    const result = await comfyProxy('generate', body);
+    const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
+
+    const context = getContext();
+    const charName = (context.name2 || context.groupId || 'media').replace(/[\\\/]/g, '_');
+    const filename = `${mediaType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const url = await saveBase64AsFile(result.data, charName, filename, format);
+
+    return { url, format };
+}
+
 // --- 设置与UI逻辑 ---
+
+// --- 配置档(Preset)UI 渲染 ---
+
+// 缓存最近一次拉到的 model/sampler/scheduler 列表(避免每次切换 preset 都重新拉)
+const comfyCache = { models: [], samplers: [], schedulers: [], url: '' };
+function resetComfyCache() {
+    comfyCache.models = [];
+    comfyCache.samplers = [];
+    comfyCache.schedulers = [];
+    comfyCache.url = '';
+}
+
+/** 重建配置档 dropdown options,选中 active */
+function renderPresetDropdown() {
+    const $select = $('#comfy_preset_select');
+    if (!$select.length) return;
+
+    const presets = extension_settings[extensionName].comfyPresets || [];
+    const activeName = extension_settings[extensionName].activePresetName;
+
+    // 灌值前临时解绑 change 事件,避免触发连锁
+    $select.off('change.preset');
+    $select.empty();
+    if (presets.length === 0) {
+        $select.append('<option value="" disabled selected data-i18n="No preset">No preset</option>');
+    } else {
+        for (const p of presets) {
+            $select.append(`<option value="${escapeHtmlAttribute(p.name)}"${p.name === activeName ? ' selected' : ''}>${escapeHtmlAttribute(p.name)}</option>`);
+        }
+    }
+    $select.val(activeName || '');
+    $select.on('change.preset', onPresetSelectChange);
+}
+
+/** 把 active preset 字段灌进各 input/select/textarea;active 为 null 时显示空状态 */
+function renderPresetFields() {
+    const preset = getActivePreset();
+    const hasPreset = !!preset;
+    $('#comfy_empty_hint').css('display', hasPreset ? 'none' : 'block');
+
+    // 临时解绑所有字段事件,灌值后再绑回(避免连锁写)
+    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow').off('.preset');
+
+    $('#comfy_url').val(preset?.comfyUrl || '');
+    $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
+    $('#comfy_neg_prefix').val(preset?.negativePromptPrefix || '');
+    $('#comfy_workflow').val(preset?.workflowJson || '');
+    $('#comfy_width').val(preset?.width ?? 512);
+    $('#comfy_height').val(preset?.height ?? 512);
+    $('#comfy_steps').val(preset?.steps ?? 20);
+    $('#comfy_scale').val(preset?.scale ?? 7);
+    $('#comfy_denoise').val(preset?.denoise ?? 1);
+    $('#comfy_seed').val(preset?.seed ?? -1);
+
+    // model/sampler/scheduler:渲染已缓存列表 + 当前选中值
+    renderComfySelect('#comfy_model', comfyCache.models, preset?.model || '');
+    renderComfySelect('#comfy_sampler', comfyCache.samplers, preset?.sampler || '');
+    renderComfySelect('#comfy_scheduler', comfyCache.schedulers, preset?.scheduler || '');
+
+    // 字段使能状态(无 preset 时 disabled)
+    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
+
+    bindPresetFieldEvents();
+    renderPresetPreview();
+}
+
+/** 渲染单个 ComfyUI select(model/sampler/scheduler) */
+function renderComfySelect(selector, options, currentValue) {
+    const $sel = $(selector);
+    $sel.empty();
+    if (options.length === 0) {
+        $sel.append(`<option value="" data-i18n="Refresh first">-- refresh first --</option>`);
+        // 若 currentValue 非空,仍保留它作为隐藏选项便于切换 preset 后看到值
+        if (currentValue) {
+            $sel.append(`<option value="${escapeHtmlAttribute(currentValue)}" selected>${escapeHtmlAttribute(currentValue)}</option>`);
+        }
+        $sel.val(currentValue);
+        return;
+    }
+    for (const opt of options) {
+        // options 可能是 ['dpmpp_2m', ...] 或 [{value, text}, ...]
+        const value = typeof opt === 'string' ? opt : opt.value;
+        const text = typeof opt === 'string' ? opt : (opt.text || opt.value);
+        $sel.append(`<option value="${escapeHtmlAttribute(String(value))}">${escapeHtmlAttribute(String(text))}</option>`);
+    }
+    $sel.val(currentValue);
+}
+
+function onPresetSelectChange() {
+    const newName = $(this).val();
+    extension_settings[extensionName].activePresetName = newName || null;
+    saveSettingsDebounced();
+    // 切换 preset 时清空已缓存的 model/sampler/scheduler 列表(可能对应不同 URL)
+    resetComfyCache();
+    renderPresetFields();
+}
+
+function bindPresetFieldEvents() {
+    // 写入工具:把当前 DOM 值写回 active preset
+    const writeField = (key, value) => {
+        const preset = getActivePreset();
+        if (!preset) return;
+        preset[key] = value;
+        saveSettingsDebounced();
+    };
+
+    // 数值字段:input 事件,parseFloat + NaN→0(保留空串便于用户清空编辑,但保存时转 0)
+    const writeNumber = (key, parser = parseFloat) => (e) => {
+        const raw = $(e.target).val();
+        const v = raw === '' ? 0 : parser(raw);
+        writeField(key, Number.isFinite(v) ? v : 0);
+    };
+
+    $('#comfy_url').on('change.preset', (e) => {
+        writeField('comfyUrl', $(e.target).val().trim());
+        // URL 改变 → 清缓存 + 清空 select options(强制刷新)
+        resetComfyCache();
+        renderComfySelect('#comfy_model', [], getActivePreset()?.model || '');
+        renderComfySelect('#comfy_sampler', [], getActivePreset()?.sampler || '');
+        renderComfySelect('#comfy_scheduler', [], getActivePreset()?.scheduler || '');
+    });
+    $('#comfy_pos_prefix').on('change.preset', (e) => writeField('positivePromptPrefix', $(e.target).val()));
+    $('#comfy_neg_prefix').on('change.preset', (e) => writeField('negativePromptPrefix', $(e.target).val()));
+    $('#comfy_workflow').on('change.preset', (e) => writeField('workflowJson', $(e.target).val()));
+
+    $('#comfy_model').on('change.preset', (e) => writeField('model', $(e.target).val()));
+    $('#comfy_sampler').on('change.preset', (e) => writeField('sampler', $(e.target).val()));
+    $('#comfy_scheduler').on('change.preset', (e) => writeField('scheduler', $(e.target).val()));
+
+    $('#comfy_width').on('input.preset', writeNumber('width', parseInt));
+    $('#comfy_height').on('input.preset', writeNumber('height', parseInt));
+    $('#comfy_steps').on('input.preset', writeNumber('steps', parseInt));
+    $('#comfy_scale').on('input.preset', writeNumber('scale'));
+    $('#comfy_denoise').on('input.preset', writeNumber('denoise'));
+    $('#comfy_seed').on('input.preset', writeNumber('seed', parseInt));
+}
+
+/** 新建 preset(自动唯一名) */
+function createPreset() {
+    const presets = extension_settings[extensionName].comfyPresets;
+    const name = getUniqueName('New Preset', n => presets.some(p => p.name === n), {
+        nameBuilder: (base, i) => i === 1 ? base : `${base} ${i}`,
+    });
+    presets.push({
+        name,
+        comfyUrl: '',
+        comfyAuth: '',
+        workflowJson: '',
+        model: '', sampler: '', scheduler: '',
+        width: 512, height: 512, steps: 20, scale: 7, denoise: 1, seed: -1,
+        positivePromptPrefix: '',
+        negativePromptPrefix: '',
+    });
+    extension_settings[extensionName].activePresetName = name;
+    saveSettingsDebounced();
+    renderPresetDropdown();
+    renderPresetFields();
+}
+
+/** 复制当前 preset */
+function duplicatePreset() {
+    const src = getActivePreset();
+    if (!src) { toastr.warning('No active preset to duplicate'); return; }
+    const presets = extension_settings[extensionName].comfyPresets;
+    const name = getUniqueName(`${src.name} copy`, n => presets.some(p => p.name === n), {
+        nameBuilder: (base, i) => i === 1 ? base : `${base} ${i}`,
+    });
+    presets.push({ ...src, name, previewImage: '' });
+    extension_settings[extensionName].activePresetName = name;
+    saveSettingsDebounced();
+    renderPresetDropdown();
+    renderPresetFields();
+}
+
+/** 改名当前 preset(prompt 输入 + 唯一性校验) */
+function renamePreset() {
+    const src = getActivePreset();
+    if (!src) return;
+    const newName = window.prompt('Rename preset to:', src.name);
+    if (newName === null) return;
+    const trimmed = newName.trim();
+    if (!trimmed) { toastr.warning('Name cannot be empty'); return; }
+    if (trimmed === src.name) return;
+    const presets = extension_settings[extensionName].comfyPresets;
+    if (presets.some(p => p.name === trimmed)) {
+        toastr.warning(`Preset "${trimmed}" already exists`);
+        return;
+    }
+    src.name = trimmed;
+    extension_settings[extensionName].activePresetName = trimmed;
+    saveSettingsDebounced();
+    renderPresetDropdown();
+    renderPresetFields();
+}
+
+/** 删除当前 preset(confirm + active 回落) */
+function deletePreset() {
+    const src = getActivePreset();
+    if (!src) return;
+    if (!window.confirm(`Delete preset "${src.name}"?`)) return;
+    const oldPreview = src.previewImage || '';
+    const presets = extension_settings[extensionName].comfyPresets;
+    const idx = presets.findIndex(p => p.name === src.name);
+    if (idx >= 0) presets.splice(idx, 1);
+    extension_settings[extensionName].activePresetName = presets[0]?.name ?? null;
+    saveSettingsDebounced();
+    renderPresetDropdown();
+    renderPresetFields();
+    if (oldPreview) deletePreviewFile(oldPreview);
+}
+
+/** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断 */
+async function refreshComfyOptions() {
+    const preset = getActivePreset();
+    if (!preset || !preset.comfyUrl) {
+        toastr.warning('Set ComfyUI URL first');
+        return;
+    }
+    // 防止同 URL 重复拉取(用户连点)
+    if (comfyCache.url === preset.comfyUrl && (comfyCache.models.length || comfyCache.samplers.length || comfyCache.schedulers.length)) {
+        renderPresetFields();
+        return;
+    }
+    toastr.info('Loading ComfyUI options...');
+    const body = { url: preset.comfyUrl };
+    if (preset.comfyAuth) body.auth = preset.comfyAuth;
+    const results = await Promise.allSettled([
+        comfyProxy('models', body),
+        comfyProxy('samplers', body),
+        comfyProxy('schedulers', body),
+    ]);
+    const [modelsR, samplersR, schedulersR] = results;
+    if (modelsR.status === 'fulfilled') comfyCache.models = modelsR.value;
+    else toastr.warning(`Failed to load models: ${modelsR.reason?.message || modelsR.reason}`);
+    if (samplersR.status === 'fulfilled') comfyCache.samplers = samplersR.value;
+    else toastr.warning(`Failed to load samplers: ${samplersR.reason?.message || samplersR.reason}`);
+    if (schedulersR.status === 'fulfilled') comfyCache.schedulers = schedulersR.value;
+    else toastr.warning(`Failed to load schedulers: ${schedulersR.reason?.message || schedulersR.reason}`);
+    comfyCache.url = preset.comfyUrl;
+    renderPresetFields();
+}
+
+// --- 预览图上传/删除 ---
+
+const PREVIEW_MAX_BYTES = 8 * 1024 * 1024; // 8MB
+const PREVIEW_FILENAME_PREFIX = 'mag-preset_preview_';
+
+/** 把 base64 + 文件名上传到 ST 通用文件目录,返回相对路径(可直接当 <img src>) */
+async function uploadPreviewFile(file) {
+    if (!file) return null;
+    if (!file.type.startsWith('image/')) {
+        toastr.warning('Please select an image file');
+        return null;
+    }
+    if (file.size > PREVIEW_MAX_BYTES) {
+        toastr.warning('Image too large (max 8MB)');
+        return null;
+    }
+    const dataUrl = await new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(new Error('FileReader failed'));
+        r.readAsDataURL(file);
+    });
+    const base64 = dataUrl.split(',')[1];
+    const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+    const filename = `${PREVIEW_FILENAME_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+    const res = await fetch('/api/files/upload', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: filename, data: base64 }),
+    });
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Upload failed: ${text}`);
+    }
+    const result = await res.json();
+    return result.path;
+}
+
+/** 删除指定 path 的预览图文件,失败仅 console.warn(不阻断主流程) */
+async function deletePreviewFile(path) {
+    if (!path) return;
+    try {
+        const res = await fetch('/api/files/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ path }),
+        });
+        if (!res.ok) {
+            console.warn(`[${extensionName}] Failed to delete preview file ${path}: ${await res.text()}`);
+        }
+    } catch (e) {
+        console.warn(`[${extensionName}] Failed to delete preview file ${path}:`, e);
+    }
+}
+
+/** 上传新文件作为当前 preset 的预览图(替换旧图) */
+async function uploadPresetPreviewFile(file) {
+    const preset = getActivePreset();
+    if (!preset) return;
+    toastr.info('Uploading preview...');
+    try {
+        const newPath = await uploadPreviewFile(file);
+        if (!newPath) return;
+        const oldPath = preset.previewImage || '';
+        preset.previewImage = newPath;
+        saveSettingsDebounced();
+        if (oldPath && oldPath !== newPath) {
+            await deletePreviewFile(oldPath);
+        }
+        renderPresetPreview();
+        toastr.success('Preview uploaded');
+    } catch (e) {
+        console.error(`[${extensionName}] Preview upload failed:`, e);
+        toastr.error(e.message || String(e));
+    }
+}
+
+/** 渲染当前 preset 的预览图区域(空状态/有图) */
+function renderPresetPreview() {
+    const preset = getActivePreset();
+    const hasPreset = !!preset;
+    const hasImg = !!(preset && preset.previewImage);
+
+    const $wrap = $('#comfy_preview_wrap');
+    if (!$wrap.length) return;
+
+    const $empty = $('#comfy_preview_empty');
+    const $img = $('#comfy_preview_img');
+    const $actions = $('#comfy_preview_actions');
+
+    $wrap.css('display', hasPreset ? 'block' : 'none');
+    if (!hasPreset) return;
+
+    if (hasImg) {
+        // 加 ?ts= 避免同路径刷新缓存(同一文件被覆盖时)
+        $img.attr('src', preset.previewImage).css('display', 'block');
+        $empty.css('display', 'none');
+        $actions.css('display', 'flex');
+    } else {
+        $img.attr('src', '').css('display', 'none');
+        $empty.css('display', 'flex');
+        $actions.css('display', 'none');
+    }
+}
+
+function bindPresetPreviewEvents() {
+    $('#comfy_preview_input').off('.preview').on('change.preview', function (e) {
+        const f = e.target.files?.[0];
+        e.target.value = ''; // 清空,允许下次还能选同一文件
+        if (f) uploadPresetPreviewFile(f);
+    });
+    $('#comfy_preview_empty').off('.preview').on('click.preview', function () {
+        if (!getActivePreset()) return;
+        $('#comfy_preview_input').trigger('click');
+    });
+    $('#comfy_preview_img').off('.preview').on('click.preview', function () {
+        $('#comfy_preview_input').trigger('click');
+    });
+    $('#comfy_preview_change').off('.preview').on('click.preview', function (e) {
+        e.stopPropagation();
+        $('#comfy_preview_input').trigger('click');
+    });
+    $('#comfy_preview_delete').off('.preview').on('click.preview', async function (e) {
+        e.stopPropagation();
+        const preset = getActivePreset();
+        if (!preset || !preset.previewImage) return;
+        if (!window.confirm('Delete preview image?')) return;
+        const oldPath = preset.previewImage;
+        preset.previewImage = '';
+        saveSettingsDebounced();
+        renderPresetPreview();
+        await deletePreviewFile(oldPath);
+    });
+}
+
+function bindPresetEvents() {
+    $('#comfy_preset_new').off('click').on('click', createPreset);
+    $('#comfy_preset_dup').off('click').on('click', duplicatePreset);
+    $('#comfy_preset_rename').off('click').on('click', renamePreset);
+    $('#comfy_preset_delete').off('click').on('click', deletePreset);
+    $('#comfy_refresh').off('click').on('click', refreshComfyOptions);
+    $('#comfy_save').off('click').on('click', async () => {
+        if (!getActivePreset()) { toastr.warning('No active preset'); return; }
+        try {
+            await saveSettings();
+            toastr.success('Saved');
+        } catch (e) {
+            toastr.error(e.message || String(e));
+        }
+    });
+    bindPresetPreviewEvents();
+}
 
 // --- 新增: 渲染角色列表UI ---
 function renderCharacterTagsList() {
@@ -157,9 +640,13 @@ function updateUI() {
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
         $('#stream_generation').prop('checked', extension_settings[extensionName].streamGeneration ?? false);
-        
+
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
+
+        // --- 新增: 渲染配置档 dropdown 和字段 ---
+        renderPresetDropdown();
+        renderPresetFields();
     }
 }
 
@@ -174,15 +661,19 @@ async function loadSettings() {
             }
         }
     }
+    // 配置档迁移:确保 comfyPresets 是数组,失效的 activePresetName 回落
+    if (!Array.isArray(extension_settings[extensionName].comfyPresets)) {
+        extension_settings[extensionName].comfyPresets = [];
+    }
+    const presets = extension_settings[extensionName].comfyPresets;
+    const activeName = extension_settings[extensionName].activePresetName;
+    if (activeName && !presets.some(p => p.name === activeName)) {
+        extension_settings[extensionName].activePresetName = presets[0]?.name ?? null;
+    }
     updateUI();
 }
 
-async function createSettings(settingsHtml) {
-    if (!$('#media_auto_generation_container').length) {
-        $('#extensions_settings2').append('<div id="media_auto_generation_container" class="extension_container"></div>');
-    }
-    $('#media_auto_generation_container').empty().append(settingsHtml);
-
+function bindSettingsEvents() {
     $('#mediaType').on('change', function () {
         extension_settings[extensionName].mediaType = $(this).val();
         if (extension_settings[extensionName].mediaType === 'video' && !extension_settings[extensionName].style) {
@@ -205,7 +696,7 @@ async function createSettings(settingsHtml) {
     $('#add_char_tag_btn').off('click').on('click', function() {
         const nameInput = $('#new_char_name').val().trim();
         const tagsInput = $('#new_char_tags').val().trim();
-        
+
         if (!nameInput || !tagsInput) {
             toastr.warning('角色名称和特征Tags不能为空 / Name and Tags cannot be empty.');
             return;
@@ -213,40 +704,244 @@ async function createSettings(settingsHtml) {
 
         extension_settings[extensionName].characterTags = extension_settings[extensionName].characterTags || {};
         extension_settings[extensionName].characterTags[nameInput] = tagsInput;
-        
+
         saveSettingsDebounced();
-        
+
         // 清空输入框并刷新列表
         $('#new_char_name').val('');
         $('#new_char_tags').val('');
         renderCharacterTagsList();
     });
 
-    updateUI();
+    // --- 新增: 绑定 ComfyUI 配置档事件 ---
+    bindPresetEvents();
 }
 
-function onExtensionButtonClick() {
-    const extensionsDrawer = $('#extensions-settings-button .drawer-toggle');
-    if ($('#rm_extensions_block').hasClass('closedDrawer')) extensionsDrawer.trigger('click');
-    setTimeout(() => {
-        const container = $('#media_auto_generation_container');
-        if (container.length) {
-            $('#rm_extensions_block').animate({ scrollTop: container.offset().top - $('#rm_extensions_block').offset().top + $('#rm_extensions_block').scrollTop() }, 500);
-            const drawerContent = container.find('.inline-drawer-content');
-            const drawerHeader = container.find('.inline-drawer-header');
-            if (drawerContent.is(':hidden') && drawerHeader.length) drawerHeader.trigger('click');
+function createFloatingUI(settingsHtml) {
+    if (!$('#media_auto_gen_float_btn').length) {
+        $('body').append(`
+            <div id="media_auto_gen_float_btn" title="Media Auto Generation">
+                <i class="fa-solid fa-film"></i>
+            </div>
+        `);
+    }
+    const $btn = $('#media_auto_gen_float_btn');
+    $btn.attr('style', [
+        'position:fixed',
+        'z-index:2147483640',
+        'width:48px',
+        'height:48px',
+        'border-radius:50%',
+        'cursor:grab',
+        'display:flex',
+        'align-items:center',
+        'justify-content:center',
+        'font-size:20px',
+        'background:var(--SmartThemeBlurTintColor)',
+        'border:1px solid var(--SmartThemeBorderColor)',
+        'color:var(--SmartThemeBodyColor)',
+        'box-shadow:0 2px 8px rgba(0,0,0,0.3)',
+        'user-select:none',
+        '-webkit-user-select:none',
+    ].join(';') + ';');
+
+    const pos = extension_settings[extensionName].floatBtnPosition;
+    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+        $btn.css({ left: pos.left + 'px', top: pos.top + 'px', right: 'auto', bottom: 'auto' });
+    } else {
+        $btn.css({ right: '20px', bottom: '20px' });
+    }
+
+    if (!$('#media_auto_gen_panel').length) {
+        // #movingDivs is ST's layer for floating panels; fall back to body if absent
+        const mountTarget = $('#movingDivs').length ? $('#movingDivs') : $('body');
+        mountTarget.append(`
+            <div id="media_auto_gen_panel" class="flex-column">
+                <div id="media_auto_gen_panelheader" class="flex-container align_center">
+                    <b data-i18n="Media Auto Generation">Media Auto Generation</b>
+                    <div id="media_auto_gen_panel_close" class="fa-solid fa-circle-xmark whiteClose" title="Close"></div>
+                </div>
+                <div id="media_auto_gen_panel_body"></div>
+            </div>
+        `);
+    }
+    const $panel = $('#media_auto_gen_panel');
+    $panel.attr('style', [
+        'position:fixed',
+        'z-index:2147483640',
+        'display:none',
+        'flex-direction:column',
+        'width:380px',
+        'max-width:90vw',
+        'max-height:80vh',
+        'padding:0',
+        'background:var(--SmartThemeBlurTintColor)',
+        'border:1px solid var(--SmartThemeBorderColor)',
+        'border-radius:10px',
+        'box-shadow:0 4px 20px rgba(0,0,0,0.4)',
+        'right:20px',
+        'top:100px',
+    ].join(';') + ';');
+
+    $('#media_auto_gen_panelheader').attr('style', [
+        'padding:8px 10px',
+        'cursor:grab',
+        'border-bottom:1px solid var(--SmartThemeBorderColor)',
+        'gap:8px',
+    ].join(';') + ';');
+    $('#media_auto_gen_panelheader > b').css('flex', '1');
+    $('#media_auto_gen_panel_close').css({ 'cursor': 'pointer', 'font-size': '20px' });
+
+    $('#media_auto_gen_panel_body')
+        .attr('style', 'padding:10px; overflow-y:auto; flex:1;')
+        .empty()
+        .append(settingsHtml);
+
+    $('#media_auto_gen_panel_close').off('click').on('click', function () {
+        $panel.css('display', 'none');
+    });
+
+    initTabs();
+}
+
+function initTabs() {
+    const $body = $('#media_auto_gen_panel_body');
+    const $btns = $body.find('.mag-tab-btn');
+    $btns.off('click.tab').on('click.tab', function () {
+        const tab = $(this).attr('data-mag-tab');
+        $btns.removeClass('active');
+        $(this).addClass('active');
+        $body.find('.mag-tab-panel').css('display', 'none');
+        $body.find(`.mag-tab-panel[data-mag-panel="${tab}"]`).css('display', 'block');
+    });
+    $btns.first().trigger('click');
+}
+
+function toggleFloatingPanel() {
+    const $p = $('#media_auto_gen_panel');
+    $p.css('display', $p.css('display') === 'none' ? 'flex' : 'none');
+}
+
+function initPanelDrag() {
+    const $panel = $('#media_auto_gen_panel');
+    const $handle = $('#media_auto_gen_panelheader');
+    let startX = 0, startY = 0;
+    let originLeft = 0, originTop = 0;
+    let elW = 0, elH = 0;
+    let dragging = false;
+
+    function getPoint(e) {
+        return (e.touches && e.touches[0]) ? e.touches[0] : e;
+    }
+
+    $handle.on('mousedown touchstart', function (e) {
+        if (e.target.id === 'media_auto_gen_panel_close') return;
+        const p = getPoint(e);
+        startX = p.clientX;
+        startY = p.clientY;
+        const offset = $panel.offset();
+        originLeft = offset.left;
+        originTop = offset.top;
+        elW = $panel.outerWidth();
+        elH = $panel.outerHeight();
+        dragging = false;
+
+        function onMove(ev) {
+            const pp = getPoint(ev);
+            const dx = pp.clientX - startX;
+            const dy = pp.clientY - startY;
+            if (!dragging && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) {
+                dragging = true;
+                $panel.css({ right: 'auto', bottom: 'auto', cursor: 'grabbing' });
+                $handle.css('cursor', 'grabbing');
+            }
+            if (dragging) {
+                const newLeft = clamp(originLeft + dx, 0, window.innerWidth - elW);
+                const newTop = clamp(originTop + dy, 0, window.innerHeight - elH);
+                $panel.css({ left: newLeft + 'px', top: newTop + 'px' });
+                if (ev.cancelable) ev.preventDefault();
+            }
         }
-    }, 500);
+
+        function onUp() {
+            $(document).off('mousemove touchmove', onMove);
+            $(document).off('mouseup touchend', onUp);
+            $handle.css('cursor', 'grab');
+            if (dragging) $panel.css('cursor', '');
+        }
+
+        $(document).on('mousemove touchmove', onMove);
+        $(document).on('mouseup touchend', onUp);
+    });
+}
+
+function initFloatBtnDrag() {
+    const btn = $('#media_auto_gen_float_btn');
+    let startX = 0, startY = 0;
+    let originLeft = 0, originTop = 0;
+    let elW = 0, elH = 0;
+    let isDragging = false;
+
+    function getPoint(e) {
+        return (e.touches && e.touches[0]) ? e.touches[0] : e;
+    }
+
+    btn.on('mousedown touchstart', function (e) {
+        const p = getPoint(e);
+        startX = p.clientX;
+        startY = p.clientY;
+        const offset = btn.offset();
+        originLeft = offset.left;
+        originTop = offset.top;
+        elW = btn.outerWidth();
+        elH = btn.outerHeight();
+        isDragging = false;
+
+        function onMove(ev) {
+            const pp = getPoint(ev);
+            const dx = pp.clientX - startX;
+            const dy = pp.clientY - startY;
+            if (!isDragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+                isDragging = true;
+                btn.css({ right: 'auto', bottom: 'auto', cursor: 'grabbing' });
+            }
+            if (isDragging) {
+                const newLeft = clamp(originLeft + dx, 0, window.innerWidth - elW);
+                const newTop = clamp(originTop + dy, 0, window.innerHeight - elH);
+                btn.css({ left: newLeft + 'px', top: newTop + 'px' });
+                if (ev.cancelable) ev.preventDefault();
+            }
+        }
+
+        function onUp() {
+            $(document).off('mousemove touchmove', onMove);
+            $(document).off('mouseup touchend', onUp);
+            btn.css('cursor', 'grab');
+            if (!isDragging) {
+                toggleFloatingPanel();
+            } else {
+                extension_settings[extensionName].floatBtnPosition = {
+                    left: parseInt(btn.css('left'), 10) || 0,
+                    top: parseInt(btn.css('top'), 10) || 0,
+                };
+                saveSettingsDebounced();
+            }
+        }
+
+        $(document).on('mousemove touchmove', onMove);
+        $(document).on('mouseup touchend', onUp);
+    });
 }
 
 $(function () {
     (async function () {
         const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
-        $('#extensionsMenu').append(`<div id="auto_generation" class="list-group-item flex-container flexGap5"><div class="fa-solid fa-film"></div><span data-i18n="Media Auto Generation">Media Auto Generation</span></div>`);
-        $('#auto_generation').off('click').on('click', onExtensionButtonClick);
         await loadSettings();
-        await createSettings(settingsHtml);
-        $('#extensions-settings-button').on('click', function () { setTimeout(() => { updateUI(); }, 200); });
+        createFloatingUI(settingsHtml);
+        bindSettingsEvents();
+        updateUI();
+        initPanelDrag();
+        initFloatBtnDrag();
     })();
 });
 
@@ -352,31 +1047,9 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             let toast = null;
 
             try {
-                // 注意：这里发送给后台的是注入了固定Tag的 modifiedPrompt
-                let finalPrompt = modifiedPrompt; 
-                
-                if (mediaType === 'video') {
-                    if (rawExtraParams && rawExtraParams.trim()) {
-                        const params = rawExtraParams.split(',');
-                        if (params.length === 3) {
-                            const [frameCount, width, height] = params;
-                            finalPrompt = `{{setvar::videoFrameCount::${frameCount}}}{{setvar::videoWidth::${width}}}{{setvar::videoHeight::${height}}}` + finalPrompt;
-                        }
-                    }
-                } else {
-                    if (rawExtraParams && rawExtraParams.trim()) {
-                        const intensityArr = rawExtraParams.split(',').map(item => item.trim());
-                        if (intensityArr.length === 2) {
-                            const lightIntensity = Math.round(parseFloat(intensityArr[0]) * 100) / 100 || 0;
-                            const sunshineIntensity = Math.round(parseFloat(intensityArr[1]) * 100) / 100 || 0;
-                            finalPrompt = `{{setvar::light_intensity::${lightIntensity}}}{{setvar::sunshine_intensity::${sunshineIntensity}}}` + finalPrompt;
-                        }
-                    }
-                }
-
                 const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
                 const toastrOptions = { timeOut: 0, extendedTimeOut: 0, closeButton: true };
-                
+
                 // 【修改点】：只显示当前是第几张 (基于文本顺序)，不显示未知总数
                 const baseText = `⏳ 生成第 ${index + 1} 张${mediaTypeText}...`;
                 toast = toastr.info(`${baseText} ${seconds}s`, '', toastrOptions);
@@ -388,46 +1061,50 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     }
                 }, 1000);
 
-                // 调用 SD 接口
-                const result = await SlashCommandParser.commands['sd'].callback({ quiet: 'true' }, finalPrompt);
+                // 直接调远程 ComfyUI(走 ST 后端代理 /api/sd/comfy/generate)
+                const { url, format } = await generateViaComfy(modifiedPrompt, mediaType);
 
                 clearInterval(timer);
                 if (toast) toastr.clear(toast);
 
-                if (typeof result === 'string' && result.trim().length > 0) {
-                    const style = extension_settings[extensionName].style || '';
-                    const escapedUrl = escapeHtmlAttribute(result);
-                    // HTML标签上依然保留原始的 rawPrompt 避免文本污染，后台生成使用 modifiedPrompt
-                    const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt); 
-                    const escapedParams = escapeHtmlAttribute(rawExtraParams);
+                // format 与 mediaType 不匹配只警告,不阻断
+                const isVideoFormat = VIDEO_FORMATS.has(format);
+                if (mediaType === 'video' && !isVideoFormat) {
+                    toastr.warning(`ComfyUI returned image format "${format}" but media type is video; tag may not render.`);
+                } else if (mediaType === 'image' && isVideoFormat) {
+                    toastr.warning(`ComfyUI returned video format "${format}" but media type is image; tag may not render.`);
+                }
 
-                    let mediaTag;
-                    if (mediaType === 'video') {
-                        mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
-                    } else {
-                        const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
-                        mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" onclick="window.open(this.src)" />`;
-                    }
+                const style = extension_settings[extensionName].style || '';
+                const escapedUrl = escapeHtmlAttribute(url);
+                // HTML标签上依然保留原始的 rawPrompt 避免文本污染,后台生成使用 modifiedPrompt
+                const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
+                const escapedParams = escapeHtmlAttribute(rawExtraParams);
 
-                    generatedCache.set(promptHash, mediaTag);
-
-                    // 成功后立即解锁
-                    processingHashes.delete(promptHash);
-
-                    // 兜底更新：非流式 或 队列清空时强制更新
-                    if (!isStreamActive || processingHashes.size === 0) {
-                        requestDebouncedUpdate(true); 
-                    }
+                let mediaTag;
+                if (mediaType === 'video') {
+                    mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
                 } else {
-                     throw new Error("Empty result from SD");
+                    const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
+                    mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" />`;
+                }
+
+                generatedCache.set(promptHash, mediaTag);
+
+                // 成功后立即解锁
+                processingHashes.delete(promptHash);
+
+                // 兜底更新:非流式 或 队列清空时强制更新
+                if (!isStreamActive || processingHashes.size === 0) {
+                    requestDebouncedUpdate(true);
                 }
 
             } catch (error) {
                 console.error(`[${extensionName}] Generation failed:`, error);
                 if (timer) clearInterval(timer);
                 if (toast) toastr.clear(toast);
-                toastr.error(`Media generation error: ${error}`);
-                
+                toastr.error(`Media generation error: ${error.message || error}`);
+
                 // 出错清理
                 promptHistory.delete(promptHash);
                 processingHashes.delete(promptHash);

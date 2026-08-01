@@ -1,0 +1,211 @@
+- generic [active] [ref=f2e1]:
+  - generic [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - button "" [ref=f2e7] [cursor=pointer]
+      - text:     ✦        ✦         ✦         ✦             + No items                         ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☐ ☰ ☐ ☰ ☐ ☰                                  + No items      ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰                  +     No items   X     *    *    *    *    *    *     *    *    *    *    *    *    *    *    *    *       *       *                  *      *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *     *     *     *                
+    - generic [ref=f2e8]:
+      - button "" [ref=f2e10] [cursor=pointer]
+      - text: ✦        ✦                                                              
+    - generic [ref=f2e11]:
+      - button "" [ref=f2e13] [cursor=pointer]
+      - text: ✦                                               
+    - generic [ref=f2e14]:
+      - button "" [ref=f2e16] [cursor=pointer]
+      - text:    ✦             +     
+    - generic [ref=f2e17]:
+      - button "" [ref=f2e19] [cursor=pointer]
+      - text: ✦                                   
+    - generic [ref=f2e20]:
+      - generic "更改背景图片" [ref=f2e21]:
+        - button "" [ref=f2e22] [cursor=pointer]
+      - text: ✦    +                          
+    - generic [ref=f2e23]:
+      - button "" [ref=f2e25] [cursor=pointer]
+      - text: ✦         +               +                                                                                                     +   + +  +     +        +        +        +                                      没有找到脚本                                                                                                                          没有找到脚本     
+    - generic [ref=f2e26]:
+      - button "" [ref=f2e28] [cursor=pointer]
+      - text: ✦                    
+    - generic [ref=f2e29]:
+      - button "" [ref=f2e31] [cursor=pointer]
+      - text:      ✦                                                暂无成员          无可用角色                         
+  - generic:                      +                                                           ✦                  +    + +                  
+  - generic:
+    - text:                  
+    - generic [ref=f2e181]:
+      - generic [ref=f2e182]:
+        - generic [ref=f2e183]: 媒体自动生成
+        - generic "Close" [ref=f2e184] [cursor=pointer]: 
+      - generic [ref=f2e185]:
+        - generic [ref=f2e186]:
+          - generic [ref=f2e187] [cursor=pointer]: 主要配置
+          - generic [ref=f2e188] [cursor=pointer]: ComfyUI 配置
+          - generic [ref=f2e189] [cursor=pointer]: 角色固定特征
+        - generic [ref=f2e190]:
+          - generic [ref=f2e191]:
+            - generic [ref=f2e192]: 流式生成
+            - checkbox "流式生成" [checked] [ref=f2e193] [cursor=pointer]
+          - generic [ref=f2e194]:
+            - generic [ref=f2e195]: 媒体类型
+            - combobox "媒体类型" [ref=f2e196]:
+              - option "已禁用"
+              - option "图片" [selected]
+              - option "视频"
+          - generic [ref=f2e197]:
+            - generic [ref=f2e198]: 图片正则表达式
+            - textbox "图片正则表达式" [ref=f2e199]:
+              - /placeholder: Image regex here
+              - text: /<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi
+          - generic [ref=f2e200]:
+            - generic [ref=f2e201]: 视频正则表达式
+            - textbox "视频正则表达式" [ref=f2e202]:
+              - /placeholder: Video regex here
+              - text: "/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParamss*=s*\"([^\"]*)\")?(?:(?!\bprompt\b)[^>])*\bprompts*=s*\"([^\"]*)\"[^>]*>/gi"
+          - generic [ref=f2e203]:
+            - generic [ref=f2e204]: 风格
+            - textbox "风格" [ref=f2e205]:
+              - /placeholder: e.g. width:100%;height:auto
+              - text: width:100%;height:auto
+        - text: +         +
+  - generic [ref=f2e32]:
+    - text: 
+    - generic [ref=f2e33]:
+      - generic [ref=f2e34]:
+        - generic [ref=f2e35]:
+          - img "SillyTavern Logo" [ref=f2e36]
+          - generic [ref=f2e37]: SillyTavern 1.16.0 'release' (0cb193c11)
+          - text: 
+          - button "" [ref=f2e38] [cursor=pointer]
+        - generic [ref=f2e40]:
+          - generic [ref=f2e41]: 最近的聊天
+          - generic [ref=f2e42]:
+            - button " 文档" [ref=f2e43] [cursor=pointer]:
+              - generic [ref=f2e44]: 
+              - generic [ref=f2e45]: 文档
+            - button " GitHub" [ref=f2e46] [cursor=pointer]:
+              - generic [ref=f2e47]: 
+              - generic [ref=f2e48]: GitHub
+            - button " Discord" [ref=f2e49] [cursor=pointer]:
+              - generic [ref=f2e50]: 
+              - generic [ref=f2e51]: Discord
+            - generic [ref=f2e52]: "|"
+            - button " 临时聊天" [ref=f2e53] [cursor=pointer]:
+              - generic [ref=f2e54]: 
+              - generic [ref=f2e55]: 临时聊天
+        - list [ref=f2e57]:
+          - listitem [ref=f2e58] [cursor=pointer]:
+            - 'generic "[Character] 魔法少女堕落之路～淫纹的诅咒～ File: 魔法少女堕落之路～淫纹的诅咒～.png" [ref=f2e59]':
+              - img "魔法少女堕落之路～淫纹的诅咒～" [ref=f2e60]
+            - generic [ref=f2e61]:
+              - generic [ref=f2e62]:
+                - generic "魔法少女堕落之路～淫纹的诅咒～ - 2026-04-06@17h10m17s831ms.jsonl" [ref=f2e63]:
+                  - strong [ref=f2e64]: 魔法少女堕落之路～淫纹的诅咒～
+                  - text: – 魔法少女堕落之路～淫纹的诅咒～ - 2026-04-06@17h10m17s831ms
+                - generic "2026年8月1日 14:29" [ref=f2e65]: 2026/8/1
+                - generic [ref=f2e66]:
+                  - button "" [ref=f2e67]
+                  - button "" [ref=f2e69]
+                  - button "" [ref=f2e71]
+              - generic [ref=f2e73]:
+                - generic "<img src=\"/user/images/魔法少女堕落之路～淫纹的诅咒～/image_1785565793659_d3gsza.png\" light_intensity=\"0\" prompt=\"1girl,huge breasts,pussy,no panty\" style=\"width:100%;height:auto\" />" [ref=f2e74]
+                - generic [ref=f2e75]:
+                  - generic [ref=f2e76]:
+                    - generic [ref=f2e77]: 
+                    - generic [ref=f2e78]: "1"
+                    - text: "|"
+                  - generic [ref=f2e79]: 1.67KB
+          - listitem [ref=f2e80] [cursor=pointer]:
+            - 'generic "[Character] 魔法少女堕落之路～淫纹的诅咒～ File: 魔法少女堕落之路～淫纹的诅咒～.png" [ref=f2e81]':
+              - img "魔法少女堕落之路～淫纹的诅咒～" [ref=f2e82]
+            - generic [ref=f2e83]:
+              - generic [ref=f2e84]:
+                - generic "魔法少女堕落之路～淫纹的诅咒～ - 2026-04-02@21h04m44s734ms.jsonl" [ref=f2e85]:
+                  - strong [ref=f2e86]: 魔法少女堕落之路～淫纹的诅咒～
+                  - text: – 魔法少女堕落之路～淫纹的诅咒～ - 2026-04-02@21h04m44s734ms
+                - generic "2026年4月2日 21:37" [ref=f2e87]: 2026/4/2
+                - generic [ref=f2e88]:
+                  - button "" [ref=f2e89]
+                  - button "" [ref=f2e91]
+                  - button "" [ref=f2e93]
+              - generic [ref=f2e95]:
+                - generic "我会在剧情开始前，根据历史记录和相关设定，对本段剧情进行总结和分析喵！" [ref=f2e96]
+                - generic [ref=f2e97]:
+                  - generic [ref=f2e98]:
+                    - generic [ref=f2e99]: 
+                    - generic [ref=f2e100]: "3"
+                    - text: "|"
+                  - generic [ref=f2e101]: 8.55KB
+          - listitem [ref=f2e102] [cursor=pointer]:
+            - 'generic "[Character] Seraphina File: default_Seraphina.png" [ref=f2e103]':
+              - img "Seraphina" [ref=f2e104]
+            - generic [ref=f2e105]:
+              - generic [ref=f2e106]:
+                - generic "Seraphina - 2023-5-12 @21h 32m 29s 224ms.jsonl" [ref=f2e107]:
+                  - strong [ref=f2e108]: Seraphina
+                  - text: – Seraphina - 2023-5-12 @21h 32m 29s 224ms
+                - generic "2026年4月2日 21:10" [ref=f2e109]: 2026/4/2
+                - generic [ref=f2e110]:
+                  - button "" [ref=f2e111]
+                  - button "" [ref=f2e113]
+                  - button "" [ref=f2e115]
+              - generic [ref=f2e117]:
+                - generic "*You wake with a start, recalling the events that led you deep into the forest and the beasts that assailed you. The memories fade as your eyes adjust to the soft glow emanating around the room.* \"Ah, you're awake at last. I was so worried, I found you bloodied and unconscious.\" *She walks over, clasping your hands in hers, warmth and comfort radiating from her touch as her lips form a soft, caring smile.* \"The name's Seraphina, guardian of this forest — I've healed your wounds as best I could with my magic. How are you feeling? I hope the tea helps restore your strength.\" *Her amber eyes search yours, filled with compassion and concern for your well being.* \"Please, rest. You're safe here. I'll look after you, but you need to rest. My magic can only do so much to heal you.\"" [ref=f2e118]
+                - generic [ref=f2e119]:
+                  - generic [ref=f2e120]:
+                    - generic [ref=f2e121]: 
+                    - generic [ref=f2e122]: "1"
+                    - text: "|"
+                  - generic [ref=f2e123]: 2.12KB
+      - generic [ref=f2e124]:
+        - generic [ref=f2e125]: "#0"
+        - generic [ref=f2e128]:
+          - generic [ref=f2e129]:
+            - generic [ref=f2e131]:
+              - generic [ref=f2e132]: Assistant
+              - text: 
+              - generic [ref=f2e133]: 2026年8月1日 17:23
+            - generic [ref=f2e134]:               
+            - text:       
+          - text: ✦       
+          - generic [ref=f2e135]:
+            - paragraph [ref=f2e136]: If you're connected to an API, try asking me something!
+            - separator [ref=f2e137]
+            - paragraph [ref=f2e138]:
+              - strong [ref=f2e139]: "Hint:"
+              - text: Set any character as your welcome page assistant from their "More…" menu.
+      - generic [ref=f2e141]:
+        - text:                        ✦       
+        - generic [ref=f2e143]:
+          - button " API连接" [ref=f2e144] [cursor=pointer]:
+            - generic [ref=f2e145]: 
+            - generic [ref=f2e146]: API连接
+          - button " 角色管理" [ref=f2e147] [cursor=pointer]:
+            - generic [ref=f2e148]: 
+            - generic [ref=f2e149]: 角色管理
+          - button " 扩展" [ref=f2e150] [cursor=pointer]:
+            - generic [ref=f2e151]: 
+            - generic [ref=f2e152]: 扩展
+    - generic [ref=f2e155]:
+      - text:  
+      - generic [ref=f2e156]:
+        - generic [ref=f2e157]:
+          - generic [ref=f2e158] [cursor=pointer]: 
+          - generic "扩展" [ref=f2e159] [cursor=pointer]: 
+        - textbox "未连接到API！" [ref=f2e160]: 那晚去密室里找雫的时候，有没有发现什么奇怪的痕迹？
+        - generic [ref=f2e161]:
+          - button "" [ref=f2e163] [cursor=pointer]
+          - text:       
+  - text:                       1     
+  - generic [ref=f2e166]: 
+  - generic "Media Auto Generation" [ref=f2e167]: 
+  - status [ref=f2e169]
+  - status [ref=f2e170]
+  - status [ref=f2e171]
+  - status [ref=f2e172]
+  - status [ref=f2e173]
+  - status [ref=f2e174]
+  - status [ref=f2e175]
+  - status [ref=f2e176]
+  - status [ref=f2e177]
+  - status [ref=f2e178]
+  - status [ref=f2e179]
+  - status [ref=f2e180]

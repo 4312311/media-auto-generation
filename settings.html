@@ -1,61 +1,398 @@
-<div class="inline-drawer">
-    <div class="inline-drawer-toggle inline-drawer-header">
-        <b data-i18n="Media Auto Generation">Media Auto Generation</b>
-        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+<style>
+    #media_auto_gen_panel_body .mag-tabs-header {
+        display: flex;
+        gap: 4px;
+        border-bottom: 1px solid var(--SmartThemeBorderColor);
+        margin-bottom: 10px;
+        padding-bottom: 4px;
+    }
+    #media_auto_gen_panel_body .mag-tab-btn {
+        flex: 1;
+        text-align: center;
+        padding: 6px 8px;
+        cursor: pointer;
+        border-radius: 5px;
+        font-size: 0.9em;
+        opacity: 0.7;
+        transition: opacity 0.1s, background 0.1s;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    #media_auto_gen_panel_body .mag-tab-btn:hover {
+        opacity: 0.9;
+    }
+    #media_auto_gen_panel_body .mag-tab-btn.active {
+        opacity: 1;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px solid var(--SmartThemeBorderColor);
+    }
+    #media_auto_gen_panel_body .mag-tab-panel {
+        display: block;
+    }
+    #media_auto_gen_panel_body .comfy_preview_empty {
+        border: 2px dashed var(--SmartThemeBorderColor);
+        border-radius: 5px;
+        padding: 30px 10px;
+        text-align: center;
+        cursor: pointer;
+        opacity: 0.7;
+        transition: opacity 0.1s;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+    }
+    #media_auto_gen_panel_body .comfy_preview_empty:hover {
+        opacity: 1;
+    }
+    #media_auto_gen_panel_body .comfy_preview_empty i {
+        font-size: 1.5em;
+    }
+    #media_auto_gen_panel_body #comfy_preview_img {
+        width: 100%;
+        height: auto;
+        max-height: 200px;
+        object-fit: contain;
+        border-radius: 5px;
+        cursor: pointer;
+        display: block;
+    }
+    #media_auto_gen_panel_body #comfy_preview_actions {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        gap: 4px;
+    }
+    @media (max-width: 500px) {
+        #media_auto_gen_panel_body .comfy_preview_empty {
+            padding: 20px 8px;
+        }
+        #media_auto_gen_panel_body #comfy_preview_actions .menu_button {
+            padding: 8px !important;
+            min-width: 36px;
+            min-height: 36px;
+        }
+    }
+
+    /* --- Gallery --- */
+    #media_auto_gen_panel_body #gallery_container {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    #media_auto_gen_panel_body .gallery-group {
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 5px;
+        background: var(--SmartThemeBlurTintColor);
+        overflow: hidden;
+    }
+    #media_auto_gen_panel_body .gallery-group > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 6px 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.95em;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    #media_auto_gen_panel_body .gallery-group > summary::-webkit-details-marker { display: none; }
+    #media_auto_gen_panel_body .gallery-group > summary::before {
+        content: "\f054"; /* fa-chevron-right */
+        font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", "FontAwesome";
+        font-weight: 900;
+        font-size: 0.75em;
+        opacity: 0.7;
+        transition: transform 0.15s;
+        display: inline-block;
+    }
+    #media_auto_gen_panel_body .gallery-group[open] > summary::before {
+        transform: rotate(90deg);
+    }
+    #media_auto_gen_panel_body .gallery-char-name {
+        flex: 1;
+        font-weight: bold;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    #media_auto_gen_panel_body .gallery-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+        gap: 4px;
+        padding: 6px;
+    }
+    #media_auto_gen_panel_body .gallery-thumb-wrap {
+        position: relative;
+        aspect-ratio: 1 / 1;
+        overflow: hidden;
+        border-radius: 4px;
+        cursor: pointer;
+        background: var(--black30a, rgba(0,0,0,0.3));
+    }
+    #media_auto_gen_panel_body .gallery-thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        transition: transform 0.1s;
+    }
+    #media_auto_gen_panel_body .gallery-thumb-wrap:hover .gallery-thumb {
+        transform: scale(1.05);
+    }
+    #media_auto_gen_panel_body .gallery-video-badge {
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        background: rgba(0,0,0,0.6);
+        color: #fff;
+        font-size: 0.7em;
+        padding: 2px 4px;
+        border-radius: 3px;
+        pointer-events: none;
+    }
+    #media_auto_gen_panel_body #gallery_empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 40px 10px;
+        text-align: center;
+        opacity: 0.6;
+    }
+    #media_auto_gen_panel_body #gallery_empty i {
+        font-size: 2.2em;
+    }
+
+    /* --- Lightbox (挂在 body 下,不属 panel_body) --- */
+    #mag_gallery_lightbox {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483650;
+        background: rgba(0,0,0,0.85);
+        display: none;
+        align-items: center;
+        justify-content: center;
+    }
+    #mag_gallery_lightbox.open {
+        display: flex;
+    }
+    #mag_gallery_lightbox .lightbox-stage {
+        position: relative;
+        max-width: 90vw;
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+    }
+    #mag_gallery_lightbox .lightbox-media {
+        max-width: 90vw;
+        max-height: 80vh;
+        object-fit: contain;
+        border-radius: 6px;
+    }
+    #mag_gallery_lightbox .lightbox-prompt {
+        max-width: 80vw;
+        max-height: 8vh;
+        overflow-y: auto;
+        color: #ddd;
+        font-size: 0.85em;
+        text-align: center;
+        word-break: break-word;
+        padding: 0 10px;
+    }
+    #mag_gallery_lightbox .lightbox-close {
+        position: fixed;
+        top: 16px;
+        right: 20px;
+        font-size: 28px;
+        color: #fff;
+        cursor: pointer;
+        opacity: 0.8;
+    }
+    #mag_gallery_lightbox .lightbox-close:hover {
+        opacity: 1;
+    }
+</style>
+
+<div class="mag-tabs-header">
+    <div class="mag-tab-btn active" data-mag-tab="main" data-i18n="mag_tab_main">主要配置</div>
+    <div class="mag-tab-btn" data-mag-tab="comfy" data-i18n="mag_tab_comfy">ComfyUI 配置</div>
+    <div class="mag-tab-btn" data-mag-tab="chars" data-i18n="mag_tab_chars">角色固定特征</div>
+    <div class="mag-tab-btn" data-mag-tab="gallery" data-i18n="mag_tab_gallery">图库</div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="main">
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="stream_generation" class="flex1" data-i18n="Stream Generation">Stream Generation (Experimental)</label>
+        <input type="checkbox" id="stream_generation" class="checkbox_simple">
     </div>
-    <div class="inline-drawer-content">
-        
-        <div class="flex-container flexnowrap align_center margin-top-5">
-            <label for="stream_generation" class="flex1" data-i18n="Stream Generation">Stream Generation (Experimental)</label>
-            <input type="checkbox" id="stream_generation" class="checkbox_simple">
-        </div>
-        
-        <div class="flex-container flexnowrap margin-top-5">
-            <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
-            <select id="mediaType" class="text_pole widthNatural margin0">
-                <option value="disabled" data-i18n="Disabled" selected>Disabled</option>
-                <option value="image" data-i18n="Image">Image</option>
-                <option value="video" data-i18n="Video">Video</option>
-            </select>
-        </div>
-        
-        <div class="margin-top-5">
-            <div><label for="image_regex" class="flex1" data-i18n="Image Regex">Image Regex</label></div>
-            <textarea id="image_regex" class="text_pole textarea_compact" rows="2" placeholder="Image regex here"></textarea>
-        </div>
-        
-        <div class="margin-top-5">
-            <div><label for="video_regex" class="flex1" data-i18n="Video Regex">Video Regex</label></div>
-            <textarea id="video_regex" class="text_pole textarea_compact" rows="2" placeholder="Video regex here"></textarea>
-        </div>
-        
-        <div class="margin-top-5">
-            <div><label for="media_style" class="flex1" data-i18n="Style">Style</label></div>
-            <input id="media_style" class="text_pole" placeholder="e.g. width:100%;height:auto">
-        </div>
 
-        <hr style="margin: 15px 0; border-color: var(--SmartThemeBorderColor);">
+    <div class="flex-container flexnowrap margin-top-5">
+        <label for="mediaType" class="flex1" data-i18n="Media Type">Media Type</label>
+        <select id="mediaType" class="text_pole widthNatural margin0">
+            <option value="disabled" data-i18n="Disabled" selected>Disabled</option>
+            <option value="image" data-i18n="Image">Image</option>
+            <option value="video" data-i18n="Video">Video</option>
+        </select>
+    </div>
 
-        <div class="margin-top-5">
-            <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
-                <b data-i18n="Character Fixed Tags">Character Fixed Tags</b>
-                <small style="opacity: 0.7;" data-i18n="Auto inject tags to prompt">Auto inject tags to prompt</small>
+    <div class="margin-top-5">
+        <div><label for="image_regex" class="flex1" data-i18n="Image Regex">Image Regex</label></div>
+        <textarea id="image_regex" class="text_pole textarea_compact" rows="2" placeholder="Image regex here"></textarea>
+    </div>
+
+    <div class="margin-top-5">
+        <div><label for="video_regex" class="flex1" data-i18n="Video Regex">Video Regex</label></div>
+        <textarea id="video_regex" class="text_pole textarea_compact" rows="2" placeholder="Video regex here"></textarea>
+    </div>
+
+    <div class="margin-top-5">
+        <div><label for="media_style" class="flex1" data-i18n="Style">Style</label></div>
+        <input id="media_style" class="text_pole" placeholder="e.g. width:100%;height:auto">
+    </div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="comfy" style="display:none;">
+    <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
+        <b data-i18n="ComfyUI Presets">ComfyUI Presets</b>
+        <small style="opacity: 0.7;" data-i18n="Direct ComfyUI connection">Direct ComfyUI connection</small>
+    </div>
+
+    <div class="flex-container flexGap5 align_center margin-bottom-5">
+        <select id="comfy_preset_select" class="text_pole" style="flex: 1; min-width: 100px;"></select>
+        <div id="comfy_preset_new" class="menu_button menu_button_icon" title="New Preset" data-i18n="[title]New Preset" style="margin: 0; padding: 5px;">
+            <i class="fa-solid fa-plus"></i>
+        </div>
+        <div id="comfy_preset_dup" class="menu_button menu_button_icon" title="Duplicate Preset" data-i18n="[title]Duplicate Preset" style="margin: 0; padding: 5px;">
+            <i class="fa-solid fa-copy"></i>
+        </div>
+        <div id="comfy_preset_rename" class="menu_button menu_button_icon" title="Rename Preset" data-i18n="[title]Rename Preset" style="margin: 0; padding: 5px;">
+            <i class="fa-solid fa-pen"></i>
+        </div>
+        <div id="comfy_preset_delete" class="menu_button menu_button_icon" title="Delete Preset" data-i18n="[title]Delete Preset" style="margin: 0; padding: 5px;">
+            <i class="fa-solid fa-trash"></i>
+        </div>
+    </div>
+
+    <div id="comfy_preview_wrap" class="margin-top-5" style="position: relative;">
+        <div id="comfy_preview_empty" class="comfy_preview_empty">
+            <i class="fa-solid fa-image"></i>
+            <span data-i18n="mag_preview_empty_hint">点击上传预览图</span>
+        </div>
+        <img id="comfy_preview_img" alt="preview" style="display:none;" />
+        <div id="comfy_preview_actions" style="display:none;">
+            <div id="comfy_preview_change" class="menu_button menu_button_icon" title="Change" data-i18n="[title]mag_preview_change" style="padding: 5px;">
+                <i class="fa-solid fa-rotate"></i>
             </div>
-            
-            <div class="flex-container flexGap5 align_center margin-bottom-10">
-                <input id="new_char_name" class="text_pole" style="flex: 1; min-width: 80px;" placeholder="Name (e.g. Lisa)">
-                <input id="new_char_tags" class="text_pole" style="flex: 2;" placeholder="Tags (e.g. 1girl, chestnut hair...)">
-                <div id="add_char_tag_btn" class="menu_button menu_button_icon" title="Add Character Tag" style="margin: 0;">
-                    <i class="fa-solid fa-plus"></i>
-                </div>
-            </div>
-
-            <div id="character_tags_list" class="flex-container flex-column flexGap5" style="max-height: 150px; overflow-y: auto; padding: 5px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; background: var(--SmartThemeBlurTintColor);">
-                <div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip">
-                    No characters added yet.
-                </div>
+            <div id="comfy_preview_delete" class="menu_button menu_button_icon" title="Delete" data-i18n="[title]mag_preview_delete" style="padding: 5px;">
+                <i class="fa-solid fa-trash"></i>
             </div>
         </div>
+        <input type="file" id="comfy_preview_input" accept="image/*" hidden />
+    </div>
 
+    <div class="margin-top-5">
+        <label for="comfy_url" data-i18n="ComfyUI URL">ComfyUI URL</label>
+        <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
+    </div>
+
+    <div class="flex-container flexGap5 align_center margin-top-5">
+        <div class="flex1">
+            <label data-i18n="Model">Model</label>
+            <select id="comfy_model" class="text_pole"></select>
+        </div>
+        <div id="comfy_refresh" class="menu_button menu_button_icon" title="Refresh" data-i18n="[title]Refresh" style="align-self: flex-end; margin: 0; padding: 5px;">
+            <i class="fa-solid fa-rotate"></i>
+        </div>
+    </div>
+
+    <div class="flex-container flexGap5 margin-top-5">
+        <div class="flex1">
+            <label data-i18n="Sampler">Sampler</label>
+            <select id="comfy_sampler" class="text_pole"></select>
+        </div>
+        <div class="flex1">
+            <label data-i18n="Scheduler">Scheduler</label>
+            <select id="comfy_scheduler" class="text_pole"></select>
+        </div>
+    </div>
+
+    <div class="flex-container flexGap5 margin-top-5">
+        <div class="flex1">
+            <label data-i18n="Width">Width</label>
+            <input id="comfy_width" class="text_pole" type="number">
+        </div>
+        <div class="flex1">
+            <label data-i18n="Height">Height</label>
+            <input id="comfy_height" class="text_pole" type="number">
+        </div>
+        <div class="flex1">
+            <label data-i18n="Steps">Steps</label>
+            <input id="comfy_steps" class="text_pole" type="number">
+        </div>
+    </div>
+
+    <div class="flex-container flexGap5 margin-top-5">
+        <div class="flex1">
+            <label data-i18n="Scale">Scale</label>
+            <input id="comfy_scale" class="text_pole" type="number" step="0.1">
+        </div>
+        <div class="flex1">
+            <label data-i18n="Denoise">Denoise</label>
+            <input id="comfy_denoise" class="text_pole" type="number" step="0.1">
+        </div>
+        <div class="flex1">
+            <label data-i18n="Seed">Seed</label>
+            <input id="comfy_seed" class="text_pole" type="number" placeholder="-1 = random">
+        </div>
+    </div>
+
+    <div class="margin-top-5">
+        <label for="comfy_pos_prefix" data-i18n="Positive Prompt Prefix">Positive Prompt Prefix</label>
+        <textarea id="comfy_pos_prefix" class="text_pole textarea_compact" rows="2" placeholder="masterpiece, best quality, ..."></textarea>
+    </div>
+    <div class="margin-top-5">
+        <label for="comfy_neg_prefix" data-i18n="Negative Prompt Prefix">Negative Prompt Prefix</label>
+        <textarea id="comfy_neg_prefix" class="text_pole textarea_compact" rows="2" placeholder="lowres, bad anatomy, ..."></textarea>
+    </div>
+    <div class="margin-top-5">
+        <label for="comfy_workflow" data-i18n="Workflow JSON (API format)">Workflow JSON (API format)</label>
+        <textarea id="comfy_workflow" class="text_pole textarea_compact" rows="8" style="font-family: monospace; font-size: 0.85em;" placeholder='{"3": {"class_type": "KSampler", "inputs": {"seed": "%seed%"}}}'>
+        </textarea>
+    </div>
+
+    <div class="margin-top-5" style="text-align: right;">
+        <div id="comfy_save" class="menu_button" title="Save" data-i18n="[title]Save" style="display: inline-flex; gap: 5px; align-items: center;">
+            <i class="fa-solid fa-floppy-disk"></i>
+            <span data-i18n="Save">Save</span>
+        </div>
+    </div>
+
+    <div id="comfy_empty_hint" class="margin-top-5" style="text-align: center; opacity: 0.7; font-size: 0.95em; padding: 20px 10px; display: none; border: 1px dashed var(--SmartThemeBorderColor); border-radius: 5px;" data-i18n="No preset. Click + to create one.">
+        No preset. Click + to create one.
+    </div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="chars" style="display:none;">
+    <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
+        <b data-i18n="Character Fixed Tags">Character Fixed Tags</b>
+        <small style="opacity: 0.7;" data-i18n="Auto inject tags to prompt">Auto inject tags to prompt</small>
+    </div>
+
+    <div class="flex-container flexGap5 align_center margin-bottom-10">
+        <input id="new_char_name" class="text_pole" style="flex: 1; min-width: 80px;" placeholder="Name (e.g. Lisa)">
+        <input id="new_char_tags" class="text_pole" style="flex: 2;" placeholder="Tags (e.g. 1girl, chestnut hair...)">
+        <div id="add_char_tag_btn" class="menu_button menu_button_icon" title="Add Character Tag" style="margin: 0;">
+            <i class="fa-solid fa-plus"></i>
+        </div>
+    </div>
+
+    <div id="character_tags_list" class="flex-container flex-column flexGap5" style="max-height: 150px; overflow-y: auto; padding: 5px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 5px; background: var(--SmartThemeBlurTintColor);">
+        <div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip">
+            No characters added yet.
+        </div>
     </div>
 </div>

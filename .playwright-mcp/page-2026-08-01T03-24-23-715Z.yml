@@ -1,0 +1,176 @@
+- generic [active] [ref=f2e1]:
+  - generic [ref=f2e14]:
+    - generic [ref=f2e15]:
+      - button "" [ref=f2e2823] [cursor=pointer]
+      - text:     ✦        ✦         ✦         ✦             + No items                         ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☐ ☰ ☐ ☰ ☐ ☰                                  + No items      ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰                  +     No items   X     *    *    *    *    *    *     *    *    *    *    *    *    *    *    *    *       *       *                  *      *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *    *     *     *     *                
+    - generic [ref=f2e1141]:
+      - button "" [ref=f2e2824] [cursor=pointer]
+      - text: ✦        ✦                                                              
+    - generic [ref=f2e1199]:
+      - button "" [ref=f2e2825] [cursor=pointer]
+      - text: ✦                                               
+    - generic [ref=f2e1435]:
+      - button "" [ref=f2e2826] [cursor=pointer]
+      - text:    ✦             +     
+    - generic [ref=f2e1531]:
+      - button "" [ref=f2e2827] [cursor=pointer]
+      - text: ✦                                   
+    - generic [ref=f2e1895]:
+      - generic "更改背景图片" [ref=f2e2828]:
+        - button "" [ref=f2e2829] [cursor=pointer]
+      - text: ✦    +                          
+    - generic [ref=f2e1927]:
+      - button "" [ref=f2e2830] [cursor=pointer]
+      - text: ✦         +               +                                                                                                     +   + +  +     +        +        +        +                                      没有找到脚本                                                                                                                          没有找到脚本     
+    - generic [ref=f2e1953]:
+      - button "" [ref=f2e2831] [cursor=pointer]
+      - text: ✦                    
+    - generic [ref=f2e2031]:
+      - button "" [ref=f2e2832] [cursor=pointer]
+      - text:      ✦                                                暂无成员          无可用角色                         
+  - generic:                      +                                                           ✦                  +    + +                  
+  - generic:                    +      +
+  - generic [ref=f2e2793]:
+    - text: 
+    - generic [ref=f2e2833]:
+      - generic [ref=f2e2834]:
+        - generic [ref=f2e2835]:
+          - img "SillyTavern Logo" [ref=f2e2836]
+          - generic [ref=f2e2837]: SillyTavern 1.16.0 'release' (0cb193c11)
+          - text: 
+          - button "" [ref=f2e2838] [cursor=pointer]
+        - generic [ref=f2e2840]:
+          - generic [ref=f2e2841]: 最近的聊天
+          - generic [ref=f2e2842]:
+            - button " 文档" [ref=f2e2843] [cursor=pointer]:
+              - generic [ref=f2e2844]: 
+              - generic [ref=f2e2845]: 文档
+            - button " GitHub" [ref=f2e2846] [cursor=pointer]:
+              - generic [ref=f2e2847]: 
+              - generic [ref=f2e2848]: GitHub
+            - button " Discord" [ref=f2e2849] [cursor=pointer]:
+              - generic [ref=f2e2850]: 
+              - generic [ref=f2e2851]: Discord
+            - generic [ref=f2e2852]: "|"
+            - button " 临时聊天" [ref=f2e2853] [cursor=pointer]:
+              - generic [ref=f2e2854]: 
+              - generic [ref=f2e2855]: 临时聊天
+        - list [ref=f2e2857]:
+          - listitem [ref=f2e2858] [cursor=pointer]:
+            - 'generic "[Character] 魔法少女堕落之路～淫纹的诅咒～ File: 魔法少女堕落之路～淫纹的诅咒～.png" [ref=f2e2859]':
+              - img "魔法少女堕落之路～淫纹的诅咒～" [ref=f2e2860]
+            - generic [ref=f2e2861]:
+              - generic [ref=f2e2862]:
+                - generic "魔法少女堕落之路～淫纹的诅咒～ - 2026-04-09@20h44m16s835ms.jsonl" [ref=f2e2863]:
+                  - strong [ref=f2e2864]: 魔法少女堕落之路～淫纹的诅咒～
+                  - text: – 魔法少女堕落之路～淫纹的诅咒～ - 2026-04-09@20h44m16s835ms
+                - generic "2026年4月9日 20:45" [ref=f2e2865]: 2026/4/9
+                - generic [ref=f2e2866]:
+                  - button "" [ref=f2e2867]
+                  - button "" [ref=f2e2869]
+                  - button "" [ref=f2e2871]
+              - generic [ref=f2e2873]:
+                - generic "<img src=\"/user/images/魔法少女堕落之路～淫纹的诅咒～/魔法少女堕落之路～淫纹的诅咒～_2026-08-01@01h22m09s667ms.png\" light_intensity=\"0\" prompt=\"1girl\" style=\"width:100%;height:auto\" onclick=\"window.open(this.src)\" />" [ref=f2e2874]
+                - generic [ref=f2e2875]:
+                  - generic [ref=f2e2876]:
+                    - generic [ref=f2e2877]: 
+                    - generic [ref=f2e2878]: "3"
+                    - text: "|"
+                  - generic [ref=f2e2879]: 9.08KB
+          - listitem [ref=f2e2880] [cursor=pointer]:
+            - 'generic "[Character] 魔法少女堕落之路～淫纹的诅咒～ File: 魔法少女堕落之路～淫纹的诅咒～.png" [ref=f2e2881]':
+              - img "魔法少女堕落之路～淫纹的诅咒～" [ref=f2e2882]
+            - generic [ref=f2e2883]:
+              - generic [ref=f2e2884]:
+                - generic "魔法少女堕落之路～淫纹的诅咒～ - 2026-04-06@17h10m17s831ms.jsonl" [ref=f2e2885]:
+                  - strong [ref=f2e2886]: 魔法少女堕落之路～淫纹的诅咒～
+                  - text: – 魔法少女堕落之路～淫纹的诅咒～ - 2026-04-06@17h10m17s831ms
+                - generic "2026年4月6日 17:22" [ref=f2e2887]: 2026/4/6
+                - generic [ref=f2e2888]:
+                  - button "" [ref=f2e2889]
+                  - button "" [ref=f2e2891]
+                  - button "" [ref=f2e2893]
+              - generic [ref=f2e2895]:
+                - generic "[The message is empty]" [ref=f2e2896]
+                - generic [ref=f2e2897]:
+                  - generic [ref=f2e2898]:
+                    - generic [ref=f2e2899]: 
+                    - generic [ref=f2e2900]: "0"
+                    - text: "|"
+                  - generic [ref=f2e2901]: 670B
+          - listitem [ref=f2e2902] [cursor=pointer]:
+            - 'generic "[Character] 魔法少女堕落之路～淫纹的诅咒～ File: 魔法少女堕落之路～淫纹的诅咒～.png" [ref=f2e2903]':
+              - img "魔法少女堕落之路～淫纹的诅咒～" [ref=f2e2904]
+            - generic [ref=f2e2905]:
+              - generic [ref=f2e2906]:
+                - generic "魔法少女堕落之路～淫纹的诅咒～ - 2026-04-02@21h04m44s734ms.jsonl" [ref=f2e2907]:
+                  - strong [ref=f2e2908]: 魔法少女堕落之路～淫纹的诅咒～
+                  - text: – 魔法少女堕落之路～淫纹的诅咒～ - 2026-04-02@21h04m44s734ms
+                - generic "2026年4月2日 21:37" [ref=f2e2909]: 2026/4/2
+                - generic [ref=f2e2910]:
+                  - button "" [ref=f2e2911]
+                  - button "" [ref=f2e2913]
+                  - button "" [ref=f2e2915]
+              - generic [ref=f2e2917]:
+                - generic "我会在剧情开始前，根据历史记录和相关设定，对本段剧情进行总结和分析喵！" [ref=f2e2918]
+                - generic [ref=f2e2919]:
+                  - generic [ref=f2e2920]:
+                    - generic [ref=f2e2921]: 
+                    - generic [ref=f2e2922]: "3"
+                    - text: "|"
+                  - generic [ref=f2e2923]: 8.55KB
+          - button "" [ref=f2e2924] [cursor=pointer]
+      - generic [ref=f2e2926]:
+        - generic [ref=f2e2927]: "#0"
+        - generic [ref=f2e2930]:
+          - generic [ref=f2e2931]:
+            - generic [ref=f2e2933]:
+              - generic [ref=f2e2934]: Assistant
+              - text: 
+              - generic [ref=f2e2935]: 2026年8月1日 11:24
+            - generic [ref=f2e2936]:               
+            - text:       
+          - text: ✦       
+          - generic [ref=f2e2937]:
+            - paragraph [ref=f2e2938]: If you're connected to an API, try asking me something!
+            - separator [ref=f2e2939]
+            - paragraph [ref=f2e2940]:
+              - strong [ref=f2e2941]: "Hint:"
+              - text: Set any character as your welcome page assistant from their "More…" menu.
+      - generic [ref=f2e2943]:
+        - text:                        ✦       
+        - generic [ref=f2e2945]:
+          - button " API连接" [ref=f2e2946] [cursor=pointer]:
+            - generic [ref=f2e2947]: 
+            - generic [ref=f2e2948]: API连接
+          - button " 角色管理" [ref=f2e2949] [cursor=pointer]:
+            - generic [ref=f2e2950]: 
+            - generic [ref=f2e2951]: 角色管理
+          - button " 扩展" [ref=f2e2952] [cursor=pointer]:
+            - generic [ref=f2e2953]: 
+            - generic [ref=f2e2954]: 扩展
+    - generic [ref=f2e2799]:
+      - text:  
+      - generic [ref=f2e2805]:
+        - generic [ref=f2e2806]:
+          - generic [ref=f2e2807] [cursor=pointer]: 
+          - generic "扩展" [ref=f2e2956] [cursor=pointer]: 
+        - textbox "未连接到API！" [ref=f2e2957]: 那晚去密室里找雫的时候，有没有发现什么奇怪的痕迹？
+        - generic [ref=f2e2809]:
+          - button "" [ref=f2e2959] [cursor=pointer]
+          - text:       
+  - text:                       1     
+  - generic [ref=f2e2962]: 
+  - generic "Media Auto Generation" [ref=f2e2963]: 
+  - status [ref=f2e2965]
+  - status [ref=f2e2966]
+  - status [ref=f2e2967]
+  - status [ref=f2e2968]
+  - status [ref=f2e2969]
+  - status [ref=f2e2970]
+  - status [ref=f2e2971]
+  - status [ref=f2e2972]
+  - status [ref=f2e2973]
+  - status [ref=f2e2974]
+  - status [ref=f2e2975]
+  - status [ref=f2e2976]

@@ -1,0 +1,74 @@
+[     463ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8000/:0
+[     578ms] [WARNING] No input elements found for key: api_key_comfy_runpod @ http://localhost:8000/scripts/secrets.js:540
+[     588ms] [LOG] Loading locale data from ./locales/zh-cn.json @ http://localhost:8000/scripts/i18n.js:124
+[    1128ms] [LOG] ST-Prompt-Template initialized @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[    1230ms] [INFO] Using default TTS Provider settings @ http://localhost:8000/scripts/extensions/tts/system.js:120
+[    1232ms] [LOG] [Prompt Template] Faker loaded @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[    1232ms] [LOG] [Aircraft, BitcoinAddressFamily, BitcoinNetwork, CssFunction, CssSpace, Faker, FakerError, IPv4Network, Sex, SimpleFaker, af_ZA, allFakers, allLocales, ar, az, base, bn_BD, cs_CZ, cy, da, de, de_AT, de_CH, dv, el, en, en_AU, en_AU_ocker, en_BORK, en_CA, en_GB, en_GH, en_HK, en_IE, en_IN, en_NG, en_US, en_ZA, eo, es, es_MX, fa, faker, fakerAF_ZA, fakerAR, fakerAZ, fakerBASE, fakerBN_BD, fakerCS_CZ, fakerCY, fakerDA, fakerDE, fakerDE_AT, fakerDE_CH, fakerDV, fakerEL, fakerEN, fakerEN_AU, fakerEN_AU_ocker, fakerEN_BORK, fakerEN_CA, fakerEN_GB, fakerEN_GH, fakerEN_HK, fakerEN_IE, fakerEN_IN, fakerEN_NG, fakerEN_US, fakerEN_ZA, fakerEO, fakerES, fakerES_MX, fakerFA, fakerFI, fakerFR, fakerFR_BE, fakerFR_CA, fakerFR_CH, fakerFR_LU, fakerFR_SN, fakerHE, fakerHR, fakerHU, fakerHY, fakerID_ID, fakerIT, fakerJA, fakerKA_GE, fakerKO, fakerLV, fakerMK, fakerNB_NO, fakerNE, fakerNL, fakerNL_BE, fakerPL, fakerPT_BR, fakerPT_PT, fakerRO, fakerRO_MD] @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[    1239ms] [LOG] [Prompt Template] xxhash loaded @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[    1279ms] [LOG] [QR2] sets:  [QuickReplySet] @ http://localhost:8000/scripts/extensions/quick-reply/index.js:20
+[    1279ms] [LOG] [QR2] settings:  QuickReplySettings @ http://localhost:8000/scripts/extensions/quick-reply/index.js:20
+[    1394ms] [LOG] 🚀 虚拟手机 v1.3.1 启动 @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:59
+[    1407ms] [WARNING] Failed to insert focus rule: SyntaxError: Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '::-webkit-scrollbar-track:focus-visible { background-color: rgba(126, 126, 126, 0.2); }'.
+    at http://localhost:8000/scripts/dynamic-styles.js:145:34
+    at Array.forEach (<anonymous>)
+    at applyDynamicFocusStyles (http://localhost:8000/scripts/dynamic-styles.js:118:16)
+    at http://localhost:8000/scripts/dynamic-styles.js:193:13
+    at Array.forEach (<anonymous>)
+    at initDynamicStyles (http://localhost:8000/scripts/dynamic-styles.js:191:38)
+    at firstLoadInit (http://localhost:8000/script.js:704:5)
+    at async HTMLDocument.<anonymous> (http://localhost:8000/script.js:12322:5) @ http://localhost:8000/scripts/dynamic-styles.js:146
+[    1408ms] [WARNING] Failed to process stylesheet on initial load: SecurityError: Failed to read the 'cssRules' property from 'CSSStyleSheet': Cannot access rules
+    at processImportedStylesheet (http://localhost:8000/scripts/dynamic-styles.js:107:28)
+    at http://localhost:8000/scripts/dynamic-styles.js:66:17
+    at Array.forEach (<anonymous>)
+    at processRules (http://localhost:8000/scripts/dynamic-styles.js:60:27)
+    at applyDynamicFocusStyles (http://localhost:8000/scripts/dynamic-styles.js:112:5)
+    at http://localhost:8000/scripts/dynamic-styles.js:193:13
+    at Array.forEach (<anonymous>)
+    at initDynamicStyles (http://localhost:8000/scripts/dynamic-styles.js:191:38)
+    at firstLoadInit (http://localhost:8000/script.js:704:5)
+    at async HTMLDocument.<anonymous> (http://localhost:8000/script.js:12322:5) @ http://localhost:8000/scripts/dynamic-styles.js:194
+[    1431ms] [LOG] ✅ 虚拟手机核心模块加载完成 (36ms) @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:998
+[    1465ms] [WARNING] [DEPRECATED] MacrosParser.registerMacro is deprecated and will be removed in a future version. Use macros.registry.registerMacro (from scripts/macros/macro-system.js) or substituteParams({ dynamicMacros }) instead. @ http://localhost:8000/scripts/macros.js:63
+[    1465ms] [WARNING] [DEPRECATED] MacrosParser.registerMacro is deprecated and will be removed in a future version. Use macros.registry.registerMacro (from scripts/macros/macro-system.js) or substituteParams({ dynamicMacros }) instead. @ http://localhost:8000/scripts/macros.js:63
+[    5013ms] [LOG] [Wechat][OnlineProactive] 重置当前会话倒计时: session_enter @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:4911
+[   57535ms] [VERBOSE] [DOM] Password field is not contained in a form: (More info: https://goo.gl/9p2vKq) %o @ http://localhost:8000/:0
+[   57634ms] [WARNING] No input elements found for key: api_key_comfy_runpod @ http://localhost:8000/scripts/secrets.js:540
+[   57636ms] [LOG] Loading locale data from ./locales/zh-cn.json @ http://localhost:8000/scripts/i18n.js:124
+[   57875ms] [LOG] ST-Prompt-Template initialized @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[   57958ms] [LOG] [Prompt Template] Faker loaded @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[   57958ms] [LOG] [Aircraft, BitcoinAddressFamily, BitcoinNetwork, CssFunction, CssSpace, Faker, FakerError, IPv4Network, Sex, SimpleFaker, af_ZA, allFakers, allLocales, ar, az, base, bn_BD, cs_CZ, cy, da, de, de_AT, de_CH, dv, el, en, en_AU, en_AU_ocker, en_BORK, en_CA, en_GB, en_GH, en_HK, en_IE, en_IN, en_NG, en_US, en_ZA, eo, es, es_MX, fa, faker, fakerAF_ZA, fakerAR, fakerAZ, fakerBASE, fakerBN_BD, fakerCS_CZ, fakerCY, fakerDA, fakerDE, fakerDE_AT, fakerDE_CH, fakerDV, fakerEL, fakerEN, fakerEN_AU, fakerEN_AU_ocker, fakerEN_BORK, fakerEN_CA, fakerEN_GB, fakerEN_GH, fakerEN_HK, fakerEN_IE, fakerEN_IN, fakerEN_NG, fakerEN_US, fakerEN_ZA, fakerEO, fakerES, fakerES_MX, fakerFA, fakerFI, fakerFR, fakerFR_BE, fakerFR_CA, fakerFR_CH, fakerFR_LU, fakerFR_SN, fakerHE, fakerHR, fakerHU, fakerHY, fakerID_ID, fakerIT, fakerJA, fakerKA_GE, fakerKO, fakerLV, fakerMK, fakerNB_NO, fakerNE, fakerNL, fakerNL_BE, fakerPL, fakerPT_BR, fakerPT_PT, fakerRO, fakerRO_MD] @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[   57959ms] [LOG] [Prompt Template] xxhash loaded @ http://localhost:8000/scripts/extensions/third-party/ST-Prompt-Template/dist/index.js:0
+[   58015ms] [INFO] Using default TTS Provider settings @ http://localhost:8000/scripts/extensions/tts/system.js:120
+[   58046ms] [LOG] [QR2] sets:  [QuickReplySet] @ http://localhost:8000/scripts/extensions/quick-reply/index.js:20
+[   58047ms] [LOG] [QR2] settings:  QuickReplySettings @ http://localhost:8000/scripts/extensions/quick-reply/index.js:20
+[   58099ms] [LOG] 🚀 虚拟手机 v1.3.1 启动 @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:59
+[   58107ms] [LOG] ✅ 虚拟手机核心模块加载完成 (8ms) @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:998
+[   58130ms] [WARNING] Failed to insert focus rule: SyntaxError: Failed to execute 'insertRule' on 'CSSStyleSheet': Failed to parse the rule '::-webkit-scrollbar-track:focus-visible { background-color: rgba(126, 126, 126, 0.2); }'.
+    at http://localhost:8000/scripts/dynamic-styles.js:145:34
+    at Array.forEach (<anonymous>)
+    at applyDynamicFocusStyles (http://localhost:8000/scripts/dynamic-styles.js:118:16)
+    at http://localhost:8000/scripts/dynamic-styles.js:193:13
+    at Array.forEach (<anonymous>)
+    at initDynamicStyles (http://localhost:8000/scripts/dynamic-styles.js:191:38)
+    at firstLoadInit (http://localhost:8000/script.js:704:5)
+    at async HTMLDocument.<anonymous> (http://localhost:8000/script.js:12322:5) @ http://localhost:8000/scripts/dynamic-styles.js:146
+[   58131ms] [WARNING] Failed to process stylesheet on initial load: SecurityError: Failed to read the 'cssRules' property from 'CSSStyleSheet': Cannot access rules
+    at processImportedStylesheet (http://localhost:8000/scripts/dynamic-styles.js:107:28)
+    at http://localhost:8000/scripts/dynamic-styles.js:66:17
+    at Array.forEach (<anonymous>)
+    at processRules (http://localhost:8000/scripts/dynamic-styles.js:60:27)
+    at applyDynamicFocusStyles (http://localhost:8000/scripts/dynamic-styles.js:112:5)
+    at http://localhost:8000/scripts/dynamic-styles.js:193:13
+    at Array.forEach (<anonymous>)
+    at initDynamicStyles (http://localhost:8000/scripts/dynamic-styles.js:191:38)
+    at firstLoadInit (http://localhost:8000/script.js:704:5)
+    at async HTMLDocument.<anonymous> (http://localhost:8000/script.js:12322:5) @ http://localhost:8000/scripts/dynamic-styles.js:194
+[   58162ms] [WARNING] [DEPRECATED] MacrosParser.registerMacro is deprecated and will be removed in a future version. Use macros.registry.registerMacro (from scripts/macros/macro-system.js) or substituteParams({ dynamicMacros }) instead. @ http://localhost:8000/scripts/macros.js:63
+[   58162ms] [WARNING] [DEPRECATED] MacrosParser.registerMacro is deprecated and will be removed in a future version. Use macros.registry.registerMacro (from scripts/macros/macro-system.js) or substituteParams({ dynamicMacros }) instead. @ http://localhost:8000/scripts/macros.js:63
+[   61628ms] [LOG] [Wechat][OnlineProactive] 重置当前会话倒计时: session_enter @ http://localhost:8000/scripts/extensions/third-party/yuzuki-phone/index.js:4911
+[  133011ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:8000/api/sd/comfy/schedulers:0
+[  133013ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:8000/api/sd/comfy/models:0
+[  133014ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:8000/api/sd/comfy/samplers:0
+[  133031ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:8000/api/sd/comfy/vaes:0
