@@ -5,11 +5,22 @@
         border-bottom: 1px solid var(--SmartThemeBorderColor);
         margin-bottom: 10px;
         padding-bottom: 4px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+    }
+    #media_auto_gen_panel_body .mag-tabs-header::-webkit-scrollbar {
+        height: 4px;
+    }
+    #media_auto_gen_panel_body .mag-tabs-header::-webkit-scrollbar-thumb {
+        background: var(--SmartThemeBorderColor);
+        border-radius: 2px;
     }
     #media_auto_gen_panel_body .mag-tab-btn {
-        flex: 1;
+        flex: 0 0 auto;
+        white-space: nowrap;
         text-align: center;
-        padding: 6px 8px;
+        padding: 6px 10px;
         cursor: pointer;
         border-radius: 5px;
         font-size: 0.9em;
@@ -25,6 +36,17 @@
         opacity: 1;
         background: var(--SmartThemeBlurTintColor);
         border: 1px solid var(--SmartThemeBorderColor);
+    }
+    /* ST 全局 .menu_button { width: min-content } 对中文会塌成单字宽→强制换行;前缀用 #mag_settings_root 而非 panel_body,浮窗 detach 到隐藏 host 期间也生效 */
+    #mag_settings_root .menu_button {
+        white-space: nowrap;
+        width: auto;
+    }
+    /* preset 操作行 / chars 添加行:窄屏自动换行,不挤 */
+    #mag_settings_root .mag-preset-toolbar,
+    #mag_settings_root .mag-char-add-row {
+        flex-wrap: wrap;
+        gap: 6px;
     }
     #media_auto_gen_panel_body .mag-tab-panel {
         display: block;
@@ -170,7 +192,7 @@
         display: flex;
         align-items: center;
         gap: 5px;
-        padding: 5px 2px;
+        padding: 6px 4px;
         border-bottom: 1px dashed var(--SmartThemeBorderColor);
     }
     #media_auto_gen_panel_body .char-tag-row .char-name {
@@ -312,7 +334,7 @@
         <small style="opacity: 0.7;" data-i18n="Direct ComfyUI connection">Direct ComfyUI connection</small>
     </div>
 
-    <div class="flex-container flexGap5 align_center margin-bottom-5">
+    <div class="flex-container flexGap5 align_center margin-bottom-5 mag-preset-toolbar">
         <select id="comfy_preset_select" class="text_pole" style="flex: 1; min-width: 100px;"></select>
         <div id="comfy_preset_new" class="menu_button menu_button_icon" title="New Preset" data-i18n="[title]New Preset" style="margin: 0; padding: 5px;">
             <i class="fa-solid fa-plus"></i>
