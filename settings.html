@@ -215,6 +215,13 @@
     #mag_gallery_lightbox .lightbox-close:hover {
         opacity: 1;
     }
+
+    /* --- 浮动按钮吸附态(挂在 body 下,不在 panel_body 内,所以不能用 panel_body 前缀) ---
+       用 transform 而非 left/top 实现吸附隐藏,避开 ST 全局 html{perspective:1000px} 让 right/bottom 失效的 quirk */
+    #media_auto_gen_float_btn { transition: transform .18s ease, opacity .18s ease; }
+    #media_auto_gen_float_btn.mag-docked-left { transform: translateX(-65%); opacity: .5; }
+    #media_auto_gen_float_btn.mag-docked-right { transform: translateX(65%); opacity: .5; }
+    #media_auto_gen_float_btn.mag-dragging { transition: none; }
 </style>
 
 <div class="mag-tabs-header">

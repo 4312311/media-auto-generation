@@ -94,6 +94,35 @@ curl -s -m 2 http://127.0.0.1:8188/system_stats >/dev/null && echo comfy_ok || e
 - 调用 `/simplify` 审查本次改动,自动修掉冗余/质量问题
 - 输出最终 diff 摘要:动了哪些文件,为什么
 
+## 阶段 8 — 提交并推送(自动)
+
+阶段 7 完成后自动跑,**无需用户确认**。用户通过 `/dev-loop` 调用本命令即视为对此步骤的显式授权(覆盖默认的"必须显式要求才 commit / push"协议)。
+
+### 判定有无改动
+
+并行跑 `git status` / `git diff`(staged + unstaged)/ `git log -5 --oneline`:
+
+- **无改动**(working tree clean)→ 跳过本阶段,最终输出标"无改动,跳过 commit"
+- **有改动** → 进入下方提交流程
+
+### 提交流程
+
+1. 对照阶段 7 输出的"改动文件"清单,**只 add 本次任务真正动过的文件**(具体文件名,**禁止** `git add -A` / `git add .`,避免误带 `.env` / `logs/` / 无关 `*.json`)
+2. 按 `git log` 最近风格起草**简短中文** message:动作(Add / Update / Fix / Refactor)+ 一句话讲清本次任务做了什么(参考 `$ARGUMENTS`)。参考最近提交:`Add 测试生成 tab:聊天外用当前 ComfyUI 配置档生图测试`
+3. message 末尾按 Claude Code 标准 commit 协议加 `Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>` 行
+4. 用 HEREDOC 传 message(`git commit -m "$(cat <<'EOF' ... EOF\n)"`)避免多行格式错乱
+5. `git push`(默认推到**当前分支**的 upstream,**不**主动加 `-u`)
+6. push 失败提示 "no upstream branch" → 停下问用户,**不**擅自加 `-u origin <branch>`(可能误推错分支名)
+7. push 失败提示 "non-fast-forward" → 停下问用户,**禁止** `--force`,按系统 prompt 的冲突处理流程解决
+
+### 安全护栏(永远不做)
+
+- `git commit --amend`(永远新建 commit)
+- `git push --force` / `--force-with-lease`,推 main 时尤其禁止
+- `--no-verify` / `--no-gpg-sign` 等 skip 开关
+- 把 `.env` / `*.credentials.json` / 文件名或内容含 `api_key` / `token` / `secret` 的文件加入 commit
+- commit 与本次 `$ARGUMENTS` 无关的"顺手清理"改动(发现无关改动多 → 停下问用户)
+
 ---
 
 ## 全部完成后输出
@@ -105,4 +134,6 @@ curl -s -m 2 http://127.0.0.1:8188/system_stats >/dev/null && echo comfy_ok || e
 - 子任务: <completed count>
 - 端到端验证: 通过/失败
 - 审查: 通过/待处理
+- 提交: <短 hash> <message 首行> / 无改动跳过
+- 推送: 已推送到 origin/<branch> / 失败原因 / 跳过
 ```

@@ -753,9 +753,9 @@ function createFloatingUI(settingsHtml) {
         `);
     }
     const $btn = $('#media_auto_gen_float_btn');
-    // 手机端:按钮加大、bottom 抬高避开 ST 底部 nav
-    const btnSize = mobile ? 56 : 48;
-    const btnFontSize = mobile ? 22 : 20;
+    // 手机端:按钮缩小(原 56 偏大);bottom 抬高避开 ST 底部 nav
+    const btnSize = mobile ? 40 : 48;
+    const btnFontSize = mobile ? 18 : 20;
     const btnRightGap = mobile ? 16 : 20;
     const btnBottomGap = mobile ? 90 : 20;
     $btn.attr('style', [
@@ -783,9 +783,9 @@ function createFloatingUI(settingsHtml) {
         'bottom:auto',
     ].join(';') + ';');
 
-    // 仅 PC 端恢复持久化的拖动位置;手机端用上面默认 calc 位置
+    // 恢复持久化的拖动位置(手机端也读,因为手机端现在可拖动且落盘)
     const pos = extension_settings[extensionName].floatBtnPosition;
-    if (!mobile && pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
         $btn.css({ left: pos.left + 'px', top: pos.top + 'px' });
     }
 
@@ -958,25 +958,36 @@ function initPanelDrag() {
 
 function initFloatBtnDrag() {
     const btn = $('#media_auto_gen_float_btn');
+    const EDGE_THRESHOLD = 20;  // 距屏幕左右边 ≤20px 松手 → 吸附
 
-    // 手机端:跳过拖动绑定,只用 click 切换。触屏滑动易被识别成拖动把按钮弄丢
-    if (isMobile()) {
-        btn.css('cursor', 'pointer').on('click', function () {
-            toggleFloatingPanel();
-        });
-        return;
+    // 运行时吸附态(不持久化,刷新即解除)
+    let dockedEdge = null;
+
+    function setDocked(edge) {
+        dockedEdge = edge;
+        btn.removeClass('mag-docked-left mag-docked-right');
+        if (edge) btn.addClass('mag-docked-' + edge);
     }
 
     let startX = 0, startY = 0;
     let originLeft = 0, originTop = 0;
     let elW = 0, elH = 0;
     let isDragging = false;
+    let wasDocked = false;
 
     function getPoint(e) {
         return (e.touches && e.touches[0]) ? e.touches[0] : e;
     }
 
     btn.on('mousedown touchstart', function (e) {
+        // 若吸附态:先解除 + 立即关 transition,避免拖动首帧被 .18s 过渡抢跑导致位置跳变;
+        // 记 wasDocked 供 onUp 区分"残影 click"与"普通 click"
+        wasDocked = dockedEdge !== null;
+        if (dockedEdge) {
+            setDocked(null);
+            btn.addClass('mag-dragging');
+        }
+
         const p = getPoint(e);
         startX = p.clientX;
         startY = p.clientY;
@@ -993,7 +1004,7 @@ function initFloatBtnDrag() {
             const dy = pp.clientY - startY;
             if (!isDragging && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
                 isDragging = true;
-                btn.css({ right: 'auto', bottom: 'auto', cursor: 'grabbing' });
+                btn.addClass('mag-dragging').css({ right: 'auto', bottom: 'auto', cursor: 'grabbing' });
             }
             if (isDragging) {
                 const newLeft = clamp(originLeft + dx, 0, window.innerWidth - elW);
@@ -1006,16 +1017,32 @@ function initFloatBtnDrag() {
         function onUp() {
             $(document).off('mousemove touchmove', onMove);
             $(document).off('mouseup touchend', onUp);
-            btn.css('cursor', 'grab');
+            btn.removeClass('mag-dragging').css('cursor', 'grab');
+
             if (!isDragging) {
-                toggleFloatingPanel();
-            } else {
-                extension_settings[extensionName].floatBtnPosition = {
-                    left: parseInt(btn.css('left'), 10) || 0,
-                    top: parseInt(btn.css('top'), 10) || 0,
-                };
-                saveSettingsDebounced();
+                // 吸附态下点击只解除(已在 touchstart 完成),不开面板
+                if (!wasDocked) toggleFloatingPanel();
+                return;
             }
+
+            // 拖动结束:检测左右吸附
+            const left = parseInt(btn.css('left'), 10) || 0;
+            const vw = window.innerWidth;
+            const distLeft = left;
+            const distRight = vw - left - elW;
+
+            if (distRight <= EDGE_THRESHOLD && distRight <= distLeft) {
+                setDocked('right');
+            } else if (distLeft <= EDGE_THRESHOLD) {
+                setDocked('left');
+            }
+
+            // 位置无论吸附与否都落盘(left/top 是吸附前的真实位置,刷新后从此处可见态开始)
+            extension_settings[extensionName].floatBtnPosition = {
+                left: left,
+                top: parseInt(btn.css('top'), 10) || 0,
+            };
+            saveSettingsDebounced();
         }
 
         $(document).on('mousemove touchmove', onMove);
