@@ -11,6 +11,7 @@ import {
     getRequestHeaders,
 } from '../../../../script.js';
 import { regexFromString, clamp, getUniqueName, saveBase64AsFile } from '../../../utils.js';
+import { isMobile } from '../../../RossAscends-mods.js';
 
 const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
@@ -146,7 +147,7 @@ const VIDEO_FORMATS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
 function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt) {
     const seed = Number.isFinite(preset.seed) && preset.seed >= 0
         ? preset.seed
-        : Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
+        : Math.floor(Math.random() * 1_000_000_000);
     const replacements = {
         model: preset.model,
         sampler: preset.sampler,
@@ -244,8 +245,8 @@ function renderPresetFields() {
     $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
     $('#comfy_neg_prefix').val(preset?.negativePromptPrefix || '');
     $('#comfy_workflow').val(preset?.workflowJson || '');
-    $('#comfy_width').val(preset?.width ?? 512);
-    $('#comfy_height').val(preset?.height ?? 512);
+    $('#comfy_width').val(preset?.width ?? 640);
+    $('#comfy_height').val(preset?.height ?? 960);
     $('#comfy_steps').val(preset?.steps ?? 20);
     $('#comfy_scale').val(preset?.scale ?? 7);
     $('#comfy_denoise').val(preset?.denoise ?? 1);
@@ -346,7 +347,7 @@ function createPreset() {
         comfyAuth: '',
         workflowJson: '',
         model: '', sampler: '', scheduler: '',
-        width: 512, height: 512, steps: 20, scale: 7, denoise: 1, seed: -1,
+        width: 640, height: 960, steps: 20, scale: 7, denoise: 1, seed: -1,
         positivePromptPrefix: '',
         negativePromptPrefix: '',
     });
@@ -728,7 +729,22 @@ function bindSettingsEvents() {
     bindTestTabEvents();
 }
 
+// 设置面板的统一迁移单元:挂在 #mag_settings_root 下,在隐藏 host 与浮窗 body 间 detach 切换。
+// 这样 settings.html 始终是单一权威 DOM,ID/事件绑定全程有效,避免重复挂载冲突。
+const SETTINGS_ROOT_ID = '#mag_settings_root';
+const SETTINGS_HOST_ID = '#mag_settings_host';
+const PANEL_BODY_ID = '#media_auto_gen_panel_body';
+
+/** 把 settings root 在浮窗 body 和隐藏 host 之间切换 */
+function moveSettingsTo($target) {
+    const $root = $(SETTINGS_ROOT_ID);
+    if (!$root.length || $.contains($target[0], $root[0])) return;
+    $root.detach().appendTo($target);
+}
+
 function createFloatingUI(settingsHtml) {
+    const mobile = isMobile();
+
     if (!$('#media_auto_gen_float_btn').length) {
         $('body').append(`
             <div id="media_auto_gen_float_btn" title="Media Auto Generation">
@@ -737,30 +753,40 @@ function createFloatingUI(settingsHtml) {
         `);
     }
     const $btn = $('#media_auto_gen_float_btn');
+    // 手机端:按钮加大、bottom 抬高避开 ST 底部 nav
+    const btnSize = mobile ? 56 : 48;
+    const btnFontSize = mobile ? 22 : 20;
+    const btnRightGap = mobile ? 16 : 20;
+    const btnBottomGap = mobile ? 90 : 20;
     $btn.attr('style', [
         'position:fixed',
         'z-index:2147483640',
-        'width:48px',
-        'height:48px',
+        `width:${btnSize}px`,
+        `height:${btnSize}px`,
         'border-radius:50%',
         'cursor:grab',
         'display:flex',
         'align-items:center',
         'justify-content:center',
-        'font-size:20px',
+        `font-size:${btnFontSize}px`,
         'background:var(--SmartThemeBlurTintColor)',
         'border:1px solid var(--SmartThemeBorderColor)',
         'color:var(--SmartThemeBodyColor)',
         'box-shadow:0 2px 8px rgba(0,0,0,0.3)',
         'user-select:none',
         '-webkit-user-select:none',
+        // ST 全局 html { perspective: 1000px } 让 fixed 元素的 right/bottom 失效,
+        // 必须用 left/top 像素值(配合 calc(100vw/vh - X))才能正确定位
+        `left:calc(100vw - ${btnSize + btnRightGap}px)`,
+        `top:calc(100vh - ${btnSize + btnBottomGap}px)`,
+        'right:auto',
+        'bottom:auto',
     ].join(';') + ';');
 
+    // 仅 PC 端恢复持久化的拖动位置;手机端用上面默认 calc 位置
     const pos = extension_settings[extensionName].floatBtnPosition;
-    if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
-        $btn.css({ left: pos.left + 'px', top: pos.top + 'px', right: 'auto', bottom: 'auto' });
-    } else {
-        $btn.css({ right: '20px', bottom: '20px' });
+    if (!mobile && pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
+        $btn.css({ left: pos.left + 'px', top: pos.top + 'px' });
     }
 
     if (!$('#media_auto_gen_panel').length) {
@@ -777,12 +803,14 @@ function createFloatingUI(settingsHtml) {
         `);
     }
     const $panel = $('#media_auto_gen_panel');
+    // 手机端:面板宽度撑满、顶部留出 ST 顶栏空间
+    const panelTop = mobile ? '70px' : '100px';
     $panel.attr('style', [
         'position:fixed',
         'z-index:2147483640',
         'display:none',
         'flex-direction:column',
-        'width:380px',
+        mobile ? 'width:calc(100vw - 16px)' : 'width:380px',
         'max-width:90vw',
         'max-height:80vh',
         'padding:0',
@@ -790,8 +818,11 @@ function createFloatingUI(settingsHtml) {
         'border:1px solid var(--SmartThemeBorderColor)',
         'border-radius:10px',
         'box-shadow:0 4px 20px rgba(0,0,0,0.4)',
-        'right:20px',
-        'top:100px',
+        // 用 left/top 像素值,绕过 ST html { perspective:1000px } 让 right/bottom 失效的 quirk
+        mobile
+            ? `left:8px; top:${panelTop}; right:auto`
+            : `left:calc(100vw - 400px); top:${panelTop}; right:auto`,
+        'bottom:auto',
     ].join(';') + ';');
 
     $('#media_auto_gen_panelheader').attr('style', [
@@ -805,32 +836,71 @@ function createFloatingUI(settingsHtml) {
 
     $('#media_auto_gen_panel_body')
         .attr('style', 'padding:10px; overflow-y:auto; flex:1;')
-        .empty()
-        .append(settingsHtml);
+        .empty();
+
+    // --- 魔法棒快速菜单入口(#extensionsMenu,消息框旁的扩展菜单) ---
+    // 标准 wand 菜单模式:list-group-item + extensionsMenuExtensionButton 图标。
+    // 第三方扩展不能写入 wandMenu.html 模板,直接 append 到 #extensionsMenu 即可(参考 yuzuki-phone)。
+    if ($('#mag_wand_entry').length === 0 && $('#extensionsMenu').length) {
+        $('#extensionsMenu').append(`
+            <div id="mag_wand_entry" class="list-group-item flex-container flexGap5" title="Media Auto Generation" data-i18n="[title]Media Auto Generation">
+                <div class="fa-solid fa-film extensionsMenuExtensionButton"></div>
+                <span data-i18n="Media Auto Generation">Media Auto Generation</span>
+            </div>
+        `);
+    }
+    // 点击 wand 入口 → 打开浮窗(DOM 寄居:settings 自动从隐藏寄居容器迁到 panel body)
+    $('#mag_wand_entry').off('click.mag').on('click.mag', function () {
+        toggleFloatingPanel(true);
+    });
+
+    // --- settings.html 的隐藏寄居容器(单一路径,避免重复 DOM 导致 ID 冲突) ---
+    // 平时藏在这里,浮窗打开时 detach 到 panel body,关闭时 detach 回来。
+    if ($('#mag_settings_host').length === 0) {
+        $('body').append(`<div id="mag_settings_host" style="display:none;"></div>`);
+    }
+    if ($('#mag_settings_root').length === 0) {
+        $('#mag_settings_host').append(`<div id="mag_settings_root">${settingsHtml}</div>`);
+    }
 
     $('#media_auto_gen_panel_close').off('click').on('click', function () {
-        $panel.css('display', 'none');
+        toggleFloatingPanel(false);
     });
 
     initTabs();
 }
 
 function initTabs() {
-    const $body = $('#media_auto_gen_panel_body');
-    const $btns = $body.find('.mag-tab-btn');
+    // settings 在 #mag_settings_root 里(寄居于浮窗或抽屉),基于它查 tab
+    const $root = $(SETTINGS_ROOT_ID);
+    const $btns = $root.find('.mag-tab-btn');
     $btns.off('click.tab').on('click.tab', function () {
         const tab = $(this).attr('data-mag-tab');
         $btns.removeClass('active');
         $(this).addClass('active');
-        $body.find('.mag-tab-panel').css('display', 'none');
-        $body.find(`.mag-tab-panel[data-mag-panel="${tab}"]`).css('display', 'block');
+        $root.find('.mag-tab-panel').css('display', 'none');
+        $root.find(`.mag-tab-panel[data-mag-panel="${tab}"]`).css('display', 'block');
     });
     $btns.first().trigger('click');
 }
 
-function toggleFloatingPanel() {
+/**
+ * 切换浮窗显示状态(DOM 寄居模式)
+ * - 打开:settings root 从隐藏 host detach 到浮窗 body,显示浮窗
+ * - 关闭:隐藏浮窗,settings root detach 回隐藏 host
+ * - 传 false 强制关闭;传 true 强制打开;不传 = toggle
+ */
+function toggleFloatingPanel(force) {
     const $p = $('#media_auto_gen_panel');
-    $p.css('display', $p.css('display') === 'none' ? 'flex' : 'none');
+    const willOpen = typeof force === 'boolean' ? force : ($p.css('display') === 'none');
+
+    if (willOpen) {
+        moveSettingsTo($(PANEL_BODY_ID));
+        $p.css('display', 'flex');
+    } else {
+        $p.css('display', 'none');
+        moveSettingsTo($(SETTINGS_HOST_ID));
+    }
 }
 
 function initPanelDrag() {
@@ -888,6 +958,15 @@ function initPanelDrag() {
 
 function initFloatBtnDrag() {
     const btn = $('#media_auto_gen_float_btn');
+
+    // 手机端:跳过拖动绑定,只用 click 切换。触屏滑动易被识别成拖动把按钮弄丢
+    if (isMobile()) {
+        btn.css('cursor', 'pointer').on('click', function () {
+            toggleFloatingPanel();
+        });
+        return;
+    }
+
     let startX = 0, startY = 0;
     let originLeft = 0, originTop = 0;
     let elW = 0, elH = 0;
