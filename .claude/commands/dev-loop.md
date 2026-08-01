@@ -53,6 +53,7 @@ argument-hint: <任务描述,例如 给插件加暂停生成的按钮>
 - 严格按方案改,**不要顺手"清理"周边代码**(除非用户要求)
 - 改动遵循 CLAUDE.md 的代码风格(ES Module、jQuery 风格、ST 事件系统)
 - 不要加未要求的注释、错误处理、向后兼容
+- **字段闭环核对(收尾必跑)**:阶段 2 设计里若定义了数据结构(如 `Entry { url, character, prompt, timestamp, ... }`),把每个字段名 grep 一遍,确认**每个 push / 构造点都设了所有字段**。漏字段往往不会报错——只会在 sort / filter / 渲染时悄悄塌成默认值,等 `/simplify` 才抓到。典型坑:`{ ..., timestamp }` 计划写了但 push 时只传 5 个字段,sort 全部归 0。
 
 ## 阶段 5 — 自测
 
@@ -61,6 +62,15 @@ argument-hint: <任务描述,例如 给插件加暂停生成的按钮>
 - 后端调用失败时读 `/Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/` 下的日志
 
 ## 阶段 6 — 端到端验证(Playwright MCP)
+
+**前置探活**(避免对着挂掉的后端点半天按钮):
+```bash
+# ST 必跑
+lsof -i :8000 -sTCP:LISTEN >/dev/null && echo st_ok || echo st_down
+# 涉及 SD/ComfyUI 时探后端(改 host/port 按你环境)
+curl -s -m 2 http://127.0.0.1:8188/system_stats >/dev/null && echo comfy_ok || echo comfy_down
+```
+任一 `*_down` 直接告知用户"端到端阻塞,启动 X 后再跑,或走降级路径",不要继续闷头操作。
 
 按 CLAUDE.md "标准调试协议"步骤 1-6 走一遍:
 1. `lsof -i :8000 -sTCP:LISTEN` 确认 ST 在跑;没跑提示用户启动
