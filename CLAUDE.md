@@ -2,6 +2,19 @@
 
 SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-generation 改写,扩展为支持视频生成。通过 ST 自带的 SD/ComfyUI 接口,在 AI 回复包含 `<pic prompt="...">` 或 `<video prompt="...">` 标签时自动生成图片/视频并替换到消息中。
 
+## 功能概览
+
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 4 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
+
+| Tab | data-mag-tab | 干什么 |
+|---|---|---|
+| 主要配置 | `main` | 总开关与正则:媒体类型(disabled/image/video)、流式生成开关、图片/视频正则、`<img>` 标签的 style 属性 |
+| ComfyUI 配置 | `comfy` | 直连 ComfyUI 的多配置档系统:URL + model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
+| 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
+| 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
+
+核心触发机制:消息 DOM 中出现 `<pic prompt="...">` / `<video prompt="...">` 标签(正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 `<img>`/`<video>`。生成结果缓存在 `generatedCache`(避免重复生成),有 3 分钟 prompt 冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED` 做最终 DOM 替换。
+
 ## 文件结构
 
 - `index.js` — 主逻辑(约 700 行,ES Module,无构建步骤,ST 直接加载)
@@ -60,6 +73,7 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 - 优先用 `navigate` 打开 ST 而不是 `browser_launch`,前者更轻
 - 调试完用 `close` 关掉,避免进程残留
 - 如果用户已经在自己浏览器里调试更顺手,可以让用户手动操作,你只用 playwright 读 console(打开页面后挂着监听)
+- **`browser_evaluate` 等任何会让出事件循环的调用(`browser_snapshot` / `browser_click` / `browser_take_screenshot` 等)都可能触发 ST 浮窗的"点外部自动收起"逻辑**,导致下次截图/快照看到的是 `display:none` 的隐藏态。调试浮窗时要么把要读的状态**一次 evaluate 全部读出**,要么 evaluate 后显式 `toggleFloatingPanel(true)` 重新展开再继续。本插件曾因此看到 `#media_auto_gen_panel` 的 rect 变 0,0,0,0,误以为代码出问题。
 
 ### 手动回退(没有 Playwright 时)
 

@@ -59,8 +59,18 @@
     "mag_tab_main": "主要配置",
     "mag_tab_comfy": "ComfyUI 配置",
     "mag_tab_chars": "角色固定特征",
+    "mag_tab_gallery": "图库",
 
     "mag_preview_empty_hint": "点击上传预览图",
     "mag_preview_change": "更换预览图",
-    "mag_preview_delete": "删除预览图"
+    "mag_preview_delete": "删除预览图",
+
+    "mag_gallery_empty": "暂无图片,生成后会出现在这里",
+    "mag_gallery_close": "关闭",
+    "mag_gallery_video_badge": "视频",
+
+    "mag_tab_test": "测试生成",
+    "mag_test_prompt_ph": "提示词,例如:1girl, outdoors...",
+    "mag_test_generate_btn": "生成测试图",
+    "mag_test_preview_empty": "点上方「生成测试图」用当前 ComfyUI 配置档生成一张"
 }

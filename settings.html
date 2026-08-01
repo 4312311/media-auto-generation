@@ -222,6 +222,7 @@
     <div class="mag-tab-btn" data-mag-tab="comfy" data-i18n="mag_tab_comfy">ComfyUI 配置</div>
     <div class="mag-tab-btn" data-mag-tab="chars" data-i18n="mag_tab_chars">角色固定特征</div>
     <div class="mag-tab-btn" data-mag-tab="gallery" data-i18n="mag_tab_gallery">图库</div>
+    <div class="mag-tab-btn" data-mag-tab="test" data-i18n="mag_tab_test">测试生成</div>
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="main">
@@ -394,5 +395,36 @@
         <div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip">
             No characters added yet.
         </div>
+    </div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="gallery" style="display:none;">
+    <div id="gallery_container"></div>
+    <div id="gallery_empty" style="display:none;">
+        <i class="fa-solid fa-images"></i>
+        <span data-i18n="mag_gallery_empty">暂无图片,生成后会出现在这里</span>
+    </div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="test" style="display:none;">
+    <div class="margin-top-5">
+        <label for="test_prompt_input" data-i18n="Prompt">Prompt</label>
+        <textarea id="test_prompt_input" class="text_pole textarea_compact" rows="3" placeholder="a girl, outdoors..." data-i18n="[placeholder]mag_test_prompt_ph"></textarea>
+    </div>
+
+    <div class="margin-top-5" style="text-align: right;">
+        <div id="test_generate_btn" class="menu_button" title="Generate (Ctrl+Enter)" data-i18n="[title]mag_test_generate_btn" style="display:inline-flex; gap:5px; align-items:center;">
+            <i class="fa-solid fa-play"></i>
+            <span data-i18n="mag_test_generate_btn">生成测试图</span>
+        </div>
+    </div>
+
+    <div id="test_preview_wrap" class="margin-top-5" style="position: relative; min-height: 60px;">
+        <div id="test_preview_empty" style="text-align:center; opacity:0.6; padding: 30px 10px;">
+            <i class="fa-solid fa-image" style="font-size:1.5em;"></i>
+            <div style="margin-top:6px;" data-i18n="mag_test_preview_empty">点上方「生成」测试当前 ComfyUI 配置</div>
+        </div>
+        <img id="test_preview_img" alt="preview" style="display:none; width:100%; height:auto; max-height:280px; object-fit:contain; border-radius:5px; cursor:pointer;" />
+        <div id="test_preview_status" style="display:none; text-align:center; padding: 20px 10px; opacity:0.8;"></div>
     </div>
 </div>

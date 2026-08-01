@@ -44,6 +44,7 @@ const defaultSettings = {
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
     activePresetName: null, // 当前激活的配置档名字
+    galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
 };
 
 function simpleHash(str) {
@@ -167,10 +168,11 @@ function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt)
 }
 
 /**
- * 直接调远程 ComfyUI 生成媒体。返回 { url, format }。
+ * 直接调远程 ComfyUI 生成媒体。返回 { url, format, character }。
  * url 是 ST 后端落盘后的文件路径(/user/images/...),避免 data URI 撑爆 DOM 和聊天存档。
+ * @param {string} overrideCharacter 可选,覆盖 character(默认走 context.name2 / groupId / 'media')。测试 tab 传 preset.name。
  */
-async function generateViaComfy(modifiedPrompt, mediaType) {
+async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
     if (!preset.comfyUrl) throw new Error('Active preset has no ComfyUI URL');
@@ -187,11 +189,11 @@ async function generateViaComfy(modifiedPrompt, mediaType) {
     const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
 
     const context = getContext();
-    const charName = (context.name2 || context.groupId || 'media').replace(/[\\\/]/g, '_');
+    const charName = (overrideCharacter || context.name2 || context.groupId || 'media').replace(/[\\\/]/g, '_');
     const filename = `${mediaType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const url = await saveBase64AsFile(result.data, charName, filename, format);
 
-    return { url, format };
+    return { url, format, character: charName };
 }
 
 // --- 设置与UI逻辑 ---
@@ -647,6 +649,9 @@ function updateUI() {
         // --- 新增: 渲染配置档 dropdown 和字段 ---
         renderPresetDropdown();
         renderPresetFields();
+
+        // --- 新增: 渲染图库 ---
+        renderGallery();
     }
 }
 
@@ -715,6 +720,12 @@ function bindSettingsEvents() {
 
     // --- 新增: 绑定 ComfyUI 配置档事件 ---
     bindPresetEvents();
+
+    // --- 新增: 绑定 Gallery 缩略图点击 + lightbox ---
+    bindGalleryEvents();
+
+    // --- 新增: 绑定测试生成 tab 事件 ---
+    bindTestTabEvents();
 }
 
 function createFloatingUI(settingsHtml) {
@@ -1062,7 +1073,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 }, 1000);
 
                 // 直接调远程 ComfyUI(走 ST 后端代理 /api/sd/comfy/generate)
-                const { url, format } = await generateViaComfy(modifiedPrompt, mediaType);
+                const { url, format, character } = await generateViaComfy(modifiedPrompt, mediaType);
 
                 clearInterval(timer);
                 if (toast) toastr.clear(toast);
@@ -1090,6 +1101,9 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 }
 
                 generatedCache.set(promptHash, mediaTag);
+
+                // 记录到图库 manifest(供 Gallery tab 展示)
+                pushGalleryEntry({ url, character, prompt: rawPrompt, mediaType, format });
 
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
@@ -1138,6 +1152,243 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             await finalContext.saveChat();
         }
     }
+}
+
+// --- Gallery 图库 ---
+
+let galleryRenderPending = false;
+let galleryRenderSig = null;
+
+/** 把一次生成成功的结果追加到 manifest 并刷新 UI */
+function pushGalleryEntry(entry) {
+    const s = extension_settings[extensionName];
+    if (!Array.isArray(s.galleryManifest)) s.galleryManifest = [];
+    s.galleryManifest.push({ ...entry, timestamp: Date.now() });
+    saveSettingsDebounced();
+    scheduleGalleryRender();
+}
+
+/** 合并同一帧内的多次 push,避免批量生成时连续 rebuild */
+function scheduleGalleryRender() {
+    if (galleryRenderPending) return;
+    galleryRenderPending = true;
+    requestAnimationFrame(() => {
+        galleryRenderPending = false;
+        renderGallery();
+    });
+}
+
+/** 释放 video 元素持有的媒体资源 */
+function releaseVideoEl($video) {
+    $video.each(function () {
+        this.pause();
+        this.removeAttribute('src');
+        this.load();
+    });
+}
+
+/** 懒创建 lightbox DOM 并绑定全局关闭事件(只执行一次) */
+function ensureGalleryLightbox() {
+    if ($('#mag_gallery_lightbox').length) return;
+    $('body').append(`
+        <div id="mag_gallery_lightbox">
+            <div class="lightbox-close" title="Close" data-i18n="[title]mag_gallery_close">
+                <i class="fa-solid fa-xmark"></i>
+            </div>
+            <div class="lightbox-stage">
+                <img class="lightbox-media" alt="" />
+                <video class="lightbox-media" controls loop autoplay muted style="display:none;"></video>
+                <div class="lightbox-prompt"></div>
+            </div>
+        </div>
+    `);
+    const $lb = $('#mag_gallery_lightbox');
+    $lb.find('.lightbox-close').on('click', closeGalleryLightbox);
+    // 点击非媒体区域(遮罩本身)关闭
+    $lb.on('click', (e) => {
+        if (e.target === e.currentTarget) closeGalleryLightbox();
+    });
+    $(document).on('keydown.galleryLightbox', (e) => {
+        if (e.key === 'Escape') closeGalleryLightbox();
+    });
+}
+
+/** 打开 lightbox 显示指定 entry */
+function openGalleryLightbox(entry) {
+    ensureGalleryLightbox();
+    const $lb = $('#mag_gallery_lightbox');
+    const $img = $lb.find('img.lightbox-media');
+    const $video = $lb.find('video.lightbox-media');
+    const $prompt = $lb.find('.lightbox-prompt');
+
+    if (entry.mediaType === 'video') {
+        $img.css('display', 'none').attr('src', '');
+        $video.css('display', 'block').attr('src', entry.url);
+    } else {
+        releaseVideoEl($video.css('display', 'none'));
+        $img.css('display', 'block').attr('src', entry.url);
+    }
+    $prompt.text(entry.prompt || '');
+    $lb.addClass('open');
+}
+
+/** 关闭 lightbox,释放 video 资源 */
+function closeGalleryLightbox() {
+    const $lb = $('#mag_gallery_lightbox');
+    if (!$lb.length || !$lb.hasClass('open')) return;
+    $lb.removeClass('open');
+    releaseVideoEl($lb.find('video.lightbox-media'));
+}
+
+/** 渲染 gallery panel:按角色分组、缩略图网格 */
+function renderGallery() {
+    const $container = $('#gallery_container');
+    const $empty = $('#gallery_empty');
+    if (!$container.length) return;
+
+    const manifest = extension_settings[extensionName].galleryManifest || [];
+
+    // 同一 manifest 状态不重复 render(updateUI 频繁触发时跳过)
+    const sig = manifest.length + ':' + (manifest[manifest.length - 1]?.timestamp || 0);
+    if (sig === galleryRenderSig && manifest.length > 0) return;
+    galleryRenderSig = sig;
+
+    if (manifest.length === 0) {
+        $container.empty();
+        $empty.css('display', 'flex');
+        return;
+    }
+    $empty.css('display', 'none');
+
+    const groups = new Map();
+    for (let i = 0; i < manifest.length; i++) {
+        const entry = manifest[i];
+        const key = entry.character || 'media';
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ entry, index: i });
+    }
+
+    // 组内:timestamp 倒序;组间:按组内最新 timestamp 倒序
+    for (const arr of groups.values()) {
+        arr.sort((a, b) => (b.entry.timestamp || 0) - (a.entry.timestamp || 0));
+    }
+    const sortedGroups = [...groups.entries()].sort((a, b) => {
+        const aMax = a[1][0]?.entry.timestamp || 0;
+        const bMax = b[1][0]?.entry.timestamp || 0;
+        return bMax - aMax;
+    });
+
+    $container.empty();
+    sortedGroups.forEach(([charName, items], groupIdx) => {
+        const escapedName = escapeHtmlAttribute(charName);
+        const openAttr = groupIdx === 0 ? ' open' : '';
+        let thumbsHtml = '';
+        for (const { entry, index } of items) {
+            const escapedUrl = escapeHtmlAttribute(entry.url);
+            const isVideo = entry.mediaType === 'video' || VIDEO_FORMATS.has(entry.format);
+            const badge = isVideo ? `<div class="gallery-video-badge"><i class="fa-solid fa-play"></i></div>` : '';
+            const tag = isVideo
+                ? `<video class="gallery-thumb" src="${escapedUrl}" muted preload="metadata" playsinline></video>`
+                : `<img class="gallery-thumb" src="${escapedUrl}" loading="lazy" />`;
+            thumbsHtml += `<div class="gallery-thumb-wrap" data-index="${index}">${tag}${badge}</div>`;
+        }
+        $container.append(`
+            <details class="gallery-group"${openAttr}>
+                <summary>
+                    <span class="gallery-char-name" title="${escapedName}">${escapedName}</span>
+                    <small>(${items.length})</small>
+                </summary>
+                <div class="gallery-grid">${thumbsHtml}</div>
+            </details>
+        `);
+    });
+}
+
+/** 绑定 gallery 缩略图点击(事件委托) */
+function bindGalleryEvents() {
+    ensureGalleryLightbox();
+    $('#gallery_container').off('click.gallery').on('click.gallery', '.gallery-thumb-wrap', function () {
+        const idx = parseInt($(this).attr('data-index'), 10);
+        const manifest = extension_settings[extensionName].galleryManifest || [];
+        const entry = manifest[idx];
+        if (entry) openGalleryLightbox(entry);
+    });
+}
+
+// --- 测试生成 tab ---
+
+let testGenTimer = null;
+let testGenLastEntry = null;
+let testGenBusy = false;
+
+/** 把预览框切到指定状态:empty / generating(text) / image(url) / error(text) */
+function setTestPreview(state, payload) {
+    const $empty = $('#test_preview_empty');
+    const $img = $('#test_preview_img');
+    const $status = $('#test_preview_status');
+    if (!$empty.length) return;
+
+    $empty.css('display', state === 'empty' ? 'block' : 'none');
+    $img.css('display', state === 'image' ? 'block' : 'none');
+    $status.css('display', state === 'generating' || state === 'error' ? 'block' : 'none');
+
+    if (state === 'image') {
+        $img.attr('src', payload);
+    } else if (state === 'generating' || state === 'error') {
+        $status.text(payload || '');
+        $status.css('color', state === 'error' ? 'var(--dangerColor, #c66)' : '');
+    }
+}
+
+/** 测试 tab 生成按钮主流程 */
+async function runTestGenerate() {
+    if (testGenBusy) return;
+    const rawPrompt = $('#test_prompt_input').val().trim();
+    if (!rawPrompt) { toastr.warning('提示词不能为空'); return; }
+    const preset = getActivePreset();
+    if (!preset) { toastr.warning('请先在「ComfyUI 配置」tab 选一个配置档'); return; }
+
+    testGenBusy = true;
+    $('#test_generate_btn').css('opacity', '0.5').css('pointer-events', 'none');
+
+    let seconds = 0;
+    setTestPreview('generating', `生成中... 0s`);
+    if (testGenTimer) clearInterval(testGenTimer);
+    testGenTimer = setInterval(() => {
+        seconds++;
+        setTestPreview('generating', `生成中... ${seconds}s`);
+    }, 1000);
+
+    try {
+        const { url, format, character } = await generateViaComfy(rawPrompt, 'image', preset.name);
+
+        // 用 preset.name 作为 character → 图库 tab 自动按 preset 分组
+        const entry = { url, character, prompt: rawPrompt, mediaType: 'image', format, timestamp: Date.now() };
+        pushGalleryEntry(entry);
+        testGenLastEntry = entry;
+
+        setTestPreview('image', url);
+    } catch (e) {
+        console.error(`[${extensionName}] Test generate failed:`, e);
+        setTestPreview('error', `生成失败: ${e.message || e}`);
+    } finally {
+        if (testGenTimer) { clearInterval(testGenTimer); testGenTimer = null; }
+        $('#test_generate_btn').css('opacity', '').css('pointer-events', '');
+        testGenBusy = false;
+    }
+}
+
+function bindTestTabEvents() {
+    $('#test_generate_btn').off('click.test').on('click.test', runTestGenerate);
+    $('#test_prompt_input').off('keydown.test').on('keydown.test', function (e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            runTestGenerate();
+        }
+    });
+    $('#test_preview_img').off('click.test').on('click.test', function () {
+        if (testGenLastEntry) openGalleryLightbox(testGenLastEntry);
+    });
 }
 
 // --- 事件监听 ---
