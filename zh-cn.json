@@ -72,5 +72,13 @@
     "mag_tab_test": "测试生成",
     "mag_test_prompt_ph": "提示词,例如:1girl, outdoors...",
     "mag_test_generate_btn": "生成测试图",
-    "mag_test_preview_empty": "点上方「生成测试图」用当前 ComfyUI 配置档生成一张"
+    "mag_test_preview_empty": "点上方「生成测试图」用当前 ComfyUI 配置档生成一张",
+
+    "mag_char_new_role": "+ 新角色",
+    "mag_char_toggle_mode": "切换输入方式(下拉 ↔ 输入)",
+    "mag_char_add": "添加 / 覆盖角色特征",
+    "mag_char_edit": "编辑",
+    "mag_char_delete": "删除",
+    "mag_char_save": "保存",
+    "mag_char_cancel": "取消"
 }

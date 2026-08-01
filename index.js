@@ -76,6 +76,14 @@ function escapeHtmlAttribute(value) {
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** 把 timestamp 格式化为 YYYY-MM-DD HH:mm(用于图库缩略图下方时间显示) */
+function formatGalleryTime(ts) {
+    if (!ts || !Number.isFinite(ts)) return '';
+    const d = new Date(ts);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // --- 新增: 核心注入工具函数 ---
 
 // 正则转义工具，防止角色名中包含特殊符号导致正则报错
@@ -598,41 +606,213 @@ function bindPresetEvents() {
 function renderCharacterTagsList() {
     const container = $('#character_tags_list');
     if (!container.length) return;
-    
+
+    // 编辑模式下跳过重渲,避免 updateUI 触发时清掉用户正在输入的 input/textarea
+    if (container.find('.char-tag-row[data-mode="edit"]').length > 0) return;
+
     container.empty();
     const tagsDict = extension_settings[extensionName].characterTags || {};
     const keys = Object.keys(tagsDict);
-    
+
     if (keys.length === 0) {
         container.append('<div style="text-align: center; opacity: 0.5; font-size: 0.9em; padding: 10px;" id="empty_tags_tip" data-i18n="No characters added yet.">No characters added yet.</div>');
-        return;
-    }
+    } else {
+        for (const charName of keys) {
+            const tags = tagsDict[charName];
+            const escapedName = escapeHtmlAttribute(charName);
+            const escapedTags = escapeHtmlAttribute(tags);
 
-    for (const charName of keys) {
-        const tags = tagsDict[charName];
-        const escapedName = escapeHtmlAttribute(charName);
-        const escapedTags = escapeHtmlAttribute(tags);
-        
-        const rowHtml = `
-            <div class="flex-container align_center flexGap5 char-tag-row" style="padding: 3px; border-bottom: 1px dashed var(--SmartThemeBorderColor);">
-                <span style="flex: 1; font-weight: bold; overflow: hidden; text-overflow: ellipsis;" title="${escapedName}">${escapedName}</span>
-                <span style="flex: 2; font-size: 0.9em; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapedTags}">${escapedTags}</span>
-                <div class="menu_button menu_button_icon delete-char-tag-btn" data-name="${escapedName}" title="Delete" style="margin: 0; padding: 5px;">
-                    <i class="fa-solid fa-trash interactable"></i>
+            const rowHtml = `
+                <div class="char-tag-row" data-name="${escapedName}" data-mode="view">
+                    <span class="char-name" title="${escapedName}">${escapedName}</span>
+                    <span class="char-tags-preview" title="${escapedTags}">${escapedTags}</span>
+                    <div class="menu_button menu_button_icon edit-char-tag-btn" data-name="${escapedName}" title="Edit" data-i18n="[title]mag_char_edit" style="margin: 0; padding: 5px;">
+                        <i class="fa-solid fa-pen interactable"></i>
+                    </div>
+                    <div class="menu_button menu_button_icon delete-char-tag-btn" data-name="${escapedName}" title="Delete" data-i18n="[title]mag_char_delete" style="margin: 0; padding: 5px;">
+                        <i class="fa-solid fa-trash interactable"></i>
+                    </div>
                 </div>
-            </div>
-        `;
-        container.append(rowHtml);
+            `;
+            container.append(rowHtml);
+        }
     }
 
-    // 绑定删除按钮事件
-    container.find('.delete-char-tag-btn').off('click').on('click', function() {
-        const nameToDelete = $(this).attr('data-name');
-        if (nameToDelete && extension_settings[extensionName].characterTags[nameToDelete]) {
-            delete extension_settings[extensionName].characterTags[nameToDelete];
-            saveSettingsDebounced();
-            renderCharacterTagsList(); // 重新渲染列表
+    // 同步刷新顶部 select 的 options(+ 新角色 + 当前所有角色名)
+    const $select = $('#new_char_name_select');
+    if ($select.length) {
+        const curVal = $select.val();
+        $select.empty();
+        $select.append(`<option value="" data-i18n="mag_char_new_role">+ 新角色</option>`);
+        for (const charName of keys) {
+            const escapedName = escapeHtmlAttribute(charName);
+            $select.append(`<option value="${escapedName}">${escapedName}</option>`);
         }
+        // 若之前选中的角色被删了,val() 会落到空 option,自动回到 "+ 新角色"
+        if (curVal && keys.includes(curVal)) {
+            $select.val(curVal);
+        } else {
+            $select.val('');
+        }
+    }
+}
+
+/** 把指定 view 行替换为 edit 模式(点编辑按钮时调用) */
+function enterCharTagEditMode($row) {
+    const originalName = $row.attr('data-name');
+    const tags = extension_settings[extensionName].characterTags[originalName] || '';
+    const escapedName = escapeHtmlAttribute(originalName);
+    const escapedTags = escapeHtmlAttribute(tags);
+
+    const editHtml = `
+        <div class="char-tag-row" data-original-name="${escapedName}" data-mode="edit">
+            <input class="text_pole edit-char-name" value="${escapedName}" placeholder="Name">
+            <textarea class="text_pole textarea_compact edit-char-tags" rows="2" placeholder="Tags">${escapedTags}</textarea>
+            <div class="menu_button menu_button_icon save-char-tag-btn" data-original-name="${escapedName}" title="Save" data-i18n="[title]mag_char_save" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-check interactable"></i>
+            </div>
+            <div class="menu_button menu_button_icon cancel-char-tag-btn" title="Cancel" data-i18n="[title]mag_char_cancel" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-xmark interactable"></i>
+            </div>
+        </div>
+    `;
+    $row.replaceWith(editHtml);
+    // 聚焦到 name,便于直接改名
+    const $newRow = $(`#character_tags_list .char-tag-row[data-original-name="${escapedName}"]`);
+    $newRow.find('.edit-char-name').trigger('focus');
+}
+
+/** 绑定角色固定特征 tab 的所有事件:toggle / select change / tags blur / add / edit / save / cancel / delete */
+function bindCharTagsEvents() {
+    const $sel = $('#new_char_name_select');
+    const $inp = $('#new_char_name');
+    const $tags = $('#new_char_tags');
+    const $list = $('#character_tags_list');
+
+    const isSelectMode = () => $sel.css('display') !== 'none';
+
+    $('#toggle_name_mode_btn').off('click.chartag').on('click.chartag', function () {
+        if (isSelectMode()) {
+            $sel.css('display', 'none');
+            $inp.css('display', 'block');
+            const v = $sel.val();
+            if (v) $inp.val(v);
+            $inp.trigger('focus');
+        } else {
+            $inp.css('display', 'none');
+            $sel.css('display', 'block');
+            const v = $inp.val().trim();
+            const dict = extension_settings[extensionName].characterTags || {};
+            const exists = Object.prototype.hasOwnProperty.call(dict, v);
+            $inp.val('');
+            $sel.val(exists ? v : '');
+            $tags.val(exists ? (dict[v] || '') : '');
+        }
+    });
+
+    $sel.off('change.chartag').on('change.chartag', function () {
+        const name = $(this).val();
+        if (name) {
+            $tags.val(extension_settings[extensionName].characterTags[name] || '');
+        } else {
+            $sel.css('display', 'none');
+            $inp.css('display', 'block');
+            $tags.val('');
+            $inp.trigger('focus');
+        }
+    });
+
+    $tags.off('blur.chartag').on('blur.chartag', function () {
+        if (!isSelectMode()) return;
+        const name = $sel.val();
+        if (!name) return;
+        const val = $(this).val();
+        const dict = extension_settings[extensionName].characterTags || {};
+        if (dict[name] !== val) {
+            dict[name] = val;
+            saveSettingsDebounced();
+            renderCharacterTagsList();
+        }
+    });
+
+    $('#add_char_tag_btn').off('click.chartag').on('click.chartag', function () {
+        const selName = $sel.val();
+        const inpName = $inp.val().trim();
+        const tags = $tags.val().trim();
+        const dict = extension_settings[extensionName].characterTags = extension_settings[extensionName].characterTags || {};
+
+        if (isSelectMode()) {
+            if (selName) {
+                if (!tags) { toastr.warning('Tags 不能为空'); return; }
+                dict[selName] = tags;
+                saveSettingsDebounced();
+                $tags.val('');
+                $sel.val('');
+                renderCharacterTagsList();
+            } else {
+                $sel.css('display', 'none');
+                $inp.css('display', 'block');
+                $inp.trigger('focus');
+            }
+        } else {
+            if (!inpName || !tags) {
+                toastr.warning('角色名称和特征 Tags 不能为空');
+                return;
+            }
+            if (Object.prototype.hasOwnProperty.call(dict, inpName)) {
+                toastr.warning(`角色 "${inpName}" 已存在,请改名或编辑现有项`);
+                return;
+            }
+            dict[inpName] = tags;
+            saveSettingsDebounced();
+            $inp.val('');
+            $tags.val('');
+            $inp.css('display', 'none');
+            $sel.css('display', 'block');
+            $sel.val('');
+            renderCharacterTagsList();
+        }
+    });
+
+    $list.off('.chartag');
+    $list.on('click.chartag', '.edit-char-tag-btn', function () {
+        enterCharTagEditMode($(this).closest('.char-tag-row'));
+    });
+    $list.on('click.chartag', '.delete-char-tag-btn', function () {
+        const nameToDelete = $(this).attr('data-name');
+        if (!nameToDelete) return;
+        const dict = extension_settings[extensionName].characterTags || {};
+        if (!Object.prototype.hasOwnProperty.call(dict, nameToDelete)) return;
+        delete dict[nameToDelete];
+        saveSettingsDebounced();
+        renderCharacterTagsList();
+    });
+    $list.on('click.chartag', '.cancel-char-tag-btn', function () {
+        renderCharacterTagsList();
+    });
+    $list.on('click.chartag', '.save-char-tag-btn', function () {
+        const $row = $(this).closest('.char-tag-row');
+        const originalName = $row.attr('data-original-name');
+        const newName = $row.find('.edit-char-name').val().trim();
+        const newTags = $row.find('.edit-char-tags').val().trim();
+        if (!newName || !newTags) {
+            toastr.warning('角色名称和特征 Tags 不能为空');
+            return;
+        }
+        const dict = extension_settings[extensionName].characterTags || {};
+        if (newName !== originalName) {
+            if (Object.prototype.hasOwnProperty.call(dict, newName)) {
+                toastr.warning(`角色 "${newName}" 已存在`);
+                return;
+            }
+            // 改名:先删旧 key 再加新 key(防同字典并发)
+            delete dict[originalName];
+            dict[newName] = newTags;
+        } else {
+            dict[newName] = newTags;
+        }
+        saveSettingsDebounced();
+        renderCharacterTagsList();
     });
 }
 
@@ -698,26 +878,8 @@ function bindSettingsEvents() {
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
     $('#stream_generation').on('change', function () { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
 
-    // --- 新增: 绑定添加角色按钮事件 ---
-    $('#add_char_tag_btn').off('click').on('click', function() {
-        const nameInput = $('#new_char_name').val().trim();
-        const tagsInput = $('#new_char_tags').val().trim();
-
-        if (!nameInput || !tagsInput) {
-            toastr.warning('角色名称和特征Tags不能为空 / Name and Tags cannot be empty.');
-            return;
-        }
-
-        extension_settings[extensionName].characterTags = extension_settings[extensionName].characterTags || {};
-        extension_settings[extensionName].characterTags[nameInput] = tagsInput;
-
-        saveSettingsDebounced();
-
-        // 清空输入框并刷新列表
-        $('#new_char_name').val('');
-        $('#new_char_tags').val('');
-        renderCharacterTagsList();
-    });
+    // --- 新增: 绑定角色固定特征 tab 全部事件(toggle/select/add/edit/save/cancel/delete) ---
+    bindCharTagsEvents();
 
     // --- 新增: 绑定 ComfyUI 配置档事件 ---
     bindPresetEvents();
@@ -1405,7 +1567,8 @@ function renderGallery() {
             const tag = isVideo
                 ? `<video class="gallery-thumb" src="${escapedUrl}" muted preload="metadata" playsinline></video>`
                 : `<img class="gallery-thumb" src="${escapedUrl}" loading="lazy" />`;
-            thumbsHtml += `<div class="gallery-thumb-wrap" data-index="${index}">${tag}${badge}</div>`;
+            const timeStr = formatGalleryTime(entry.timestamp);
+            thumbsHtml += `<div class="gallery-thumb-wrap" data-index="${index}">${tag}${badge}<div class="gallery-thumb-time">${timeStr}</div></div>`;
         }
         $container.append(`
             <details class="gallery-group"${openAttr}>
