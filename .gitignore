@@ -1,0 +1,5 @@
+# Playwright MCP 调试产物
+.playwright-mcp/
+
+# 临时调试截图
+*.png
