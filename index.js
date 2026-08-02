@@ -505,6 +505,7 @@ async function fetchAndApplyImportUrl() {
 
         const summary = [
             `name: ${data.name || '(无)'}`,
+            `model: ${data.checkpoint || '(接口未返回,保持当前值)'}`,
             `workflow: ${data.workflow.length} 字符`,
             `正向 prefix: ${data.prefix.length} 字符`,
             `负面 prefix: ${data.negative.length} 字符`,
@@ -514,12 +515,13 @@ async function fetchAndApplyImportUrl() {
 
         const newPath = await uploadPreviewBase64(base64, ext);
 
-        // 应用 4 字段 + 删旧预览图
+        // 应用字段 + 删旧预览图(checkpoint 可选,接口没返回则不动 preset.model)
         const oldPath = preset.previewImage || '';
         preset.workflowJson = data.workflow;
         preset.positivePromptPrefix = data.prefix;
         preset.negativePromptPrefix = data.negative;
         preset.previewImage = newPath;
+        if (data.checkpoint) preset.model = data.checkpoint;
         saveSettingsDebounced();
         if (oldPath && oldPath !== newPath) await deletePreviewFile(oldPath);
 
