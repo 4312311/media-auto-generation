@@ -83,5 +83,9 @@
     "mag_char_save": "保存",
     "mag_char_cancel": "取消",
 
-    "mag_placeholder_help": "支持的占位符"
+    "mag_placeholder_help": "支持的占位符",
+
+    "mag_import_url_ph": "粘贴 detail 接口 URL",
+    "mag_import_btn": "拉取",
+    "mag_import_btn_title": "从接口拉取并应用到当前配置档"
 }

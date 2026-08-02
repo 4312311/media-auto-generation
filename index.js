@@ -478,12 +478,80 @@ async function refreshComfyOptions() {
     renderPresetFields();
 }
 
+/** 从 detail URL 拉取并应用到当前 preset(workflow/prefix/negative/preview 4 项) */
+async function fetchAndApplyImportUrl() {
+    const preset = getActivePreset();
+    if (!preset) { toastr.warning('请先选择一个配置档'); return; }
+    const rawUrl = ($('#comfy_import_url').val() || '').trim();
+    if (!rawUrl) { toastr.warning('请输入 detail 接口 URL'); return; }
+    try { new URL(rawUrl); } catch { toastr.error('URL 格式无效'); return; }
+
+    const $btn = $('#comfy_import_btn');
+    $btn.css('opacity', '0.5').css('pointer-events', 'none');
+    toastr.info('拉取中...');
+
+    try {
+        const res = await fetch(rawUrl, { headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+
+        const missing = ['workflow', 'prefix', 'negative', 'cover'].filter(k => !data[k]);
+        if (missing.length) throw new Error(`接口缺少字段: ${missing.join(', ')}`);
+
+        const coverMatch = String(data.cover).match(/^data:image\/([a-zA-Z0-9]+);base64,(.+)$/);
+        if (!coverMatch) throw new Error('cover 格式无效(应为 data:image/...;base64,...)');
+        const ext = coverMatch[1].toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+        const base64 = coverMatch[2];
+
+        const summary = [
+            `name: ${data.name || '(无)'}`,
+            `workflow: ${data.workflow.length} 字符`,
+            `正向 prefix: ${data.prefix.length} 字符`,
+            `负面 prefix: ${data.negative.length} 字符`,
+            `cover: ${ext} (${(base64.length * 0.75 / 1024).toFixed(0)} KB)`,
+        ].join('\n');
+        if (!window.confirm(`确认导入到当前配置档 "${preset.name}"?\n\n${summary}`)) return;
+
+        const newPath = await uploadPreviewBase64(base64, ext);
+
+        // 应用 4 字段 + 删旧预览图
+        const oldPath = preset.previewImage || '';
+        preset.workflowJson = data.workflow;
+        preset.positivePromptPrefix = data.prefix;
+        preset.negativePromptPrefix = data.negative;
+        preset.previewImage = newPath;
+        saveSettingsDebounced();
+        if (oldPath && oldPath !== newPath) await deletePreviewFile(oldPath);
+
+        renderPresetFields();  // 内部会触发 validateComfyWorkflow + renderPresetPreview
+        toastr.success('已应用导入的配置');
+        $('#comfy_import_url').val('');
+    } catch (e) {
+        console.error(`[${extensionName}] Import failed:`, e);
+        toastr.error(e.message || String(e));
+    } finally {
+        $btn.css('opacity', '').css('pointer-events', '');
+    }
+}
+
 // --- 预览图上传/删除 ---
 
 const PREVIEW_MAX_BYTES = 8 * 1024 * 1024; // 8MB
 const PREVIEW_FILENAME_PREFIX = 'mag-preset_preview_';
 
-/** 把 base64 + 文件名上传到 ST 通用文件目录,返回相对路径(可直接当 <img src>) */
+/** 把 base64 上传到 ST user/files,返回相对路径(可直接当 <img src>) */
+async function uploadPreviewBase64(base64, ext) {
+    const filename = `${PREVIEW_FILENAME_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const res = await fetch('/api/files/upload', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: filename, data: base64 }),
+    });
+    if (!res.ok) throw new Error(`上传失败: ${await res.text()}`);
+    return (await res.json()).path;
+}
+
+/** 把 File 上传为当前 preset 的预览图(校验 + 走 uploadPreviewBase64) */
 async function uploadPreviewFile(file) {
     if (!file) return null;
     if (!file.type.startsWith('image/')) {
@@ -502,19 +570,7 @@ async function uploadPreviewFile(file) {
     });
     const base64 = dataUrl.split(',')[1];
     const ext = (file.name.split('.').pop() || 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
-    const filename = `${PREVIEW_FILENAME_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
-
-    const res = await fetch('/api/files/upload', {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify({ name: filename, data: base64 }),
-    });
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Upload failed: ${text}`);
-    }
-    const result = await res.json();
-    return result.path;
+    return await uploadPreviewBase64(base64, ext);
 }
 
 /** 删除指定 path 的预览图文件,失败仅 console.warn(不阻断主流程) */
@@ -707,6 +763,15 @@ function bindPresetEvents() {
         _wfValidateTimer = setTimeout(validateComfyWorkflow, 200);
     });
     validateComfyWorkflow();
+
+    // --- 从 URL 导入配置档(workflow/prefix/negative/preview) ---
+    $('#comfy_import_btn').off('click.import').on('click.import', fetchAndApplyImportUrl);
+    $('#comfy_import_url').off('keydown.import').on('keydown.import', function (e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            fetchAndApplyImportUrl();
+        }
+    });
 }
 
 // --- 新增: 渲染角色列表UI ---

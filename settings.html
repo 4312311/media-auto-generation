@@ -436,6 +436,14 @@
         <input type="file" id="comfy_preview_input" accept="image/*" hidden />
     </div>
 
+    <div class="flex-container flexGap5 align_center margin-top-5">
+        <input id="comfy_import_url" class="text_pole" placeholder="http://.../api/dir/{name}/detail" data-i18n="[placeholder]mag_import_url_ph" style="flex: 1;">
+        <div id="comfy_import_btn" class="menu_button menu_button_icon" title="Fetch and apply" data-i18n="[title]mag_import_btn_title" style="margin: 0; padding: 5px 10px; display: inline-flex; gap: 5px; align-items: center;">
+            <i class="fa-solid fa-download"></i>
+            <span data-i18n="mag_import_btn">拉取</span>
+        </div>
+    </div>
+
     <div class="margin-top-5">
         <label for="comfy_url" data-i18n="ComfyUI URL">ComfyUI URL</label>
         <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
