@@ -10,7 +10,7 @@ import {
     updateMessageBlock,
     getRequestHeaders,
 } from '../../../../script.js';
-import { regexFromString, clamp, getUniqueName, saveBase64AsFile } from '../../../utils.js';
+import { regexFromString, clamp, getUniqueName, saveBase64AsFile, copyText } from '../../../utils.js';
 import { isMobile } from '../../../RossAscends-mods.js';
 
 const extensionName = 'media-auto-generation';
@@ -198,7 +198,10 @@ async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
     if (!preset.comfyUrl) throw new Error('Active preset has no ComfyUI URL');
     if (!preset.model) throw new Error('Active preset has no model selected');
 
-    const finalPrompt = (preset.positivePromptPrefix || '') + modifiedPrompt;
+    // 前缀末尾无逗号 → 自动补一个,避免 "1girl" + "solo" 粘连成 "1girlsolo"
+    const prefix = (preset.positivePromptPrefix || '').trimEnd();
+    const sep = prefix && !prefix.endsWith(',') ? ',' : '';
+    const finalPrompt = prefix + sep + modifiedPrompt;
     const negativePrompt = preset.negativePromptPrefix || '';
     const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt);
 
@@ -213,7 +216,7 @@ async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
     const filename = `${mediaType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const url = await saveBase64AsFile(result.data, charName, filename, format);
 
-    return { url, format, character: charName };
+    return { url, format, character: charName, finalPrompt };
 }
 
 // --- 设置与UI逻辑 ---
@@ -429,19 +432,14 @@ function deletePreset() {
     if (oldPreview) deletePreviewFile(oldPreview);
 }
 
-/** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断 */
+/** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断。每次点击都重新发起。 */
 async function refreshComfyOptions() {
     const preset = getActivePreset();
     if (!preset || !preset.comfyUrl) {
-        toastr.warning('Set ComfyUI URL first');
+        toastr.warning('请先填 ComfyUI 服务地址');
         return;
     }
-    // 防止同 URL 重复拉取(用户连点)
-    if (comfyCache.url === preset.comfyUrl && (comfyCache.models.length || comfyCache.samplers.length || comfyCache.schedulers.length)) {
-        renderPresetFields();
-        return;
-    }
-    toastr.info('Loading ComfyUI options...');
+    toastr.info('正在连接 ComfyUI...');
     const body = { url: preset.comfyUrl };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
     const results = await Promise.allSettled([
@@ -449,14 +447,34 @@ async function refreshComfyOptions() {
         comfyProxy('samplers', body),
         comfyProxy('schedulers', body),
     ]);
+    console.log('[mag-debug] allSettled done', results.map(r => ({ status: r.status, reason: r.reason ? String(r.reason.message || r.reason).slice(0, 100) : null })));
     const [modelsR, samplersR, schedulersR] = results;
-    if (modelsR.status === 'fulfilled') comfyCache.models = modelsR.value;
-    else toastr.warning(`Failed to load models: ${modelsR.reason?.message || modelsR.reason}`);
-    if (samplersR.status === 'fulfilled') comfyCache.samplers = samplersR.value;
-    else toastr.warning(`Failed to load samplers: ${samplersR.reason?.message || samplersR.reason}`);
-    if (schedulersR.status === 'fulfilled') comfyCache.schedulers = schedulersR.value;
-    else toastr.warning(`Failed to load schedulers: ${schedulersR.reason?.message || schedulersR.reason}`);
-    comfyCache.url = preset.comfyUrl;
+    const okCount = results.filter(r => r.status === 'fulfilled').length;
+    console.log('[mag-debug] okCount', okCount, 'results.length=', results.length, 'cond=', okCount === results.length);
+    if (okCount === results.length) {
+        comfyCache.models = modelsR.value;
+        comfyCache.samplers = samplersR.value;
+        comfyCache.schedulers = schedulersR.value;
+        comfyCache.url = preset.comfyUrl;
+        toastr.success(`ComfyUI 连接成功(${modelsR.value.length} 模型 / ${samplersR.value.length} 采样器 / ${schedulersR.value.length} 调度器)`);
+    } else {
+        // 部分或全部失败:重置缓存,避免渲染下拉时混入旧 url 的数据
+        console.log('[mag-debug] entering else, okCount=', okCount);
+        resetComfyCache();
+        console.log('[mag-debug] after resetComfyCache, okCount=', okCount, 'reason models=', modelsR.reason, 'msg=', modelsR.reason?.message);
+        if (okCount === 0) {
+            console.log('[mag-debug] about to call toastr.error');
+            toastr.error(`ComfyUI 连接失败:${modelsR.reason?.message || modelsR.reason}`);
+            console.log('[mag-debug] toastr.error called');
+        } else {
+            const failed = [
+                modelsR.status !== 'fulfilled' && `模型(${modelsR.reason?.message || modelsR.reason})`,
+                samplersR.status !== 'fulfilled' && `采样器(${samplersR.reason?.message || samplersR.reason})`,
+                schedulersR.status !== 'fulfilled' && `调度器(${schedulersR.reason?.message || schedulersR.reason})`,
+            ].filter(Boolean).join('、');
+            toastr.warning(`部分失败(${okCount}/${results.length}):${failed}`);
+        }
+    }
     renderPresetFields();
 }
 
@@ -1439,7 +1457,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 }, 1000);
 
                 // 直接调远程 ComfyUI(走 ST 后端代理 /api/sd/comfy/generate)
-                const { url, format, character } = await generateViaComfy(modifiedPrompt, mediaType);
+                const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
 
                 clearInterval(timer);
                 if (toast) toastr.clear(toast);
@@ -1468,8 +1486,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
                 generatedCache.set(promptHash, mediaTag);
 
-                // 记录到图库 manifest(供 Gallery tab 展示)
-                pushGalleryEntry({ url, character, prompt: rawPrompt, mediaType, format });
+                // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
+                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
@@ -1564,18 +1582,34 @@ function ensureGalleryLightbox() {
             <div class="lightbox-stage">
                 <img class="lightbox-media" alt="" />
                 <video class="lightbox-media" controls loop autoplay muted style="display:none;"></video>
-                <div class="lightbox-prompt"></div>
+                <div class="lightbox-prompt">
+                    <div class="lightbox-prompt-text"></div>
+                    <button class="lightbox-copy-btn" title="复制提示词" data-i18n="[title]mag_gallery_copy">
+                        <i class="fa-solid fa-copy"></i>
+                    </button>
+                </div>
             </div>
         </div>
     `);
     const $lb = $('#mag_gallery_lightbox');
     $lb.find('.lightbox-close').on('click', closeGalleryLightbox);
-    // 点击非媒体区域(遮罩本身)关闭
+    // 点 prompt 区域(文字 + 复制按钮)不关闭,允许选中文字 / 点按钮;其余任意位置都关闭
     $lb.on('click', (e) => {
-        if (e.target === e.currentTarget) closeGalleryLightbox();
+        if ($(e.target).closest('.lightbox-prompt').length) return;
+        closeGalleryLightbox();
     });
     $(document).on('keydown.galleryLightbox', (e) => {
         if (e.key === 'Escape') closeGalleryLightbox();
+    });
+    $lb.find('.lightbox-copy-btn').on('click', async () => {
+        const text = $lb.find('.lightbox-copy-btn').data('prompt') || '';
+        if (!text) { toastr.warning('提示词为空'); return; }
+        try {
+            await copyText(text);
+            toastr.success('已复制提示词');
+        } catch (err) {
+            toastr.error('复制失败,请手动选择文本');
+        }
     });
 }
 
@@ -1585,7 +1619,6 @@ function openGalleryLightbox(entry) {
     const $lb = $('#mag_gallery_lightbox');
     const $img = $lb.find('img.lightbox-media');
     const $video = $lb.find('video.lightbox-media');
-    const $prompt = $lb.find('.lightbox-prompt');
 
     if (entry.mediaType === 'video') {
         $img.css('display', 'none').attr('src', '');
@@ -1594,7 +1627,9 @@ function openGalleryLightbox(entry) {
         releaseVideoEl($video.css('display', 'none'));
         $img.css('display', 'block').attr('src', entry.url);
     }
-    $prompt.text(entry.prompt || '');
+    const promptText = entry.prompt || '';
+    $lb.find('.lightbox-prompt-text').text(promptText);
+    $lb.find('.lightbox-copy-btn').data('prompt', promptText);
     $lb.addClass('open');
 }
 
@@ -1727,10 +1762,10 @@ async function runTestGenerate() {
     }, 1000);
 
     try {
-        const { url, format, character } = await generateViaComfy(rawPrompt, 'image', preset.name);
+        const { url, format, character, finalPrompt } = await generateViaComfy(rawPrompt, 'image', preset.name);
 
-        // 用 preset.name 作为 character → 图库 tab 自动按 preset 分组
-        const entry = { url, character, prompt: rawPrompt, mediaType: 'image', format, timestamp: Date.now() };
+        // 用 preset.name 作为 character → 图库 tab 自动按 preset 分组。prompt 用 finalPrompt 快照(含前缀)
+        const entry = { url, character, prompt: finalPrompt, mediaType: 'image', format, timestamp: Date.now() };
         pushGalleryEntry(entry);
         testGenLastEntry = entry;
 

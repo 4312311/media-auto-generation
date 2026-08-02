@@ -67,6 +67,7 @@
 
     "mag_gallery_empty": "暂无图片,生成后会出现在这里",
     "mag_gallery_close": "关闭",
+    "mag_gallery_copy": "复制提示词",
     "mag_gallery_video_badge": "视频",
 
     "mag_tab_test": "测试生成",
