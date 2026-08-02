@@ -634,10 +634,10 @@ function renderWorkflowPopover(val) {
         `<div class="mag_ph_item"><i class="fa-solid ${icon}" style="color:${color}; width:14px; text-align:center;"></i><code>%${k}%</code></div>`;
     const rows = SUPPORTED_PLACEHOLDERS.map(k => {
         const ok = used.has(k);
-        return phRow(ok ? 'fa-check' : 'fa-xmark', ok ? 'var(--green)' : 'var(--red)', k);
+        return phRow(ok ? 'fa-check' : 'fa-xmark', ok ? '#5d9e5d' : 'var(--fullred, #f44336)', k);
     });
     const invalidHtml = invalid.length
-        ? `<hr class="mag_ph_divider">${invalid.map(k => phRow('fa-triangle-exclamation', 'var(--red)', k)).join('')}`
+        ? `<hr class="mag_ph_divider">${invalid.map(k => phRow('fa-triangle-exclamation', 'var(--fullred, #f44336)', k)).join('')}`
         : '';
     $('#comfy_workflow_popover').html(rows.join('') + invalidHtml);
 }
