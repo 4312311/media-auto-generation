@@ -534,6 +534,78 @@
         border-top: 1px solid var(--SmartThemeBorderColor);
         margin: 6px 0;
     }
+
+    /* --- ComfyUI preset 缩略图网格(快速切换) --- */
+    #media_auto_gen_panel_body #comfy_preset_gallery {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+    }
+    @media (max-width: 480px) {
+        #media_auto_gen_panel_body #comfy_preset_gallery { grid-template-columns: repeat(2, 1fr); }
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb {
+        position: relative;
+        aspect-ratio: 1 / 1;
+        overflow: hidden;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 2px solid transparent;
+        background: var(--black30a, rgba(0,0,0,0.3));
+        transition: border-color 0.1s, transform 0.1s;
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb:hover { transform: scale(1.03); }
+    #media_auto_gen_panel_body .mag-preset-thumb.active {
+        border-color: var(--SmartThemeQuoteColor, #4a8cff);
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb-empty {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--SmartThemeBodyColor);
+        opacity: 0.55;
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb-empty i { font-size: 1.4em; }
+    #media_auto_gen_panel_body .mag-preset-thumb-name {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
+        font-size: 0.7em;
+        text-align: center;
+        padding: 2px 4px;
+        line-height: 1.3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        pointer-events: none;
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb-badge {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: var(--SmartThemeQuoteColor, #4a8cff);
+        color: #fff;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        pointer-events: none;
+    }
+    #media_auto_gen_panel_body .mag-preset-thumb.active .mag-preset-thumb-badge { display: flex; }
 </style>
 
 <div class="mag-tabs-header">
@@ -600,6 +672,11 @@
         <div id="comfy_preset_delete" class="menu_button menu_button_icon" title="Delete Preset" data-i18n="[title]Delete Preset" style="margin: 0; padding: 5px;">
             <i class="fa-solid fa-trash"></i>
         </div>
+    </div>
+
+    <div id="comfy_preset_gallery_wrap" class="margin-top-5">
+        <small style="opacity: 0.7; display:block; margin-bottom:4px;" data-i18n="mag_preset_gallery_hint">点击缩略图切换配置</small>
+        <div id="comfy_preset_gallery"></div>
     </div>
 
     <div id="comfy_preview_wrap" class="margin-top-5" style="position: relative;">

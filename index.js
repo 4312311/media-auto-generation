@@ -285,6 +285,36 @@ function renderPresetDropdown() {
     }
     $select.val(activeName || '');
     $select.on('change.preset', onPresetSelectChange);
+    renderPresetGallery();
+}
+
+/** 渲染 ComfyUI preset 缩略图网格(快速点击切换) */
+function renderPresetGallery() {
+    const $grid = $('#comfy_preset_gallery');
+    if (!$grid.length) return;
+    const presets = extension_settings[extensionName].comfyPresets || [];
+    const activeName = extension_settings[extensionName].activePresetName;
+    const $wrap = $grid.closest('#comfy_preset_gallery_wrap');
+    $grid.empty();
+    if (presets.length === 0) {
+        $wrap.css('display', 'none');
+        return;
+    }
+    $wrap.css('display', '');
+    for (const p of presets) {
+        const isActive = p.name === activeName;
+        const inner = p.previewImage
+            ? `<img src="${escapeHtmlAttribute(p.previewImage)}" alt="">`
+            : `<div class="mag-preset-thumb-empty"><i class="fa-solid fa-image"></i></div>`;
+        const $thumb = $(`
+            <div class="mag-preset-thumb${isActive ? ' active' : ''}" data-name="${escapeHtmlAttribute(p.name)}">
+                ${inner}
+                <div class="mag-preset-thumb-name">${escapeHtmlAttribute(p.name)}</div>
+                <div class="mag-preset-thumb-badge"><i class="fa-solid fa-check"></i></div>
+            </div>
+        `);
+        $grid.append($thumb);
+    }
 }
 
 /** 把 active preset 字段灌进各 input/select/textarea;active 为 null 时显示空状态 */
@@ -766,6 +796,16 @@ function bindPresetEvents() {
     $('#comfy_preset_dup').off('click').on('click', duplicatePreset);
     $('#comfy_preset_rename').off('click').on('click', renamePreset);
     $('#comfy_preset_delete').off('click').on('click', deletePreset);
+    // 委托到 document,renderPresetGallery 重渲染后无需重绑
+    $(document).off('click.preset-gallery', '#comfy_preset_gallery .mag-preset-thumb').on('click.preset-gallery', '#comfy_preset_gallery .mag-preset-thumb', function () {
+        const name = $(this).attr('data-name');
+        if (!name || name === extension_settings[extensionName].activePresetName) return;
+        extension_settings[extensionName].activePresetName = name;
+        saveSettingsDebounced();
+        resetComfyCache();
+        renderPresetDropdown();
+        renderPresetFields();
+    });
     $('#comfy_refresh').off('click').on('click', refreshComfyOptions);
     $('#comfy_save').off('click').on('click', async () => {
         if (!getActivePreset()) { toastr.warning('No active preset'); return; }
