@@ -18,6 +18,7 @@
 
     "Stream Generation": "流式生成",
     "Stream Generation (Experimental)": "流式生成（实验性）",
+    "mag_auto_replace": "自动替换",
     "Character Fixed Tags": "角色固定特征",
     "Auto inject tags to prompt": "自动将特征注入到提示词中",
     "Name (e.g. Lisa)": "角色名 (例如: Lisa)",

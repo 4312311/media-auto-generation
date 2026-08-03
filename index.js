@@ -41,6 +41,7 @@ const defaultSettings = {
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:100%;height:auto',
     streamGeneration: false,
+    autoReplace: true, // true=匹配后自动生成替换(当前行为);false=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
@@ -74,6 +75,16 @@ function pruneOldPrompts() {
 function escapeHtmlAttribute(value) {
     if (typeof value !== 'string') return '';
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/**
+ * 把 message.mes 中 data-mag-id 匹配的占位符 span 替换为 newTag。
+ * 占位符 HTML 结构约定:外层只有一个 <span>(无嵌套 span),所以非贪婪 </span> 必然匹配到正确闭合。
+ */
+function replacePlaceholderInMes(mes, magId, newTag) {
+    const escaped = escapeRegExp(magId);
+    const re = new RegExp(`<span[^>]*data-mag-id="${escaped}"[^>]*>[\\s\\S]*?</span>`, '');
+    return mes.replace(re, newTag);
 }
 
 /** 把 timestamp 格式化为 YYYY-MM-DD HH:mm(用于图库缩略图下方时间显示) */
@@ -997,6 +1008,7 @@ function updateUI() {
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
         $('#stream_generation').prop('checked', extension_settings[extensionName].streamGeneration ?? false);
+        $('#auto_replace').prop('checked', extension_settings[extensionName].autoReplace !== false);
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -1051,6 +1063,7 @@ function bindSettingsEvents() {
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
     $('#stream_generation').on('change', function () { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#auto_replace').on('change', function () { extension_settings[extensionName].autoReplace = $(this).prop('checked'); saveSettingsDebounced(); });
 
     // --- 新增: 绑定角色固定特征 tab 全部事件(toggle/select/add/edit/save/cancel/delete) ---
     bindCharTagsEvents();
@@ -1427,6 +1440,11 @@ function requestDebouncedUpdate(isFinal = false) {
 async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
 
+    const autoReplace = extension_settings[extensionName].autoReplace !== false;
+    // 手动模式下,流式期间只触发生成(onlyTrigger=true)无意义,直接 return 避免抖动;
+    // 占位符的渲染交给流式结束后的最终处理。
+    if (onlyTrigger && !autoReplace) return;
+
     const context = getContext();
     const messageIndex = context.chat.length - 1;
     const message = context.chat[messageIndex];
@@ -1488,6 +1506,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             else replacementStats.image++;
             
             continue; 
+        }
+
+        // --- 逻辑 B-0：手动模式占位符 ---
+        // 缓存未命中且 autoReplace=false 时,把 originalTag 替换为可点击占位符,不触发生成。
+        // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
+        if (!autoReplace) {
+            const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+            const preview = rawPrompt.slice(0, 40) + (rawPrompt.length > 40 ? '...' : '');
+            const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
+            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false">${escapeHtmlAttribute(preview)}</span>`;
+            currentMessageText = currentMessageText.replace(originalTag, placeholder);
+            contentModified = true;
+            continue;
         }
 
         // --- 逻辑 B：触发新生成 ---
@@ -1604,6 +1635,85 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         }
     }
 }
+
+/**
+ * 手动模式占位符点击处理:读取 DOM 上的自包含数据 → 触发生成 → 用 magId 锚定字符串替换为最终 media。
+ * 复用 generateViaComfy / pushGalleryEntry / generatedCache,与自动模式生成的产物完全一致。
+ */
+async function onPlaceholderClick(e) {
+    e.preventDefault();
+    const $ph = $(this);
+    if ($ph.attr('data-state') !== 'idle') return;
+
+    const magId = $ph.attr('data-mag-id');
+    const rawPrompt = $ph.attr('data-prompt');
+    const rawExtraParams = $ph.attr('data-extra');
+    const mediaType = $ph.attr('data-media-type');
+
+    $ph.attr('data-state', 'loading');
+
+    // 注入角色特征 → 与自动模式一致地计算 hash(缓存命中复用)
+    const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
+    const modifiedPrompt = injectionResult.modifiedPrompt;
+    const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
+
+    let timer = null;
+    let seconds = 0;
+    let toast = null;
+
+    try {
+        const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
+        const baseText = `⏳ 生成${mediaTypeText}...`;
+        toast = toastr.info(`${baseText} 0s`, '', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        timer = setInterval(() => {
+            seconds++;
+            if (toast && toast.find) {
+                toast.find('.toast-message').text(`${baseText} ${seconds}s`);
+            }
+        }, 1000);
+
+        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
+        clearInterval(timer);
+        if (toast) toastr.clear(toast);
+
+        const style = extension_settings[extensionName].style || '';
+        const escapedUrl = escapeHtmlAttribute(url);
+        const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
+        const escapedParams = escapeHtmlAttribute(rawExtraParams);
+
+        let mediaTag;
+        if (mediaType === 'video') {
+            mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
+        } else {
+            const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
+            mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" />`;
+        }
+
+        generatedCache.set(promptHash, mediaTag);
+        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
+
+        // 用 magId 锚定字符串替换 message.mes 中的占位符 → 最终 media
+        const context = getContext();
+        const messageIndex = context.chat.length - 1;
+        const message = context.chat[messageIndex];
+        if (message) {
+            message.mes = replacePlaceholderInMes(message.mes, magId, mediaTag);
+            updateMessageBlock(messageIndex, message);
+            await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+            await context.saveChat();
+        }
+        toastr.success(`替换完成: 1 张${mediaTypeText}`);
+    } catch (err) {
+        console.error(`[${extensionName}] Manual generation failed:`, err);
+        if (timer) clearInterval(timer);
+        if (toast) toastr.clear(toast);
+        toastr.error(`Media generation error: ${err.message || err}`);
+        $ph.attr('data-state', 'idle');  // 失败回退允许重试
+    }
+}
+
+// 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
+$(document).on('click.magph', '.mag-placeholder', onPlaceholderClick);
 
 // --- Gallery 图库 ---
 

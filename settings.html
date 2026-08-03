@@ -318,6 +318,43 @@
     #media_auto_gen_float_btn.mag-docked-right { transform: translateX(65%); opacity: .5; }
     #media_auto_gen_float_btn.mag-dragging { transition: none; }
 
+    /* --- 手动模式占位符(挂在 #chat 消息 DOM 内,不属于 panel_body,不能加前缀) --- */
+    .mag-placeholder {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 3px 10px;
+        margin: 2px 0;
+        border: 1.5px dashed var(--SmartThemeBorderColor);
+        border-radius: 4px;
+        cursor: pointer;
+        background: var(--SmartThemeBlurTintColor);
+        font-size: 0.88em;
+        color: var(--SmartThemeBodyColor);
+        transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+    .mag-placeholder:hover {
+        background: var(--white50a, rgba(255,255,255,0.12));
+        border-color: var(--SmartThemeFontColor, #fff);
+    }
+    .mag-placeholder::before {
+        font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", "FontAwesome";
+        font-weight: 900;
+    }
+    .mag-placeholder.mag-ph-image::before { content: "\f03e"; }  /* fa-image */
+    .mag-placeholder.mag-ph-video::before { content: "\f03d"; }  /* fa-video */
+    .mag-placeholder[data-state="loading"] {
+        cursor: wait;
+        opacity: 0.6;
+        pointer-events: none;
+    }
+    .mag-placeholder[data-state="loading"]::before {
+        content: "\f110";  /* fa-circle-notch */
+        animation: fa-spin 1.5s infinite linear;
+    }
+
     /* --- toastr 提示层级修复:ST 默认 #toast-container z-index 999999,
        被本插件浮窗(z-index 2147483640)盖住,手机端尤甚。
        提升到 int32 max 让所有 toastr 浮在最上层(覆盖所有插件浮层)。 --- */
@@ -370,6 +407,11 @@
     <div class="flex-container flexnowrap align_center margin-top-5">
         <label for="stream_generation" class="flex1" data-i18n="Stream Generation">Stream Generation (Experimental)</label>
         <input type="checkbox" id="stream_generation" class="checkbox_simple">
+    </div>
+
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="auto_replace" class="flex1" data-i18n="mag_auto_replace">Auto Replace</label>
+        <input type="checkbox" id="auto_replace" class="checkbox_simple" checked>
     </div>
 
     <div class="flex-container flexnowrap margin-top-5">
