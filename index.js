@@ -1513,12 +1513,14 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
             const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-            const preview = rawPrompt.slice(0, 40) + (rawPrompt.length > 40 ? '...' : '');
             const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
             const iconClass = mediaType === 'video' ? 'fa-video' : 'fa-image';
-            // 用内联 <i> 而非 CSS ::before — ST 的 DOMPurify hook 会给非 fa- 前缀的 class 加 custom- 前缀,
-            // 导致 .mag-placeholder 选择器失配;fa-* class 会被原样保留
-            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false"><i class="fa-solid ${iconClass}"></i>${escapeHtmlAttribute(preview)}</span>`;
+            const labelText = mediaType === 'video' ? '生成视频' : '生成图片';
+            const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
+            // 占位符:块级卡片,5 个 data-mag-role 子元素(icon/label/prompt-text/copy/toggle)。
+            // 子元素用 <i>/<small> 而非 <span>(replacePlaceholderInMes 正则靠外层 </span> 闭合,内层不许嵌套 span)。
+            // 用 data-mag-role 属性锚定样式/事件,绕开 ST sanitizer 的 custom- 前缀。
+            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-view="default" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false"><i class="fa-solid ${iconClass}" data-mag-role="icon"></i><small data-mag-role="label">${labelText}</small><small data-mag-role="prompt-text">${escapeHtmlAttribute(promptText)}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="toggle">prompt描述</small></span>`;
             currentMessageText = currentMessageText.replace(originalTag, placeholder);
             contentModified = true;
             continue;
@@ -1571,19 +1573,15 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     toastr.warning(`ComfyUI returned video format "${format}" but media type is image; tag may not render.`);
                 }
 
-                const style = extension_settings[extensionName].style || '';
-                const escapedUrl = escapeHtmlAttribute(url);
-                // HTML标签上依然保留原始的 rawPrompt 避免文本污染,后台生成使用 modifiedPrompt
-                const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
-                const escapedParams = escapeHtmlAttribute(rawExtraParams);
-
-                let mediaTag;
-                if (mediaType === 'video') {
-                    mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
-                } else {
-                    const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
-                    mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" />`;
-                }
+                // 自动模式也走 wrapper(与手动模式一致),用 promptHash+index+时间戳生成 magId
+                const autoMagId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+                const mediaTag = buildMediaWrap({
+                    magId: autoMagId,
+                    mediaType,
+                    url,
+                    rawPrompt,
+                    rawExtraParams,
+                });
 
                 generatedCache.set(promptHash, mediaTag);
 
@@ -1640,21 +1638,81 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 }
 
 /**
- * 手动模式占位符点击处理:读取 DOM 上的自包含数据 → 触发生成 → 用 magId 锚定字符串替换为最终 media。
- * 复用 generateViaComfy / pushGalleryEntry / generatedCache,与自动模式生成的产物完全一致。
+ * 统一 click handler:占位符 + 生成图 wrapper 共用同一个事件委托。
+ * 子元素用 [data-mag-role] 路由(toggle/copy/zoom),主体点击走默认动作
+ * (占位符 → 触发生成;wrapper → toggle data-revealed)。
  */
-async function onPlaceholderClick(e) {
-    e.preventDefault();
-    const $ph = $(this);
-    if ($ph.attr('data-state') !== 'idle') return;
+async function onMagClick(e) {
+    const $el = $(this);
+    const $roleEl = $(e.target).closest('[data-mag-role]');
+    const role = $roleEl.attr('data-mag-role');
 
+    // --- 子元素角色路由 ---
+    if (role === 'toggle' || role === 'prompt-toggle') {
+        e.preventDefault();
+        e.stopPropagation();
+        const cur = $el.attr('data-view');
+        $el.attr('data-view', cur === 'default' ? 'prompt' : 'default');
+        return;
+    }
+    if (role === 'copy') {
+        e.preventDefault();
+        e.stopPropagation();
+        const prompt = $el.attr('data-prompt');
+        try {
+            if (typeof copyText === 'function') {
+                await copyText(prompt);
+            } else {
+                await navigator.clipboard.writeText(prompt);
+            }
+            toastr.success('已复制 prompt');
+        } catch (err) {
+            console.error(`[${extensionName}] copy failed:`, err);
+            toastr.error('复制失败');
+        }
+        return;
+    }
+    if (role === 'zoom') {
+        e.preventDefault();
+        e.stopPropagation();
+        const $media = $el.find('img, video').first();
+        const url = $media.attr('src');
+        const mediaType = $el.attr('data-media-type');
+        const prompt = $el.attr('data-prompt');
+        if (url && typeof openGalleryLightbox === 'function') {
+            openGalleryLightbox({ url, mediaType, prompt });
+        }
+        return;
+    }
+
+    // --- 主体点击(默认动作) ---
+    const isPlaceholder = $el.hasClass('mag-placeholder') || $el.hasClass('custom-mag-placeholder');
+    const isMedia = $el.hasClass('mag-media') || $el.hasClass('custom-mag-media');
+
+    if (isPlaceholder) {
+        e.preventDefault();
+        if ($el.attr('data-state') !== 'idle') return;
+        if ($el.attr('data-view') !== 'default') return; // prompt 视图下点主体不触发生成
+        await startManualGeneration($el);
+    } else if (isMedia) {
+        e.preventDefault();
+        const cur = $el.attr('data-revealed');
+        $el.attr('data-revealed', cur === 'true' ? 'false' : 'true');
+    }
+}
+
+/**
+ * 手动模式占位符 → 触发 ComfyUI 生成 → 替换为 mag-media wrapper。
+ * 从原 onPlaceholderClick 抽出来,统一 click handler 调用。
+ */
+async function startManualGeneration($ph) {
     const magId = $ph.attr('data-mag-id');
     const rawPrompt = $ph.attr('data-prompt');
     const rawExtraParams = $ph.attr('data-extra');
     const mediaType = $ph.attr('data-media-type');
 
     $ph.attr('data-state', 'loading');
-    $ph.find('i').first().attr('class', 'fa-solid fa-circle-notch fa-spin');
+    $ph.find('[data-mag-role="icon"]').attr('class', 'fa-solid fa-circle-notch fa-spin');
 
     // 注入角色特征 → 与自动模式一致地计算 hash(缓存命中复用)
     const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
@@ -1680,28 +1738,17 @@ async function onPlaceholderClick(e) {
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
-        const style = extension_settings[extensionName].style || '';
-        const escapedUrl = escapeHtmlAttribute(url);
-        const escapedOriginalPrompt = escapeHtmlAttribute(rawPrompt);
-        const escapedParams = escapeHtmlAttribute(rawExtraParams);
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
 
-        let mediaTag;
-        if (mediaType === 'video') {
-            mediaTag = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedOriginalPrompt}" style="${style}" loop controls autoplay muted/>`;
-        } else {
-            const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
-            mediaTag = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedOriginalPrompt}" style="${style}" />`;
-        }
-
-        generatedCache.set(promptHash, mediaTag);
+        generatedCache.set(promptHash, mediaWrap);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
-        // 用 magId 锚定字符串替换 message.mes 中的占位符 → 最终 media
+        // 用 magId 锚定字符串替换 message.mes 中的占位符 → 最终 wrapper
         const context = getContext();
         const messageIndex = context.chat.length - 1;
         const message = context.chat[messageIndex];
         if (message) {
-            message.mes = replacePlaceholderInMes(message.mes, magId, mediaTag);
+            message.mes = replacePlaceholderInMes(message.mes, magId, mediaWrap);
             updateMessageBlock(messageIndex, message);
             await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
             await context.saveChat();
@@ -1714,13 +1761,36 @@ async function onPlaceholderClick(e) {
         toastr.error(`Media generation error: ${err.message || err}`);
         $ph.attr('data-state', 'idle');  // 失败回退允许重试
         const rollbackIcon = mediaType === 'video' ? 'fa-video' : 'fa-image';
-        $ph.find('i').first().attr('class', `fa-solid ${rollbackIcon}`);
+        $ph.find('[data-mag-role="icon"]').attr('class', `fa-solid ${rollbackIcon}`);
     }
+}
+
+/**
+ * 构造 mag-media wrapper HTML(包 img/video + 4 个 data-mag-role 子元素)。
+ * 占位符替换 / 自动模式缓存 共用此函数,保证产物结构一致。
+ */
+function buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams }) {
+    const style = extension_settings[extensionName].style || '';
+    const escapedUrl = escapeHtmlAttribute(url);
+    const escapedPrompt = escapeHtmlAttribute(rawPrompt);
+    const escapedParams = escapeHtmlAttribute(rawExtraParams || '');
+    const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
+    const escapedPromptText = escapeHtmlAttribute(promptText);
+
+    let mediaInner;
+    if (mediaType === 'video') {
+        mediaInner = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`;
+    } else {
+        const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
+        mediaInner = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedPrompt}" style="${style}" />`;
+    }
+
+    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
 // 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能用 class 选择器)
-$(document).on('click.magph', '[data-mag-id]', onPlaceholderClick);
+$(document).on('click.magph', '[data-mag-id]', onMagClick);
 
 // --- Gallery 图库 ---
 

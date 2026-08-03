@@ -318,21 +318,27 @@
     #media_auto_gen_float_btn.mag-docked-right { transform: translateX(65%); opacity: .5; }
     #media_auto_gen_float_btn.mag-dragging { transition: none; }
 
-    /* --- 手动模式占位符(挂在 #chat 消息 DOM 内,不属于 panel_body,不能加前缀) ---
-       ST DOMPurify hook (scripts/chats.js) 会给非 fa-*/note-*/monospace 的 class 加 custom- 前缀,
-       所以同时列出原始选择器和 custom- 前缀选择器。
-       图标用内联 <i class="fa-solid fa-image"> (fa-* class 原样保留),不用 ::before。 */
+    /* === 手动模式占位符 + 生成图 wrapper(都在 #chat 消息 DOM 内,会被 ST sanitizer 加 custom- 前缀) ===
+       规则:外层 .mag-* 同时列原始 + .custom-mag-* 前缀选择器;
+             内层用 [data-mag-role] 属性选择器(绕开前缀)。
+       外层必须是 <span>(replacePlaceholderInMes 正则靠 </span> 闭合),内层不许嵌套 <span>。 */
     .mag-placeholder, .custom-mag-placeholder {
-        display: inline-flex;
+        display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 5px;
-        padding: 3px 10px;
-        margin: 2px 0;
-        border: 1.5px dashed var(--SmartThemeBorderColor);
-        border-radius: 4px;
-        cursor: pointer;
+        justify-content: center;
+        gap: 8px;
+        position: relative;
+        box-sizing: border-box;
+        min-width: 220px;
+        min-height: 110px;
+        max-width: 100%;
+        margin: 8px auto;
+        padding: 16px 20px;
+        border: 1.5px solid var(--SmartThemeBorderColor);
+        border-radius: 12px;
         background: var(--SmartThemeBlurTintColor);
-        font-size: 0.88em;
+        cursor: pointer;
         color: var(--SmartThemeBodyColor);
         transition: background 0.15s, border-color 0.15s, opacity 0.15s;
         user-select: none;
@@ -342,10 +348,152 @@
         background: var(--white50a, rgba(255,255,255,0.12));
         border-color: var(--SmartThemeFontColor, #fff);
     }
-    .mag-placeholder[data-state="loading"], .custom-mag-placeholder[data-state="loading"] {
+
+    /* 视图切换 — default 显示 icon+label;prompt 显示 prompt-text+copy */
+    .mag-placeholder[data-view="default"] [data-mag-role="prompt-text"],
+    .mag-placeholder[data-view="default"] [data-mag-role="copy"],
+    .custom-mag-placeholder[data-view="default"] [data-mag-role="prompt-text"],
+    .custom-mag-placeholder[data-view="default"] [data-mag-role="copy"] { display: none; }
+
+    .mag-placeholder[data-view="prompt"] [data-mag-role="icon"],
+    .mag-placeholder[data-view="prompt"] [data-mag-role="label"],
+    .custom-mag-placeholder[data-view="prompt"] [data-mag-role="icon"],
+    .custom-mag-placeholder[data-view="prompt"] [data-mag-role="label"] { display: none; }
+
+    /* icon: 半透明白底圆形背景 */
+    .mag-placeholder [data-mag-role="icon"], .custom-mag-placeholder [data-mag-role="icon"] {
+        font-size: 28px;
+        width: 56px;
+        height: 56px;
+        line-height: 56px;
+        text-align: center;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 50%;
+        color: var(--SmartThemeBodyColor);
+    }
+    .mag-placeholder [data-mag-role="label"], .custom-mag-placeholder [data-mag-role="label"] {
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    /* prompt-text: 撑满宽度,允许换行 */
+    .mag-placeholder [data-mag-role="prompt-text"],
+    .custom-mag-placeholder [data-mag-role="prompt-text"] {
+        font-size: 13px;
+        line-height: 1.5;
+        word-break: break-word;
+        width: 100%;
+        text-align: center;
+    }
+
+    /* copy 按钮:跟在 prompt-text 后 */
+    .mag-placeholder [data-mag-role="copy"],
+    .custom-mag-placeholder [data-mag-role="copy"] {
+        cursor: pointer;
+        font-size: 14px;
+        opacity: 0.7;
+        padding: 4px 8px;
+    }
+    .mag-placeholder [data-mag-role="copy"]:hover,
+    .custom-mag-placeholder [data-mag-role="copy"]:hover { opacity: 1; }
+
+    /* toggle 角标:右下角绝对定位 */
+    .mag-placeholder [data-mag-role="toggle"],
+    .custom-mag-placeholder [data-mag-role="toggle"] {
+        position: absolute;
+        bottom: 4px;
+        right: 8px;
+        font-size: 11px;
+        opacity: 0.65;
+        padding: 2px 6px;
+        border-radius: 4px;
+    }
+    .mag-placeholder [data-mag-role="toggle"]:hover,
+    .custom-mag-placeholder [data-mag-role="toggle"]:hover {
+        opacity: 1;
+        background: rgba(255,255,255,0.1);
+    }
+
+    /* loading 状态:整体变暗 + 禁用点击(JS 把 icon class 换成 fa-circle-notch fa-spin) */
+    .mag-placeholder[data-state="loading"],
+    .custom-mag-placeholder[data-state="loading"] {
         cursor: wait;
-        opacity: 0.6;
+        opacity: 0.7;
         pointer-events: none;
+    }
+
+    /* === 生成图 wrapper(img/video 外包一层,点击图片才显示角标) === */
+    .mag-media, .custom-mag-media {
+        position: relative;
+        display: inline-block;
+        max-width: 100%;
+    }
+    .mag-media img, .custom-mag-media img,
+    .mag-media video, .custom-mag-media video {
+        display: block;
+        max-width: 100%;
+        cursor: pointer;
+    }
+
+    /* 默认隐藏 prompt-text + copy + 角标 */
+    .mag-media [data-mag-role="prompt-text"],
+    .mag-media [data-mag-role="copy"],
+    .mag-media [data-mag-role="prompt-toggle"],
+    .mag-media [data-mag-role="zoom"],
+    .custom-mag-media [data-mag-role="prompt-text"],
+    .custom-mag-media [data-mag-role="copy"],
+    .custom-mag-media [data-mag-role="prompt-toggle"],
+    .custom-mag-media [data-mag-role="zoom"] { display: none; }
+
+    /* revealed=true 时显示两个角标(prompt-text 仍隐藏,只在 view=prompt 时显示) */
+    .mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"],
+    .mag-media[data-revealed="true"] [data-mag-role="zoom"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="zoom"] {
+        display: inline-block;
+        position: absolute;
+        bottom: 6px;
+        padding: 3px 8px;
+        font-size: 11px;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
+        border-radius: 4px;
+        cursor: pointer;
+        z-index: 2;
+    }
+    .mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"] { right: 6px; }
+    .mag-media[data-revealed="true"] [data-mag-role="zoom"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="zoom"] { left: 6px; }
+
+    /* view=prompt 时:隐藏 img/video,显示 prompt-text + copy */
+    .mag-media[data-view="prompt"] img,
+    .mag-media[data-view="prompt"] video,
+    .custom-mag-media[data-view="prompt"] img,
+    .custom-mag-media[data-view="prompt"] video { display: none; }
+    .mag-media[data-view="prompt"] [data-mag-role="prompt-text"],
+    .mag-media[data-view="prompt"] [data-mag-role="copy"],
+    .custom-mag-media[data-view="prompt"] [data-mag-role="prompt-text"],
+    .custom-mag-media[data-view="prompt"] [data-mag-role="copy"] {
+        display: block;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px dashed var(--SmartThemeBorderColor);
+        padding: 12px;
+        font-size: 13px;
+        line-height: 1.5;
+        word-break: break-word;
+        min-width: 200px;
+        min-height: 80px;
+    }
+    .mag-media[data-view="prompt"] [data-mag-role="copy"],
+    .custom-mag-media[data-view="prompt"] [data-mag-role="copy"] {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        cursor: pointer;
+        padding: 4px 8px;
+        background: rgba(0,0,0,0.65);
+        color: #fff;
     }
 
     /* --- toastr 提示层级修复:ST 默认 #toast-container z-index 999999,
