@@ -1515,7 +1515,10 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
             const preview = rawPrompt.slice(0, 40) + (rawPrompt.length > 40 ? '...' : '');
             const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
-            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false">${escapeHtmlAttribute(preview)}</span>`;
+            const iconClass = mediaType === 'video' ? 'fa-video' : 'fa-image';
+            // 用内联 <i> 而非 CSS ::before — ST 的 DOMPurify hook 会给非 fa- 前缀的 class 加 custom- 前缀,
+            // 导致 .mag-placeholder 选择器失配;fa-* class 会被原样保留
+            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false"><i class="fa-solid ${iconClass}"></i>${escapeHtmlAttribute(preview)}</span>`;
             currentMessageText = currentMessageText.replace(originalTag, placeholder);
             contentModified = true;
             continue;
@@ -1651,6 +1654,7 @@ async function onPlaceholderClick(e) {
     const mediaType = $ph.attr('data-media-type');
 
     $ph.attr('data-state', 'loading');
+    $ph.find('i').first().attr('class', 'fa-solid fa-circle-notch fa-spin');
 
     // 注入角色特征 → 与自动模式一致地计算 hash(缓存命中复用)
     const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
@@ -1709,11 +1713,14 @@ async function onPlaceholderClick(e) {
         if (toast) toastr.clear(toast);
         toastr.error(`Media generation error: ${err.message || err}`);
         $ph.attr('data-state', 'idle');  // 失败回退允许重试
+        const rollbackIcon = mediaType === 'video' ? 'fa-video' : 'fa-image';
+        $ph.find('i').first().attr('class', `fa-solid ${rollbackIcon}`);
     }
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
-$(document).on('click.magph', '.mag-placeholder', onPlaceholderClick);
+// 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能用 class 选择器)
+$(document).on('click.magph', '[data-mag-id]', onPlaceholderClick);
 
 // --- Gallery 图库 ---
 
