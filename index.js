@@ -78,6 +78,28 @@ function escapeHtmlAttribute(value) {
 }
 
 /**
+ * 把 mag-media wrapper(生成完成的图/视频)还原成简洁的 <pic prompt="..."> / <video prompt="...">,
+ * 用于发给 LLM 前的清理 —— 避免 LLM 看到历史里的 wrapper HTML 后学着输出 HTML。
+ *
+ * mes 里 class 是原始 `mag-media`(DOMPurify 在渲染到 DOM 时才加 custom- 前缀,不会写回 mes),
+ * 但为防御性同时匹配 custom-mag-media。
+ *
+ * wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
+ */
+function reduceMagMediaForLLM(text) {
+    if (typeof text !== 'string') return text;
+    const wrapperRe = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
+    return text.replace(wrapperRe, (match) => {
+        const typeMatch = match.match(/\bdata-media-type\s*=\s*"(image|video)"/i);
+        const promptMatch = match.match(/\bdata-prompt\s*=\s*"([^"]*)"/i);
+        if (!typeMatch || !promptMatch) return match;
+        const tag = typeMatch[1] === 'video' ? 'video' : 'pic';
+        // promptMatch[1] 已是 escapeHtmlAttribute 处理过的字符串,直接拼到新 attribute 即可
+        return `<${tag} prompt="${promptMatch[1]}" />`;
+    });
+}
+
+/**
  * 把 message.mes 中 data-mag-id 匹配的占位符 span 替换为 newTag。
  * 占位符 HTML 结构约定:外层只有一个 <span>(无嵌套 span),所以非贪婪 </span> 必然匹配到正确闭合。
  */
@@ -2099,4 +2121,33 @@ eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     pruneOldPrompts();
     await processMessageContent(true, false);
+});
+
+// === 发送给 LLM 前:把 mag-media wrapper 还原成简洁 <pic>/<video> 标签 ===
+// 覆盖两种模式: text completion 走 GENERATE_AFTER_COMBINE_PROMPTS, chat completion 走 CHAT_COMPLETION_PROMPT_READY
+// 不分 dryRun,token 计数也要一致,否则 ST 会按 wrapper 长度估算偏高、误砍楼层
+
+// text completion: payload 是 { prompt: string, dryRun }
+eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, (eventData) => {
+    if (eventData && typeof eventData.prompt === 'string') {
+        eventData.prompt = reduceMagMediaForLLM(eventData.prompt);
+    }
+});
+
+// chat completion: payload 是 { chat: Array<{role, content}>, dryRun }
+// content 可能是 string 或多模态数组(vision),两种都要处理
+eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (eventData) => {
+    if (!eventData || !Array.isArray(eventData.chat)) return;
+    for (const msg of eventData.chat) {
+        if (!msg) continue;
+        if (typeof msg.content === 'string') {
+            msg.content = reduceMagMediaForLLM(msg.content);
+        } else if (Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+                if (part && typeof part.text === 'string') {
+                    part.text = reduceMagMediaForLLM(part.text);
+                }
+            }
+        }
+    }
 });
