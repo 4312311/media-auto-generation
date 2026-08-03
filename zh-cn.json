@@ -73,6 +73,8 @@
     "mag_tab_test": "测试生成",
     "mag_test_prompt_ph": "提示词,例如:1girl, outdoors...",
     "mag_test_generate_btn": "生成测试图",
+    "mag_test_paste_btn": "从粘贴板替换",
+    "mag_test_clear_btn": "清空提示词",
     "mag_test_preview_empty": "点上方「生成测试图」用当前 ComfyUI 配置档生成一张",
 
     "mag_char_new_role": "+ 新角色",

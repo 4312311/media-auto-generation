@@ -1858,6 +1858,21 @@ function bindTestTabEvents() {
     $('#test_preview_img').off('click.test').on('click.test', function () {
         if (testGenLastEntry) openGalleryLightbox(testGenLastEntry);
     });
+    $('#test_paste_btn').off('click.test').on('click.test', async function () {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text) { toastr.warning('粘贴板为空'); return; }
+            $('#test_prompt_input').val(text);
+            toastr.success('已粘贴');
+        } catch (e) {
+            toastr.error('读取粘贴板失败(浏览器可能未授权)');
+            console.error(`[${extensionName}] clipboard read failed:`, e);
+        }
+    });
+    $('#test_clear_btn').off('click.test').on('click.test', function () {
+        $('#test_prompt_input').val('');
+        toastr.success('已清空');
+    });
 }
 
 // --- 事件监听 ---
