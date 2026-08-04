@@ -1653,8 +1653,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
 
-                // 兜底更新:非流式 或 队列清空时强制更新
-                if (!isStreamActive || processingHashes.size === 0) {
+                // 非流式:每张完成立即触发 DOM 更新(绕开 200ms 防抖,避免多张同时完成被合并成一次"等齐"显示)
+                // 流式:保持原逻辑,只在最后一张完成时触发(避免干扰流式渲染,GENERATION_ENDED 会兜底)
+                if (!isStreamActive) {
+                    await processMessageContent(false, false);
+                } else if (processingHashes.size === 0) {
                     requestDebouncedUpdate(true);
                 }
 
@@ -1671,6 +1674,15 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 // 兜底清理
                 if (processingHashes.has(promptHash)) {
                     processingHashes.delete(promptHash);
+                }
+                // 非流式:所有图都完成时持久化一次(saveChat 不防抖,N 张并完成就是 N 次全量聊天写盘)
+                if (!isStreamActive && processingHashes.size === 0) {
+                    try {
+                        const ctx = getContext();
+                        await ctx.saveChat();
+                    } catch (e) {
+                        console.error(`[${extensionName}] saveChat failed:`, e);
+                    }
                 }
             }
         })();
