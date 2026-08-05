@@ -88,5 +88,9 @@
 
     "mag_import_url_ph": "粘贴 detail 接口 URL",
     "mag_import_btn": "拉取",
-    "mag_import_btn_title": "从接口拉取并应用到当前配置档"
+    "mag_import_btn_title": "从接口拉取并应用到当前配置档",
+
+    "mag_lora_title": "LoRA 强度",
+    "mag_lora_hint": "从工作流 JSON 自动提取,编辑后自动写回",
+    "mag_lora_empty": "当前工作流无 LoRA 节点"
 }

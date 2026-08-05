@@ -750,9 +750,10 @@ function getWorkflowPlaceholderUsage(text) {
 function validateComfyWorkflow() {
     const val = $('#comfy_workflow').val() || '';
     let jsonError = null;
+    let parsed = null;
     const trimmed = val.trim();
     if (trimmed) {
-        try { JSON.parse(trimmed); }
+        try { parsed = JSON.parse(trimmed); }
         catch (e) { jsonError = e.message; }
     }
     $('#comfy_workflow').toggleClass('mag_workflow_invalid', !!jsonError);
@@ -764,6 +765,8 @@ function validateComfyWorkflow() {
     }
     const $pop = $('#comfy_workflow_popover');
     if ($pop.is(':visible')) renderWorkflowPopover(val);
+
+    renderLoraEditor(parsed); // 工作流 JSON 变更后同步 LoRA 强度列表(复用本次已解析结果)
 }
 
 function renderWorkflowPopover(val) {
@@ -788,6 +791,163 @@ function toggleWorkflowPopover() {
         renderWorkflowPopover($('#comfy_workflow').val() || '');
         $pop.css('display', 'block');
     }
+}
+
+// --- LoRA 强度编辑:从工作流 JSON 提取 LoRA 节点,编辑 strength_model 后写回 ---
+
+/**
+ * 从已解析的工作流对象提取所有 LoRA 节点。
+ * 判定:节点 inputs 里有非空 lora_name,且 strength_model 是 number(或可转 number 的 string)。
+ * 返回 [{ nodeId, loraName, strengthModel }];无效对象返回 []。
+ */
+function extractLorasFromParsed(parsed) {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+
+    const rows = [];
+    for (const [nodeId, node] of Object.entries(parsed)) {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) continue;
+        const inputs = node.inputs;
+        if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) continue;
+        const loraName = inputs.lora_name;
+        if (typeof loraName !== 'string' || !loraName) continue;
+        let strength = inputs.strength_model;
+        if (typeof strength === 'string' && strength.trim() !== '' && Number.isFinite(Number(strength))) {
+            strength = Number(strength);
+        }
+        if (typeof strength !== 'number' || !Number.isFinite(strength)) continue;
+        rows.push({ nodeId, loraName, strengthModel: strength });
+    }
+    return rows;
+}
+
+/** 从工作流 JSON 文本提取所有 LoRA 节点;空文本 / JSON 无效返回 []。 */
+function extractLorasFromWorkflow(jsonText) {
+    if (!jsonText || !jsonText.trim()) return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonText);
+    } catch {
+        return [];
+    }
+    return extractLorasFromParsed(parsed);
+}
+
+/** 从 openIdx 的 '{' 起扫描,返回匹配闭合 '}' 的 index(处理字符串/转义);失败返回 -1 */
+function findMatchingBrace(str, openIdx) {
+    let depth = 0;
+    let inStr = false;
+    let escaped = false;
+    for (let i = openIdx; i < str.length; i++) {
+        const ch = str[i];
+        if (inStr) {
+            if (escaped) { escaped = false; continue; }
+            if (ch === '\\') { escaped = true; continue; }
+            if (ch === '"') inStr = false;
+            continue;
+        }
+        if (ch === '"') { inStr = true; continue; }
+        if (ch === '{') { depth++; continue; }
+        if (ch === '}') {
+            depth--;
+            if (depth === 0) return i;
+        }
+    }
+    return -1;
+}
+
+/**
+ * 字符串级定位替换:只改 nodeId 节点里的 "strength_model" 值,保留原 JSON 排版。
+ * 找不到节点/字段时原样返回原文本。
+ */
+function setLoraStrengthInJson(jsonText, nodeId, newStrength) {
+    const keyRe = new RegExp(`("${escapeRegExp(nodeId)}"\\s*:\\s*\\{)`);
+    const m = keyRe.exec(jsonText);
+    if (!m) return jsonText;
+    const openIdx = m.index + m[1].length - 1; // '{' 的位置
+    const closeIdx = findMatchingBrace(jsonText, openIdx);
+    if (closeIdx < 0) return jsonText;
+
+    const nodeText = jsonText.slice(openIdx, closeIdx + 1);
+    const newText = nodeText.replace(/"strength_model"\s*:\s*("(?:[^"\\]|\\.)*"|-?[\d.]+(?:[eE][+-]?\d+)?)/, (m, oldVal) => {
+        // 原值带引号(如 "0.8" 字符串)→ 保持字符串类型,避免静默改 JSON 结构
+        const quoted = oldVal.startsWith('"');
+        return `"strength_model": ${quoted ? `"${newStrength}"` : newStrength}`;
+    });
+    if (newText === nodeText) return jsonText;
+    return jsonText.slice(0, openIdx) + newText + jsonText.slice(closeIdx + 1);
+}
+
+let loraRenderSig = null;
+
+/**
+ * 渲染 LoRA 强度编辑列表(从 #comfy_workflow 当前文本提取)。
+ * @param {object|null} parsed 可选的已解析工作流对象(validate 已解析过一次,复用避免二次 JSON.parse);缺省时自行解析。
+ */
+function renderLoraEditor(parsed) {
+    const $wrap = $('#comfy_lora_wrap');
+    if (!$wrap.length) return;
+
+    const preset = getActivePreset();
+    if (!preset) {
+        $wrap.css('display', 'none');
+        loraRenderSig = null;
+        return;
+    }
+    $wrap.css('display', 'block');
+
+    // 指纹守卫:preset + 工作流文本都没变 → 列表已是最新,跳过重建
+    const jsonText = $('#comfy_workflow').val() || '';
+    const sig = preset.name + '\u0000' + jsonText;
+    if (sig === loraRenderSig) return;
+    loraRenderSig = sig;
+
+    const rows = parsed !== undefined
+        ? extractLorasFromParsed(parsed)
+        : extractLorasFromWorkflow(jsonText);
+    const $list = $('#comfy_lora_list');
+    const $empty = $('#comfy_lora_empty');
+
+    $list.empty();
+    if (rows.length === 0) {
+        $list.css('display', 'none');
+        $empty.css('display', 'block');
+        return;
+    }
+    $list.css('display', 'flex');
+    $empty.css('display', 'none');
+
+    for (const row of rows) {
+        const name = escapeHtmlAttribute(row.loraName);
+        $list.append(`
+            <div class="mag-lora-row">
+                <span class="mag-lora-name" title="${name}">${name}</span>
+                <input type="number" class="text_pole mag-lora-strength" step="0.05" value="${row.strengthModel}" data-node-id="${escapeHtmlAttribute(row.nodeId)}">
+            </div>
+        `);
+    }
+}
+
+/** 绑定 LoRA 强度输入 change(事件委托到容器,列表重渲染后不失效) */
+function bindLoraEvents() {
+    $('#comfy_lora_list').off('change.lora').on('change.lora', '.mag-lora-strength', function () {
+        const nodeId = $(this).attr('data-node-id');
+        const preset = getActivePreset();
+        if (!preset || !nodeId) return;
+        const raw = $(this).val().trim();
+        const strength = Number(raw);
+        if (raw === '' || !Number.isFinite(strength)) {
+            // 空/非法输入 → 只还原这一个输入框为 JSON 里的当前值(不整表重建)
+            const row = extractLorasFromWorkflow($('#comfy_workflow').val() || '').find(r => r.nodeId === nodeId);
+            if (row) $(this).val(row.strengthModel);
+            return;
+        }
+        const jsonText = $('#comfy_workflow').val() || '';
+        const newText = setLoraStrengthInJson(jsonText, nodeId, strength);
+        if (newText === jsonText) return;
+        $('#comfy_workflow').val(newText);
+        preset.workflowJson = newText;
+        saveSettingsDebounced();
+    });
 }
 
 function bindPresetEvents() {
@@ -846,6 +1006,8 @@ function bindPresetEvents() {
             fetchAndApplyImportUrl();
         }
     });
+
+    bindLoraEvents();
 }
 
 // --- 新增: 渲染角色列表UI ---

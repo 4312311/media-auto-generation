@@ -606,6 +606,28 @@
         pointer-events: none;
     }
     #media_auto_gen_panel_body .mag-preset-thumb.active .mag-preset-thumb-badge { display: flex; }
+
+    /* --- LoRA 强度编辑(从工作流 JSON 自动提取) --- */
+    #comfy_lora_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    #comfy_lora_list .mag-lora-row { display: flex; align-items: center; gap: 6px; }
+    #comfy_lora_list .mag-lora-name {
+        flex: 1;
+        min-width: 0;
+        font-size: 0.85em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    #comfy_lora_list .mag-lora-strength { width: 80px; flex-shrink: 0; }
+    .mag_lora_empty {
+        text-align: center;
+        opacity: 0.6;
+        font-size: 0.85em;
+        padding: 8px;
+        border: 1px dashed var(--SmartThemeBorderColor);
+        border-radius: 5px;
+        margin-top: 4px;
+    }
 </style>
 
 <div class="mag-tabs-header">
@@ -771,6 +793,13 @@
         <textarea id="comfy_workflow" class="text_pole textarea_compact" rows="8" style="font-family: monospace; font-size: 0.85em;" placeholder='{"3": {"class_type": "KSampler", "inputs": {"seed": "%seed%"}}}'></textarea>
         <div id="comfy_workflow_error" class="mag_workflow_error"></div>
         <div id="comfy_workflow_popover" class="mag_workflow_popover"></div>
+    </div>
+
+    <div id="comfy_lora_wrap" class="margin-top-5">
+        <label data-i18n="mag_lora_title">LoRA Strength</label>
+        <small style="opacity: 0.7; font-size: 0.85em; display: block;" data-i18n="mag_lora_hint">从工作流 JSON 自动提取,编辑后自动写回</small>
+        <div id="comfy_lora_list"></div>
+        <div id="comfy_lora_empty" class="mag_lora_empty" style="display:none;" data-i18n="mag_lora_empty">No LoRA nodes in current workflow</div>
     </div>
 
     <div class="margin-top-5" style="text-align: right;">
