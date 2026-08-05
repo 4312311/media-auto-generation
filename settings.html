@@ -1,20 +1,11 @@
 <style>
     #media_auto_gen_panel_body .mag-tabs-header {
         display: flex;
+        flex-wrap: wrap;
         gap: 4px;
         border-bottom: 1px solid var(--SmartThemeBorderColor);
         margin-bottom: 10px;
         padding-bottom: 4px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        scrollbar-width: thin;
-    }
-    #media_auto_gen_panel_body .mag-tabs-header::-webkit-scrollbar {
-        height: 4px;
-    }
-    #media_auto_gen_panel_body .mag-tabs-header::-webkit-scrollbar-thumb {
-        background: var(--SmartThemeBorderColor);
-        border-radius: 2px;
     }
     #media_auto_gen_panel_body .mag-tab-btn {
         flex: 0 0 auto;
@@ -25,17 +16,19 @@
         border-radius: 5px;
         font-size: 0.9em;
         opacity: 0.7;
-        transition: opacity 0.1s, background 0.1s;
+        transition: opacity 0.1s, background 0.1s, color 0.1s;
         user-select: none;
         -webkit-user-select: none;
     }
     #media_auto_gen_panel_body .mag-tab-btn:hover {
         opacity: 0.9;
+        background: var(--SmartThemeBlurTintColor);
     }
     #media_auto_gen_panel_body .mag-tab-btn.active {
         opacity: 1;
-        background: var(--SmartThemeBlurTintColor);
-        border: 1px solid var(--SmartThemeBorderColor);
+        background: var(--SmartThemeQuoteColor, #4a8cff);
+        color: #fff;
+        font-weight: 600;
     }
     /* ST 全局 .menu_button { width: min-content } 对中文会塌成单字宽→强制换行;前缀用 #mag_settings_root 而非 panel_body,浮窗 detach 到隐藏 host 期间也生效 */
     #mag_settings_root .menu_button {
