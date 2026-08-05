@@ -40,7 +40,6 @@ const defaultSettings = {
     imageRegex: '/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:100%;height:auto',
-    streamGeneration: false,
     autoReplace: true, // true=匹配后自动生成替换(当前行为);false=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
@@ -1069,7 +1068,6 @@ function updateUI() {
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
-        $('#stream_generation').prop('checked', extension_settings[extensionName].streamGeneration ?? false);
         $('#auto_replace').prop('checked', extension_settings[extensionName].autoReplace !== false);
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
@@ -1124,7 +1122,6 @@ function bindSettingsEvents() {
     $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
-    $('#stream_generation').on('change', function () { extension_settings[extensionName].streamGeneration = $(this).prop('checked'); saveSettingsDebounced(); });
     $('#auto_replace').on('change', function () { extension_settings[extensionName].autoReplace = $(this).prop('checked'); saveSettingsDebounced(); });
 
     // --- 新增: 绑定角色固定特征 tab 全部事件(toggle/select/add/edit/save/cancel/delete) ---
@@ -2140,8 +2137,6 @@ function bindTestTabEvents() {
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
     processingHashes.clear();
-    
-    if (!extension_settings[extensionName]?.streamGeneration) return;
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;

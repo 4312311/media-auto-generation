@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
-| 主要配置 | `main` | 总开关与正则:媒体类型(disabled/image/video)、流式生成开关、图片/视频正则、`<img>` 标签的 style 属性 |
+| 主要配置 | `main` | 总开关与正则:媒体类型(disabled/image/video)、图片/视频正则、`<img>` 标签的 style 属性 |
 | ComfyUI 配置 | `comfy` | 直连 ComfyUI 的多配置档系统:URL + model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
@@ -123,7 +123,7 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 
 写浮层 / 拖动 UI 时一定会踩的坑,提前规避:
 
-- **`dragElement($el)`(`scripts/RossAscends-mods.js:477`)不能用于内嵌浮窗的标题栏**。它强依赖 `.drag-grabber` 类,而 ST 全局 CSS 在 `style.css:790` 强制 `.drag-grabber { position: absolute; }`,会把标题栏从文档流中拔出、叠到下方控件上(本插件曾导致关闭按钮盖住 Stream Generation checkbox)。仅适用于 ST 自带 movingUI 浥浮工具栏。需要可拖动浮窗时自写 `mousedown`/`touchstart`(参考本插件 `initPanelDrag` / `initFloatBtnDrag`)。还有:它把位置写进 `power_user.movingUIState`、`power_user.movingUI === false` 时直接 abort、`isMobile()` 时禁用 — 三层耦合都不适合第三方常驻浮层。
+- **`dragElement($el)`(`scripts/RossAscends-mods.js:477`)不能用于内嵌浮窗的标题栏**。它强依赖 `.drag-grabber` 类,而 ST 全局 CSS 在 `style.css:790` 强制 `.drag-grabber { position: absolute; }`,会把标题栏从文档流中拔出、叠到下方控件上(本插件曾导致关闭按钮盖住下方 checkbox)。仅适用于 ST 自带 movingUI 浥浮工具栏。需要可拖动浮窗时自写 `mousedown`/`touchstart`(参考本插件 `initPanelDrag` / `initFloatBtnDrag`)。还有:它把位置写进 `power_user.movingUIState`、`power_user.movingUI === false` 时直接 abort、`isMobile()` 时禁用 — 三层耦合都不适合第三方常驻浮层。
 
 - **jQuery `.toggle()` 对 `display:flex` 元素会强制变成 `display:block`**。用 `.css('display', 'flex' / 'none')` 显式控制,不要用 `.toggle()` / `.show()`。
 
@@ -145,6 +145,6 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 改完后至少验证:
 1. 图片模式(`<pic prompt="...">`)→ 是否替换、是否走缓存
 2. 视频模式(`<video prompt="...">`)→ 是否替换、参数解析
-3. 流式模式(streamGeneration 开关)→ 流式期间不应改 DOM,流式结束统一替换
+3. 流式模式 → 流式期间提前触发生成(500ms 轮询只触发不改 DOM,固定行为无开关),流式结束统一替换
 4. 角色特征注入 → 命中角色名后是否附加 tag
 5. 冷却逻辑 → 同一 prompt 3 分钟内不重复生成
