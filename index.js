@@ -40,7 +40,7 @@ const defaultSettings = {
     imageRegex: '/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
     style: 'width:100%;height:auto',
-    autoReplace: true, // true=匹配后自动生成替换(当前行为);false=渲染成可点击占位符,手动点击触发生成
+    autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
@@ -793,6 +793,15 @@ function toggleWorkflowPopover() {
     }
 }
 
+function toggleAutoReplacePopover() {
+    const $pop = $('#auto_replace_popover');
+    if ($pop.is(':visible')) {
+        $pop.css('display', 'none');
+    } else {
+        $pop.css('display', 'block');
+    }
+}
+
 // --- LoRA 强度编辑:从工作流 JSON 提取 LoRA 节点,编辑 strength_model 后写回 ---
 
 /**
@@ -1230,7 +1239,7 @@ function updateUI() {
         $('#image_regex').val(extension_settings[extensionName].imageRegex);
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
-        $('#auto_replace').prop('checked', extension_settings[extensionName].autoReplace !== false);
+        $('#auto_replace').val(extension_settings[extensionName].autoReplace);
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -1254,6 +1263,10 @@ async function loadSettings() {
                 extension_settings[extensionName][key] = defaultSettings[key];
             }
         }
+    }
+    // autoReplace 迁移:旧版 boolean(true/false) → 'auto'/'manual' 枚举
+    if (typeof extension_settings[extensionName].autoReplace === 'boolean') {
+        extension_settings[extensionName].autoReplace = extension_settings[extensionName].autoReplace ? 'auto' : 'manual';
     }
     // 配置档迁移:确保 comfyPresets 是数组,失效的 activePresetName 回落
     if (!Array.isArray(extension_settings[extensionName].comfyPresets)) {
@@ -1284,7 +1297,22 @@ function bindSettingsEvents() {
     $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
-    $('#auto_replace').on('change', function () { extension_settings[extensionName].autoReplace = $(this).prop('checked'); saveSettingsDebounced(); });
+    $('#auto_replace').on('change', function () { extension_settings[extensionName].autoReplace = $(this).val(); saveSettingsDebounced(); });
+    // 生成方式帮助 popover(仿工作流 JSON 占位符帮助的交互)
+    $('#auto_replace_help').off('click.arHelp').on('click.arHelp', function (e) {
+        e.stopPropagation(); // 防 ST 浮窗"点外部自动收起"
+        toggleAutoReplacePopover();
+    });
+    $('#auto_replace_popover').off('click.arPopover').on('click.arPopover', function (e) {
+        e.stopPropagation(); // popover 内部点击不触发"点外部关闭"
+    });
+    $(document).off('click.arPopoverClose').on('click.arPopoverClose', function (e) {
+        const $pop = $('#auto_replace_popover');
+        if (!$pop.is(':visible')) return;
+        if (!$(e.target).closest('#auto_replace_popover, #auto_replace_help').length) {
+            $pop.css('display', 'none');
+        }
+    });
 
     // --- 新增: 绑定角色固定特征 tab 全部事件(toggle/select/add/edit/save/cancel/delete) ---
     bindCharTagsEvents();
@@ -1661,7 +1689,7 @@ function requestDebouncedUpdate(isFinal = false) {
 async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!extension_settings[extensionName] || extension_settings[extensionName].mediaType === 'disabled') return;
 
-    const autoReplace = extension_settings[extensionName].autoReplace !== false;
+    const autoReplace = extension_settings[extensionName].autoReplace !== 'manual';
     // 手动模式下,流式期间只触发生成(onlyTrigger=true)无意义,直接 return 避免抖动;
     // 占位符的渲染交给流式结束后的最终处理。
     if (onlyTrigger && !autoReplace) return;
@@ -1730,7 +1758,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         }
 
         // --- 逻辑 B-0：手动模式占位符 ---
-        // 缓存未命中且 autoReplace=false 时,把 originalTag 替换为可点击占位符,不触发生成。
+        // 缓存未命中且 autoReplace='manual' 时,把 originalTag 替换为可点击占位符,不触发生成。
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
             const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;

@@ -44,6 +44,41 @@
     #media_auto_gen_panel_body .mag-tab-panel {
         display: block;
     }
+    #media_auto_gen_panel_body .mag-help-icon {
+        cursor: pointer;
+        opacity: 0.7;
+        font-size: 0.9em;
+    }
+    #media_auto_gen_panel_body .mag-help-icon:hover { opacity: 1; }
+    /* 生成方式帮助 popover(仿工作流 JSON 占位符帮助) */
+    #media_auto_gen_panel_body .mag_auto_replace_popover {
+        position: absolute;
+        top: 28px;
+        left: 0;
+        z-index: 1000;
+        min-width: 220px;
+        max-width: 320px;
+        padding: 8px 10px;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        font-size: 0.85em;
+        display: none;
+    }
+    #media_auto_gen_panel_body .mag_auto_replace_popover .mag_ar_mode {
+        display: flex;
+        align-items: baseline;
+        gap: 6px;
+        padding: 3px 0;
+    }
+    #media_auto_gen_panel_body .mag_auto_replace_popover code {
+        background: rgba(127,127,127,0.2);
+        padding: 0 4px;
+        border-radius: 3px;
+        font-family: monospace;
+        flex-shrink: 0;
+    }
     #media_auto_gen_panel_body .comfy_preview_empty {
         border: 2px dashed var(--SmartThemeBorderColor);
         border-radius: 5px;
@@ -632,9 +667,19 @@
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="main">
-    <div class="flex-container flexnowrap align_center margin-top-5">
-        <label for="auto_replace" class="flex1" data-i18n="mag_auto_replace">Auto Replace</label>
-        <input type="checkbox" id="auto_replace" class="checkbox_simple" checked>
+    <div class="flex-container flexnowrap align_center margin-top-5" style="position: relative;">
+        <div style="display:flex; align-items:center; gap:5px; flex:1; min-width:0;">
+            <label for="auto_replace" class="margin0" data-i18n="mag_generate_mode">生成方式</label>
+            <i id="auto_replace_help" class="fa-solid fa-circle-question mag-help-icon" data-i18n="[title]mag_auto_replace_hint"></i>
+        </div>
+        <select id="auto_replace" class="text_pole widthNatural margin0">
+            <option value="auto" data-i18n="mag_auto_replace_auto">自动生成</option>
+            <option value="manual" data-i18n="mag_auto_replace_manual">手动点击生成</option>
+        </select>
+        <div id="auto_replace_popover" class="mag_auto_replace_popover">
+            <div class="mag_ar_mode"><code>自动生成</code><span data-i18n="mag_auto_replace_auto_desc">检测到 <pic>/<video> 标签后直接调用后端生成,自动替换为图片/视频</span></div>
+            <div class="mag_ar_mode"><code>手动点击生成</code><span data-i18n="mag_auto_replace_manual_desc">不自动生成,消息里显示可点击占位符,点击后才生成</span></div>
+        </div>
     </div>
 
     <div class="flex-container flexnowrap margin-top-5">
