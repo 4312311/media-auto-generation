@@ -702,6 +702,7 @@ function renderPresetPreview() {
         $empty.css('display', 'flex');
         $actions.css('display', 'none');
     }
+    renderPresetGallery();
 }
 
 function bindPresetPreviewEvents() {

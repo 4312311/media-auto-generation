@@ -26,7 +26,7 @@
     }
     #media_auto_gen_panel_body .mag-tab-btn.active {
         opacity: 1;
-        background: var(--SmartThemeQuoteColor, #4a8cff);
+        background: color-mix(in srgb, var(--SmartThemeQuoteColor, #4a8cff) 60%, transparent);
         color: #fff;
         font-weight: 600;
     }
@@ -101,8 +101,6 @@
     #media_auto_gen_panel_body #comfy_preview_img {
         width: 100%;
         height: auto;
-        max-height: 200px;
-        object-fit: contain;
         border-radius: 5px;
         cursor: pointer;
         display: block;
