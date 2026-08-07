@@ -124,85 +124,159 @@
         }
     }
 
-    /* --- Gallery --- */
+    /* --- Gallery(角色分类方块,3 列网格)--- */
     #media_auto_gen_panel_body #gallery_container {
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
         gap: 8px;
     }
-    #media_auto_gen_panel_body .gallery-group {
-        border: 1px solid var(--SmartThemeBorderColor);
-        border-radius: 5px;
-        background: var(--SmartThemeBlurTintColor);
-        overflow: hidden;
-    }
-    #media_auto_gen_panel_body .gallery-group > summary {
-        list-style: none;
+    #media_auto_gen_panel_body .gallery-tile {
         cursor: pointer;
-        padding: 6px 10px;
         display: flex;
-        align-items: center;
-        gap: 6px;
-        font-size: 0.95em;
-        user-select: none;
-        -webkit-user-select: none;
-    }
-    #media_auto_gen_panel_body .gallery-group > summary::-webkit-details-marker { display: none; }
-    #media_auto_gen_panel_body .gallery-group > summary::before {
-        content: "\f054"; /* fa-chevron-right */
-        font-family: "Font Awesome 6 Free", "Font Awesome 5 Free", "FontAwesome";
-        font-weight: 900;
-        font-size: 0.75em;
-        opacity: 0.7;
-        transition: transform 0.15s;
-        display: inline-block;
-    }
-    #media_auto_gen_panel_body .gallery-group[open] > summary::before {
-        transform: rotate(90deg);
-    }
-    #media_auto_gen_panel_body .gallery-char-name {
-        flex: 1;
-        font-weight: bold;
+        flex-direction: column;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
+        transition: transform 0.1s, border-color 0.1s;
     }
-    #media_auto_gen_panel_body .gallery-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-        gap: 4px;
-        padding: 6px;
+    #media_auto_gen_panel_body .gallery-tile:hover {
+        transform: translateY(-2px);
+        border-color: var(--SmartThemeQuoteColor, #4a8cff);
     }
-    #media_auto_gen_panel_body .gallery-thumb-wrap {
+    #media_auto_gen_panel_body .gallery-tile-img-wrap {
         position: relative;
         aspect-ratio: 1 / 1;
-        overflow: hidden;
-        border-radius: 4px;
-        cursor: pointer;
         background: var(--black30a, rgba(0,0,0,0.3));
+        overflow: hidden;
     }
-    #media_auto_gen_panel_body .gallery-thumb {
+    #media_auto_gen_panel_body .gallery-tile-img {
         width: 100%;
         height: 100%;
         object-fit: cover;
         display: block;
-        transition: transform 0.1s;
+        transition: transform 0.12s;
     }
-    #media_auto_gen_panel_body .gallery-thumb-wrap:hover .gallery-thumb {
-        transform: scale(1.05);
+    #media_auto_gen_panel_body .gallery-tile:hover .gallery-tile-img {
+        transform: scale(1.06);
     }
-    #media_auto_gen_panel_body .gallery-video-badge {
+    /* 数量徽章:右下角 */
+    #media_auto_gen_panel_body .gallery-tile-count {
         position: absolute;
-        top: 2px;
-        right: 2px;
-        background: rgba(0,0,0,0.6);
+        bottom: 3px;
+        right: 3px;
+        background: rgba(0,0,0,0.65);
         color: #fff;
         font-size: 0.7em;
-        padding: 2px 4px;
+        padding: 1px 7px;
+        border-radius: 9px;
+        pointer-events: none;
+    }
+    /* 代表图为视频时左上角播放角标 */
+    #media_auto_gen_panel_body .gallery-tile-video-badge {
+        position: absolute;
+        top: 3px;
+        left: 3px;
+        background: rgba(0,0,0,0.6);
+        color: #fff;
+        font-size: 0.65em;
+        padding: 2px 5px;
         border-radius: 3px;
         pointer-events: none;
     }
-    #media_auto_gen_panel_body .gallery-thumb-time {
+    #media_auto_gen_panel_body .gallery-tile-name {
+        padding: 5px 6px;
+        font-size: 0.8em;
+        font-weight: 600;
+        text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    /* --- 角色图集 modal(挂在 body 下,点击角色方块弹出,显示该角色所有图)---
+       z-index 比 lightbox(2147483650)低 10,lightbox 在其之上 */
+    #mag_gallery_group_modal {
+        position: fixed;
+        top: 0; left: 0;
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        z-index: 2147483640;
+        background: rgba(0,0,0,0.85);
+        display: none;
+        overflow-y: auto;
+    }
+    #mag_gallery_group_modal.open { display: block; }
+    #mag_gallery_group_modal .group-modal-header {
+        position: sticky;
+        top: 0;
+        background: rgba(0,0,0,0.75);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
+        padding: 10px 16px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        z-index: 1;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    #mag_gallery_group_modal .group-modal-title {
+        color: #fff;
+        font-size: 1em;
+        font-weight: bold;
+    }
+    #mag_gallery_group_modal .group-modal-close {
+        color: #fff;
+        font-size: 22px;
+        cursor: pointer;
+        opacity: 0.8;
+        line-height: 1;
+    }
+    #mag_gallery_group_modal .group-modal-close:hover { opacity: 1; }
+    #mag_gallery_group_modal .group-modal-body {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 10px;
+    }
+    #mag_gallery_group_modal .group-modal-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+    }
+    @media (max-width: 480px) {
+        #mag_gallery_group_modal .group-modal-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    #mag_gallery_group_modal .group-modal-thumb-wrap {
+        position: relative;
+        aspect-ratio: 1 / 1;
+        overflow: hidden;
+        border-radius: 5px;
+        cursor: pointer;
+        background: rgba(0,0,0,0.3);
+    }
+    #mag_gallery_group_modal .group-modal-thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+        transition: transform 0.12s;
+    }
+    #mag_gallery_group_modal .group-modal-thumb-wrap:hover .group-modal-thumb {
+        transform: scale(1.06);
+    }
+    #mag_gallery_group_modal .group-modal-video-badge {
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        background: rgba(0,0,0,0.6);
+        color: #fff;
+        font-size: 0.65em;
+        padding: 2px 5px;
+        border-radius: 3px;
+        pointer-events: none;
+    }
+    #mag_gallery_group_modal .group-modal-thumb-time {
         position: absolute;
         bottom: 0;
         left: 0;
@@ -450,6 +524,29 @@
         pointer-events: none;
     }
 
+    /* error 状态:生成失败,红色边框 + 三角图标 + 强制显示错误信息(覆盖 default 视图下 prompt-text 的 display:none) */
+    .mag-placeholder[data-state="error"],
+    .custom-mag-placeholder[data-state="error"] {
+        border-color: var(--fullred, #f44336);
+        border-style: solid;
+        cursor: pointer;
+        pointer-events: auto;
+        opacity: 1;
+    }
+    .mag-placeholder[data-state="error"]:hover,
+    .custom-mag-placeholder[data-state="error"]:hover {
+        background: rgba(244, 67, 54, 0.08);
+    }
+    .mag-placeholder[data-state="error"] [data-mag-role="icon"],
+    .custom-mag-placeholder[data-state="error"] [data-mag-role="icon"] {
+        color: var(--fullred, #f44336);
+    }
+    .mag-placeholder[data-state="error"][data-view="default"] [data-mag-role="prompt-text"],
+    .custom-mag-placeholder[data-state="error"][data-view="default"] [data-mag-role="prompt-text"] {
+        display: block;
+        color: var(--fullred, #f44336);
+    }
+
     /* === 生成图 wrapper(img/video 外包一层,点击图片才显示角标) === */
     .mag-media, .custom-mag-media {
         position: relative;
@@ -570,7 +667,7 @@
         gap: 6px;
     }
     @media (max-width: 480px) {
-        #media_auto_gen_panel_body #comfy_preset_gallery { grid-template-columns: repeat(2, 1fr); }
+        #media_auto_gen_panel_body #comfy_preset_gallery { grid-template-columns: repeat(3, 1fr); }
     }
     #media_auto_gen_panel_body .mag-preset-thumb {
         position: relative;
@@ -661,9 +758,9 @@
 <div class="mag-tabs-header">
     <div class="mag-tab-btn active" data-mag-tab="main" data-i18n="mag_tab_main">主要配置</div>
     <div class="mag-tab-btn" data-mag-tab="comfy" data-i18n="mag_tab_comfy">ComfyUI 配置</div>
-    <div class="mag-tab-btn" data-mag-tab="chars" data-i18n="mag_tab_chars">角色固定特征</div>
-    <div class="mag-tab-btn" data-mag-tab="gallery" data-i18n="mag_tab_gallery">图库</div>
     <div class="mag-tab-btn" data-mag-tab="test" data-i18n="mag_tab_test">测试生成</div>
+    <div class="mag-tab-btn" data-mag-tab="gallery" data-i18n="mag_tab_gallery">图库</div>
+    <div class="mag-tab-btn" data-mag-tab="chars" data-i18n="mag_tab_chars">角色固定特征</div>
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="main">

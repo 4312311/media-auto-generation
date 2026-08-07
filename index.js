@@ -25,6 +25,9 @@ let updateDebounceTimer = null;
 // 1. 生成结果缓存 (Key: Hash -> Value: HTML Tag)
 const generatedCache = new Map();
 
+// 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
+const failedPrompts = new Map();
+
 // 2. 历史记录 (冷却锁)
 const promptHistory = new Map();
 
@@ -1758,19 +1761,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             continue; 
         }
 
+        // --- 逻辑 A-1：失败降级(自动模式 ComfyUI 失败,流式结束后渲染 error 占位符让用户手动重试)---
+        if (!onlyTrigger && failedPrompts.has(promptHash)) {
+            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state: 'error', error: failedPrompts.get(promptHash) });
+            currentMessageText = currentMessageText.replace(originalTag, placeholder);
+            contentModified = true;
+            continue;
+        }
+
         // --- 逻辑 B-0：手动模式占位符 ---
         // 缓存未命中且 autoReplace='manual' 时,把 originalTag 替换为可点击占位符,不触发生成。
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
-            const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-            const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
-            const iconClass = mediaType === 'video' ? 'fa-video' : 'fa-image';
-            const labelText = mediaType === 'video' ? '生成视频' : '生成图片';
-            const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
-            // 占位符:块级卡片,5 个 data-mag-role 子元素(icon/label/prompt-text/copy/toggle)。
-            // 子元素用 <i>/<small> 而非 <span>(replacePlaceholderInMes 正则靠外层 </span> 闭合,内层不许嵌套 span)。
-            // 用 data-mag-role 属性锚定样式/事件,绕开 ST sanitizer 的 custom- 前缀。
-            const placeholder = `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="idle" data-view="default" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}" contenteditable="false"><i class="fa-solid ${iconClass}" data-mag-role="icon"></i><small data-mag-role="label">${labelText}</small><small data-mag-role="prompt-text">${escapeHtmlAttribute(promptText)}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="toggle">prompt描述</small></span>`;
+            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state: 'idle' });
             currentMessageText = currentMessageText.replace(originalTag, placeholder);
             contentModified = true;
             continue;
@@ -1834,6 +1837,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 });
 
                 generatedCache.set(promptHash, mediaTag);
+                failedPrompts.delete(promptHash); // 兜底:同一 prompt 先失败后(在另一消息)自动成功,清残留失败记录
 
                 // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
                 pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
@@ -1855,9 +1859,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 if (toast) toastr.clear(toast);
                 toastr.error(`Media generation error: ${error.message || error}`);
 
-                // 出错清理
-                promptHistory.delete(promptHash);
+                failedPrompts.set(promptHash, error.message || String(error));
+                // 上限保护:用户多次失败不重试时防止 Map 无界增长(FIFO 丢最早一条)
+                if (failedPrompts.size > 200) {
+                    const firstKey = failedPrompts.keys().next().value;
+                    failedPrompts.delete(firstKey);
+                }
                 processingHashes.delete(promptHash);
+
+                // 非流式:走防抖合并,避免 N 张并发失败触发 N 次 updateMessageBlock
+                // 流式:等 GENERATION_ENDED 的 requestDebouncedUpdate 兜底(ST 流式期间改 DOM 会被覆盖)
+                if (!isStreamActive) {
+                    requestDebouncedUpdate(false);
+                }
             } finally {
                 // 兜底清理
                 if (processingHashes.has(promptHash)) {
@@ -1953,7 +1967,7 @@ async function onMagClick(e) {
 
     if (isPlaceholder) {
         e.preventDefault();
-        if ($el.attr('data-state') !== 'idle') return;
+        if ($el.attr('data-state') === 'loading') return; // loading 中拒重入(idle/error 都允许触发)
         if ($el.attr('data-view') !== 'default') return; // prompt 视图下点主体不触发生成
         await startManualGeneration($el);
     } else if (isMedia) {
@@ -2003,6 +2017,7 @@ async function startManualGeneration($ph) {
         const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
 
         generatedCache.set(promptHash, mediaWrap);
+        failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
         // 用 magId 锚定字符串替换 message.mes 中的占位符 → 最终 wrapper
@@ -2021,10 +2036,38 @@ async function startManualGeneration($ph) {
         if (timer) clearInterval(timer);
         if (toast) toastr.clear(toast);
         toastr.error(`Media generation error: ${err.message || err}`);
-        $ph.attr('data-state', 'idle');  // 失败回退允许重试
-        const rollbackIcon = mediaType === 'video' ? 'fa-video' : 'fa-image';
-        $ph.find('[data-mag-role="icon"]').attr('class', `fa-solid ${rollbackIcon}`);
+        const errMsg = err.message || String(err);
+        $ph.attr('data-state', 'error');
+        $ph.attr('data-view', 'default'); // 失败时强制收起 prompt 视图,确保错误信息在 default 视图下可见
+        $ph.attr('data-error', errMsg);
+        $ph.find('[data-mag-role="icon"]').attr('class', 'fa-solid fa-triangle-exclamation');
+        $ph.find('[data-mag-role="label"]').text('点击重试');
+        $ph.find('[data-mag-role="prompt-text"]').text('⚠️ ' + errMsg.slice(0, 200));
     }
+}
+
+/**
+ * 构造 mag-placeholder span HTML(idle/error 两态共享结构)。
+ * 占位符:块级卡片,5 个 data-mag-role 子元素(icon/label/prompt-text/copy/toggle)。
+ * 子元素用 <i>/<small> 而非 <span>(replacePlaceholderInMes 正则靠外层 </span> 闭合,内层不许嵌套 span)。
+ * 用 data-mag-role 属性锚定样式/事件,绕开 ST sanitizer 的 custom- 前缀。
+ * 自动模式失败降级(error 态)和手动模式 idle 占位符共用此函数。
+ */
+function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state, error }) {
+    const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
+    let iconClass, labelText, promptText;
+    if (state === 'error') {
+        iconClass = 'fa-triangle-exclamation';
+        labelText = '点击重试';
+        promptText = '⚠️ ' + (error || '生成失败').slice(0, 200);
+    } else {
+        iconClass = mediaType === 'video' ? 'fa-video' : 'fa-image';
+        labelText = mediaType === 'video' ? '生成视频' : '生成图片';
+        promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
+    }
+    const errorAttr = state === 'error' ? ` data-error="${escapeHtmlAttribute(error || '')}"` : '';
+    return `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="${state}" data-view="default" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}"${errorAttr} contenteditable="false"><i class="fa-solid ${iconClass}" data-mag-role="icon"></i><small data-mag-role="label">${labelText}</small><small data-mag-role="prompt-text">${escapeHtmlAttribute(promptText)}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="toggle">prompt描述</small></span>`;
 }
 
 /**
@@ -2157,7 +2200,7 @@ function closeGalleryLightbox() {
     releaseVideoEl($lb.find('video.lightbox-media'));
 }
 
-/** 渲染 gallery panel:按角色分组、缩略图网格 */
+/** 渲染 gallery panel:角色分类方块(3 列),点击方块弹窗显示该角色所有图 */
 function renderGallery() {
     const $container = $('#gallery_container');
     const $empty = $('#gallery_empty');
@@ -2177,6 +2220,7 @@ function renderGallery() {
     }
     $empty.css('display', 'none');
 
+    // 按角色分组;组内/组间均按 timestamp 倒序
     const groups = new Map();
     for (let i = 0; i < manifest.length; i++) {
         const entry = manifest[i];
@@ -2184,8 +2228,6 @@ function renderGallery() {
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push({ entry, index: i });
     }
-
-    // 组内:timestamp 倒序;组间:按组内最新 timestamp 倒序
     for (const arr of groups.values()) {
         arr.sort((a, b) => (b.entry.timestamp || 0) - (a.entry.timestamp || 0));
     }
@@ -2196,41 +2238,113 @@ function renderGallery() {
     });
 
     $container.empty();
-    sortedGroups.forEach(([charName, items], groupIdx) => {
+    sortedGroups.forEach(([charName, items]) => {
+        // 代表图:组内最新一张
+        const avatarEntry = items[0].entry;
+        const avatarUrl = escapeHtmlAttribute(avatarEntry.url);
+        const avatarIsVideo = avatarEntry.mediaType === 'video' || VIDEO_FORMATS.has(avatarEntry.format);
+        const avatarTag = avatarIsVideo
+            ? `<video class="gallery-tile-img" src="${avatarUrl}" muted preload="metadata" playsinline></video>`
+            : `<img class="gallery-tile-img" src="${avatarUrl}" loading="lazy" />`;
+        const videoBadge = avatarIsVideo ? `<div class="gallery-tile-video-badge"><i class="fa-solid fa-play"></i></div>` : '';
         const escapedName = escapeHtmlAttribute(charName);
-        const openAttr = groupIdx === 0 ? ' open' : '';
-        let thumbsHtml = '';
-        for (const { entry, index } of items) {
-            const escapedUrl = escapeHtmlAttribute(entry.url);
-            const isVideo = entry.mediaType === 'video' || VIDEO_FORMATS.has(entry.format);
-            const badge = isVideo ? `<div class="gallery-video-badge"><i class="fa-solid fa-play"></i></div>` : '';
-            const tag = isVideo
-                ? `<video class="gallery-thumb" src="${escapedUrl}" muted preload="metadata" playsinline></video>`
-                : `<img class="gallery-thumb" src="${escapedUrl}" loading="lazy" />`;
-            const timeStr = formatGalleryTime(entry.timestamp);
-            thumbsHtml += `<div class="gallery-thumb-wrap" data-index="${index}">${tag}${badge}<div class="gallery-thumb-time">${timeStr}</div></div>`;
-        }
         $container.append(`
-            <details class="gallery-group"${openAttr}>
-                <summary>
-                    <span class="gallery-char-name" title="${escapedName}">${escapedName}</span>
-                    <small>(${items.length})</small>
-                </summary>
-                <div class="gallery-grid">${thumbsHtml}</div>
-            </details>
+            <div class="gallery-tile" data-char="${escapedName}">
+                <div class="gallery-tile-img-wrap">${avatarTag}${videoBadge}<div class="gallery-tile-count">${items.length}</div></div>
+                <div class="gallery-tile-name" title="${escapedName}">${escapedName}</div>
+            </div>
         `);
     });
 }
 
-/** 绑定 gallery 缩略图点击(事件委托) */
+/** 绑定 gallery 事件:角色方块点击 → 弹该角色图集 modal;modal 内缩略图点击 → 单图 lightbox */
 function bindGalleryEvents() {
     ensureGalleryLightbox();
-    $('#gallery_container').off('click.gallery').on('click.gallery', '.gallery-thumb-wrap', function () {
+    ensureGroupModal();
+    // 点角色方块 → 打开该角色的图集 modal
+    $('#gallery_container').off('click.galleryTile').on('click.galleryTile', '.gallery-tile', function () {
+        const charName = $(this).attr('data-char');
+        const manifest = extension_settings[extensionName].galleryManifest || [];
+        const items = [];
+        manifest.forEach((entry, index) => {
+            const key = entry.character || 'media';
+            if (key === charName) items.push({ entry, index });
+        });
+        if (items.length === 0) return;
+        items.sort((a, b) => (b.entry.timestamp || 0) - (a.entry.timestamp || 0));
+        openGroupModal(charName, items);
+    });
+    // modal 内缩略图点击 → 单图 lightbox
+    $('#mag_gallery_group_modal').off('click.groupThumb').on('click.groupThumb', '.group-modal-thumb-wrap', function () {
         const idx = parseInt($(this).attr('data-index'), 10);
         const manifest = extension_settings[extensionName].galleryManifest || [];
         const entry = manifest[idx];
         if (entry) openGalleryLightbox(entry);
     });
+}
+
+/** 懒加载角色图集 modal(挂在 body 下) */
+function ensureGroupModal() {
+    if ($('#mag_gallery_group_modal').length) return;
+    $('body').append(`
+        <div id="mag_gallery_group_modal">
+            <div class="group-modal-header">
+                <span class="group-modal-title"></span>
+                <div class="group-modal-close" title="关闭" data-i18n="[title]mag_gallery_close">
+                    <i class="fa-solid fa-xmark"></i>
+                </div>
+            </div>
+            <div class="group-modal-body">
+                <div class="group-modal-grid"></div>
+            </div>
+        </div>
+    `);
+    const $m = $('#mag_gallery_group_modal');
+    $m.find('.group-modal-close').on('click', closeGroupModal);
+    // 点 header/body 之外的暗色背景区也关闭
+    $m.on('click', (e) => {
+        // 点缩略图(有自己的 handler 打开 lightbox)和关闭按钮不处理
+        if ($(e.target).closest('.group-modal-thumb-wrap').length) return;
+        if ($(e.target).closest('.group-modal-close').length) return;
+        closeGroupModal();
+    });
+    $(document).on('keydown.groupModal', (e) => {
+        // lightbox 开着时 ESC 优先关 lightbox,不关 modal
+        if (e.key === 'Escape' && $m.hasClass('open') && !$('#mag_gallery_lightbox').hasClass('open')) {
+            closeGroupModal();
+        }
+    });
+}
+
+/** 打开角色图集 modal:渲染该角色所有图到网格 */
+function openGroupModal(charName, items) {
+    ensureGroupModal();
+    const $m = $('#mag_gallery_group_modal');
+    $m.find('.group-modal-title').text(`${charName} · ${items.length} 张`);
+    const $grid = $m.find('.group-modal-grid');
+    $grid.empty();
+    for (const { entry, index } of items) {
+        const escapedUrl = escapeHtmlAttribute(entry.url);
+        const isVideo = entry.mediaType === 'video' || VIDEO_FORMATS.has(entry.format);
+        const badge = isVideo ? `<div class="group-modal-video-badge"><i class="fa-solid fa-play"></i></div>` : '';
+        const tag = isVideo
+            ? `<video class="group-modal-thumb" src="${escapedUrl}" muted preload="metadata" playsinline></video>`
+            : `<img class="group-modal-thumb" src="${escapedUrl}" loading="lazy" />`;
+        const timeStr = formatGalleryTime(entry.timestamp);
+        $grid.append(`
+            <div class="group-modal-thumb-wrap" data-index="${index}">${tag}${badge}<div class="group-modal-thumb-time">${timeStr}</div></div>
+        `);
+    }
+    $m.addClass('open');
+    $m.scrollTop(0);
+}
+
+/** 关闭角色图集 modal(释放视频资源) */
+function closeGroupModal() {
+    const $m = $('#mag_gallery_group_modal');
+    $m.removeClass('open');
+    $m.find('video').each(function () { releaseVideoEl($(this)); });
+    $m.find('.group-modal-grid').empty();
 }
 
 // --- 测试生成 tab ---
