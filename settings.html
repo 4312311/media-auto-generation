@@ -564,16 +564,20 @@
     .mag-media [data-mag-role="prompt-text"],
     .mag-media [data-mag-role="copy"],
     .mag-media [data-mag-role="prompt-toggle"],
+    .mag-media [data-mag-role="regenerate"],
     .mag-media [data-mag-role="zoom"],
     .custom-mag-media [data-mag-role="prompt-text"],
     .custom-mag-media [data-mag-role="copy"],
     .custom-mag-media [data-mag-role="prompt-toggle"],
+    .custom-mag-media [data-mag-role="regenerate"],
     .custom-mag-media [data-mag-role="zoom"] { display: none; }
 
-    /* revealed=true 时显示两个角标(prompt-text 仍隐藏,只在 view=prompt 时显示) */
+    /* revealed=true 时显示三个角标(prompt-text 仍隐藏,只在 view=prompt 时显示) */
     .mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"],
+    .mag-media[data-revealed="true"] [data-mag-role="regenerate"],
     .mag-media[data-revealed="true"] [data-mag-role="zoom"],
     .custom-mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="regenerate"],
     .custom-mag-media[data-revealed="true"] [data-mag-role="zoom"] {
         display: inline-block;
         position: absolute;
@@ -590,6 +594,21 @@
     .custom-mag-media[data-revealed="true"] [data-mag-role="prompt-toggle"] { right: 6px; }
     .mag-media[data-revealed="true"] [data-mag-role="zoom"],
     .custom-mag-media[data-revealed="true"] [data-mag-role="zoom"] { left: 6px; }
+    .mag-media[data-revealed="true"] [data-mag-role="regenerate"],
+    .custom-mag-media[data-revealed="true"] [data-mag-role="regenerate"] {
+        left: 50%;
+        transform: translateX(-50%);
+    }
+    /* 重新生成中:img/video 半透明 + regenerate 按钮文字提示 */
+    .mag-media[data-regenerating="true"] img,
+    .mag-media[data-regenerating="true"] video,
+    .custom-mag-media[data-regenerating="true"] img,
+    .custom-mag-media[data-regenerating="true"] video { opacity: 0.45; }
+    .mag-media[data-regenerating="true"][data-revealed="true"] [data-mag-role="regenerate"],
+    .custom-mag-media[data-regenerating="true"][data-revealed="true"] [data-mag-role="regenerate"] {
+        background: rgba(0,0,0,0.85);
+        cursor: progress;
+    }
 
     /* view=prompt 时:隐藏 img/video,显示 prompt-text + copy */
     .mag-media[data-view="prompt"] img,
@@ -849,16 +868,33 @@
     </div>
 
     <div class="flex-container flexGap5 align_center margin-top-5">
-        <input id="comfy_import_url" class="text_pole" placeholder="http://.../api/dir/{name}/detail" data-i18n="[placeholder]mag_import_url_ph" style="flex: 1;">
-        <div id="comfy_import_btn" class="menu_button menu_button_icon" title="Fetch and apply" data-i18n="[title]mag_import_btn_title" style="margin: 0; padding: 5px 10px; display: inline-flex; gap: 5px; align-items: center;">
+        <input id="comfy_import_url" class="text_pole" placeholder="http://.../api/dir/{name}/detail" data-i18n="[placeholder]mag_import_url_ph" style="flex: 0 0 50%; min-width: 0;">
+        <div id="comfy_import_btn" class="menu_button menu_button_icon" title="Fetch and apply" data-i18n="[title]mag_import_btn_title" style="margin: 0; padding: 5px;">
             <i class="fa-solid fa-download"></i>
-            <span data-i18n="mag_import_btn">拉取</span>
+        </div>
+    </div>
+
+    <div class="flex-container flexGap5 align_center margin-top-5">
+        <select id="comfy_import_url_bookmark" class="text_pole" style="flex: 1; min-width: 0;" title="History" data-i18n="[title]mag_import_url_bookmark_title"></select>
+        <div id="comfy_import_url_delete" class="menu_button menu_button_icon" title="Remove selected from history" data-i18n="[title]mag_import_url_delete_title" style="margin: 0; padding: 5px;">
+            <i class="fa-solid fa-trash"></i>
         </div>
     </div>
 
     <div class="margin-top-5">
         <label for="comfy_url" data-i18n="ComfyUI URL">ComfyUI URL</label>
-        <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
+        <div class="flex-container flexGap5 align_center" style="margin-top: 2px;">
+            <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188" style="flex: 0 0 50%; min-width: 0;">
+            <div id="comfy_url_save" class="menu_button menu_button_icon" title="Save current URL to bookmarks" data-i18n="[title]mag_url_save_title" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-bookmark"></i>
+            </div>
+        </div>
+        <div class="flex-container flexGap5 align_center" style="margin-top: 4px;">
+            <select id="comfy_url_bookmark" class="text_pole" style="flex: 1; min-width: 0;" title="Saved bookmarks" data-i18n="[title]mag_url_bookmark_title"></select>
+            <div id="comfy_url_delete" class="menu_button menu_button_icon" title="Remove selected from bookmarks" data-i18n="[title]mag_url_delete_title" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-trash"></i>
+            </div>
+        </div>
     </div>
 
     <div class="flex-container flexGap5 align_center margin-top-5">

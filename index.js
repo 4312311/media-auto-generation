@@ -48,6 +48,8 @@ const defaultSettings = {
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
     activePresetName: null, // 当前激活的配置档名字
+    comfyUrls: [], // ComfyUI 服务地址簿(跨 preset 共享):[{ name, url }]
+    comfyImportUrls: [], // detail 接口 URL 历史(拉取成功后自动入簿):[string]
     galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
 };
 
@@ -319,6 +321,127 @@ function renderPresetGallery() {
     }
 }
 
+/** 从 URL 派生可读名(主机+路径),失败 fallback 完整 URL */
+function deriveUrlName(url) {
+    if (!url) return '';
+    try {
+        const u = new URL(url);
+        return u.host + (u.pathname && u.pathname !== '/' ? u.pathname : '');
+    } catch {
+        return url;
+    }
+}
+
+/** 渲染 ComfyUI URL 地址簿下拉;当前 input 中的 URL 命中时高亮选中 */
+function renderComfyUrlBookmark() {
+    const $sel = $('#comfy_url_bookmark');
+    if (!$sel.length) return;
+    const urls = extension_settings[extensionName].comfyUrls || [];
+    const currentUrl = ($('#comfy_url').val() || '').trim();
+
+    $sel.empty();
+    if (urls.length === 0) {
+        $sel.append('<option value="" data-i18n="mag_url_bookmark_empty">-- 暂无已保存地址 --</option>');
+    } else {
+        const $ph = $('<option value=""></option>').text('— 选择已保存地址 —');
+        $sel.append($ph);
+        for (const item of urls) {
+            const v = typeof item === 'string' ? item : item.url;
+            const n = (typeof item === 'object' && item.name) ? item.name : deriveUrlName(v);
+            const $opt = $('<option></option>').val(v).text(n);
+            $sel.append($opt);
+        }
+    }
+    $sel.val(urls.some(u => (typeof u === 'string' ? u : u.url) === currentUrl) ? currentUrl : '');
+}
+
+/** 地址簿事件:select 切换 = 写回 input(联动 preset URL);保存 = 把当前 input URL 入簿;删除 = 移除 select 当前选中 */
+function bindComfyUrlBookmarkEvents() {
+    $('#comfy_url_bookmark').off('.urlBookmark').on('change.urlBookmark', function () {
+        const v = String($(this).val() || '').trim();
+        if (!v) return;
+        // 写回 input 并触发 change → 已有的 .preset handler 会写回 activePreset.comfyUrl + 清缓存
+        $('#comfy_url').val(v).trigger('change');
+    });
+    $('#comfy_url_save').off('.urlBookmark').on('click.urlBookmark', function () {
+        const v = ($('#comfy_url').val() || '').trim();
+        if (!v) { toastr.warning('ComfyUI 服务地址为空'); return; }
+        const urls = extension_settings[extensionName].comfyUrls || (extension_settings[extensionName].comfyUrls = []);
+        if (urls.some(u => (typeof u === 'string' ? u : u.url) === v)) {
+            toastr.info('该地址已在地址簿中');
+            renderComfyUrlBookmark();
+            return;
+        }
+        urls.push({ name: deriveUrlName(v), url: v });
+        saveSettingsDebounced();
+        renderComfyUrlBookmark();
+    });
+    $('#comfy_url_delete').off('.urlBookmark').on('click.urlBookmark', function () {
+        const v = String($('#comfy_url_bookmark').val() || '').trim();
+        if (!v) { toastr.warning('请先在地址簿下拉里选择要删除的项'); return; }
+        const urls = extension_settings[extensionName].comfyUrls || [];
+        const idx = urls.findIndex(u => (typeof u === 'string' ? u : u.url) === v);
+        if (idx < 0) return;
+        const name = (typeof urls[idx] === 'object' ? urls[idx].name : null) || deriveUrlName(v);
+        if (!window.confirm(`从地址簿删除 "${name}"?`)) return;
+        urls.splice(idx, 1);
+        saveSettingsDebounced();
+        renderComfyUrlBookmark();
+    });
+}
+
+/** 渲染 detail 接口 URL 历史下拉;空时显示占位 */
+function renderComfyImportUrlBookmark() {
+    const $sel = $('#comfy_import_url_bookmark');
+    if (!$sel.length) return;
+    const urls = extension_settings[extensionName].comfyImportUrls || [];
+    const currentUrl = ($('#comfy_import_url').val() || '').trim();
+
+    $sel.empty();
+    if (urls.length === 0) {
+        $sel.append('<option value="" data-i18n="mag_import_url_bookmark_empty">-- 暂无历史 --</option>');
+    } else {
+        $sel.append('<option value="">— 选择历史 URL —</option>');
+        for (const v of urls) {
+            const $opt = $('<option></option>').val(v).text(v);
+            $sel.append($opt);
+        }
+    }
+    $sel.val(urls.includes(currentUrl) && currentUrl ? currentUrl : '');
+}
+
+/** 历史下拉事件:select 切换 = 灌回 input(不自动拉取,让用户决定);删除按钮 = 移除当前选中 */
+function bindComfyImportUrlBookmarkEvents() {
+    $('#comfy_import_url_bookmark').off('.importBookmark').on('change.importBookmark', function () {
+        const v = String($(this).val() || '').trim();
+        if (!v) return;
+        $('#comfy_import_url').val(v);
+    });
+    $('#comfy_import_url_delete').off('.importBookmark').on('click.importBookmark', function () {
+        const v = String($('#comfy_import_url_bookmark').val() || '').trim();
+        if (!v) { toastr.warning('请先在历史下拉里选择要删除的项'); return; }
+        const urls = extension_settings[extensionName].comfyImportUrls || [];
+        const idx = urls.indexOf(v);
+        if (idx < 0) return;
+        if (!window.confirm(`从历史删除此 URL?`)) return;
+        urls.splice(idx, 1);
+        saveSettingsDebounced();
+        renderComfyImportUrlBookmark();
+    });
+}
+
+/** 把 detail URL 加入历史(去重,新值置顶) */
+function pushComfyImportUrl(url) {
+    const v = String(url || '').trim();
+    if (!v) return;
+    const urls = extension_settings[extensionName].comfyImportUrls || (extension_settings[extensionName].comfyImportUrls = []);
+    const idx = urls.indexOf(v);
+    if (idx === 0) return;          // 已是第一个,无需动
+    if (idx > 0) urls.splice(idx, 1); // 已存在但非首位,提到首位
+    urls.unshift(v);
+    saveSettingsDebounced();
+}
+
 /** 把 active preset 字段灌进各 input/select/textarea;active 为 null 时显示空状态 */
 function renderPresetFields() {
     const preset = getActivePreset();
@@ -346,10 +469,12 @@ function renderPresetFields() {
     renderComfySelect('#comfy_scheduler', comfyCache.schedulers, preset?.scheduler || '');
 
     // 字段使能状态(无 preset 时 disabled)
-    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
+    $('#comfy_url, #comfy_url_bookmark, #comfy_url_save, #comfy_url_delete, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
 
     bindPresetFieldEvents();
     renderPresetPreview();
+    renderComfyUrlBookmark();
+    renderComfyImportUrlBookmark();
 }
 
 /** 渲染单个 ComfyUI select(model/sampler/scheduler) */
@@ -592,7 +717,9 @@ async function fetchAndApplyImportUrl() {
 
         renderPresetFields();  // 内部会触发 validateComfyWorkflow + renderPresetPreview
         toastr.success('已应用导入的配置');
+        pushComfyImportUrl(rawUrl);   // 应用成功后把 URL 入历史(去重 + 置顶)
         $('#comfy_import_url').val('');
+        renderComfyImportUrlBookmark();
     } catch (e) {
         console.error(`[${extensionName}] Import failed:`, e);
         toastr.error(e.message || String(e));
@@ -989,6 +1116,8 @@ function bindPresetEvents() {
         }
     });
     bindPresetPreviewEvents();
+    bindComfyUrlBookmarkEvents();
+    bindComfyImportUrlBookmarkEvents();
 
     // --- 工作流 JSON 占位符帮助 + 实时校验 ---
     $('#comfy_workflow_help').off('click.workflowHelp').on('click.workflowHelp', function (e) {
@@ -1280,6 +1409,26 @@ async function loadSettings() {
     const activeName = extension_settings[extensionName].activePresetName;
     if (activeName && !presets.some(p => p.name === activeName)) {
         extension_settings[extensionName].activePresetName = presets[0]?.name ?? null;
+    }
+    // 地址簿迁移:确保是数组,字符串/缺字段项规范化为 { name, url }
+    if (!Array.isArray(extension_settings[extensionName].comfyUrls)) {
+        extension_settings[extensionName].comfyUrls = [];
+    } else {
+        extension_settings[extensionName].comfyUrls = extension_settings[extensionName].comfyUrls
+            .map(item => {
+                if (typeof item === 'string') return { name: deriveUrlName(item), url: item };
+                if (!item || typeof item !== 'object' || !item.url) return null;
+                if (!item.name) item.name = deriveUrlName(item.url);
+                return item;
+            })
+            .filter(Boolean);
+    }
+    // detail 接口 URL 历史迁移:确保是字符串数组,过滤空值/非字符串
+    if (!Array.isArray(extension_settings[extensionName].comfyImportUrls)) {
+        extension_settings[extensionName].comfyImportUrls = [];
+    } else {
+        extension_settings[extensionName].comfyImportUrls = extension_settings[extensionName].comfyImportUrls
+            .filter(s => typeof s === 'string' && s.trim());
     }
     updateUI();
 }
@@ -1960,6 +2109,15 @@ async function onMagClick(e) {
         }
         return;
     }
+    if (role === 'regenerate') {
+        e.preventDefault();
+        e.stopPropagation();
+        // 仅 mag-media(已生成图) 有此按钮;占位符不挂这个 role
+        if ($el.hasClass('mag-media') || $el.hasClass('custom-mag-media')) {
+            await regenerateMedia($el);
+        }
+        return;
+    }
 
     // --- 主体点击(默认动作) ---
     const isPlaceholder = $el.hasClass('mag-placeholder') || $el.hasClass('custom-mag-placeholder');
@@ -2047,6 +2205,77 @@ async function startManualGeneration($ph) {
 }
 
 /**
+ * 已生成的 mag-media wrapper → 重新调一次 ComfyUI 生成。
+ * 与 startManualGeneration 的区别:入口是已生成图(不是占位符),每次都走 generateViaComfy
+ * (该函数内部 getActivePreset() 实时读最新 ComfyUI 配置档,所以改完配置立即生效)。
+ * 生成成功后:更新当前 wrapper 的 src + 覆盖 generatedCache(同 promptHash 后续命中也用新图)。
+ * 不走 promptHistory 冷却检查(冷却只拦自动触发,手动重生成不拦)。
+ */
+async function regenerateMedia($media) {
+    const magId = $media.attr('data-mag-id');
+    const rawPrompt = $media.attr('data-prompt');
+    const rawExtraParams = $media.attr('data-extra') || '';
+    const mediaType = $media.attr('data-media-type');
+
+    // 注入角色特征,与 startManualGeneration 一致地计算 hash(用于缓存覆盖)
+    const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
+    const modifiedPrompt = injectionResult.modifiedPrompt;
+    const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
+
+    if (processingHashes.has(promptHash)) {
+        toastr.info('该 prompt 正在生成中,请稍候');
+        return;
+    }
+    processingHashes.add(promptHash);
+
+    $media.attr('data-regenerating', 'true');
+    let timer = null;
+    let seconds = 0;
+    let toast = null;
+    try {
+        const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
+        const baseText = `⏳ 重新生成${mediaTypeText}...`;
+        toast = toastr.info(`${baseText} 0s`, '', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        timer = setInterval(() => {
+            seconds++;
+            if (toast && toast.find) toast.find('.toast-message').text(`${baseText} ${seconds}s`);
+        }, 1000);
+
+        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
+        clearInterval(timer);
+        if (toast) toastr.clear(toast);
+
+        // 构造新 wrapper(同 magId,replacePlaceholderInMes 用 magId 锚定替换 mes 里的旧 wrapper)
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
+
+        // 更新缓存:覆盖同 promptHash 的旧 wrapper,后续新消息命中拿到的是新图
+        generatedCache.set(promptHash, mediaWrap);
+        failedPrompts.delete(promptHash);
+        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
+
+        // 同步到 message.mes + 重渲当前块
+        const context = getContext();
+        const messageIndex = context.chat.length - 1;
+        const message = context.chat[messageIndex];
+        if (message) {
+            message.mes = replacePlaceholderInMes(message.mes, magId, mediaWrap);
+            updateMessageBlock(messageIndex, message);
+            await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+            await context.saveChat();
+        }
+        toastr.success(`已重新生成: 1 张${mediaTypeText}`);
+    } catch (err) {
+        console.error(`[${extensionName}] Regenerate failed:`, err);
+        if (timer) clearInterval(timer);
+        if (toast) toastr.clear(toast);
+        toastr.error(`重新生成失败: ${err.message || err}`);
+    } finally {
+        $media.removeAttr('data-regenerating');
+        processingHashes.delete(promptHash);
+    }
+}
+
+/**
  * 构造 mag-placeholder span HTML(idle/error 两态共享结构)。
  * 占位符:块级卡片,5 个 data-mag-role 子元素(icon/label/prompt-text/copy/toggle)。
  * 子元素用 <i>/<small> 而非 <span>(replacePlaceholderInMes 正则靠外层 </span> 闭合,内层不许嵌套 span)。
@@ -2090,7 +2319,7 @@ function buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams }) {
         mediaInner = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedPrompt}" style="${style}" />`;
     }
 
-    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="zoom">放大</small></span>`;
+    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-extra="${escapedParams}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
