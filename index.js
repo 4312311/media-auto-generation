@@ -1910,8 +1910,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
     let contentModified = false;
     let currentMessageText = message.mes;
-    
+
     let replacementStats = { image: 0, video: 0 };
+
+    // 同消息内同 prompt 出现 N 次时,各自独立 hash 避免 cache/锁互相命中:
+    // 否则 7 个 <pic prompt="1girl"> 全部命中同一 promptHash → 第 1 个生成后,后 6 个
+    // 全部命中同一张缓存图,瞬间显示 7 张相同图(用户期望 7 张不同图,seed 随机)。
+    const seenInThisMsg = new Map(); // baseHash → 出现次数
 
     // 使用 entries() 获取当前是第几个匹配项 (index)
     for (const [index, match] of matches.entries()) {
@@ -1932,7 +1937,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // --- 新增: 角色固定特征拦截与注入 ---
         const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
         const modifiedPrompt = injectionResult.modifiedPrompt;
-        
+
         // 打印日志：仅在成功注入且非流式频繁检测时打印，避免刷屏
         if (injectionResult.injected && !onlyTrigger) {
             console.log(`[${extensionName}] 🎯 角色特征匹配成功，已自动注入！`);
@@ -1941,7 +1946,12 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         }
 
         // 注意：使用注入后的 modifiedPrompt 计算 Hash，确保特征修改后能重新生成
-        const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
+        const baseHash = simpleHash(normalizePrompt(modifiedPrompt));
+        const occ = seenInThisMsg.get(baseHash) || 0;
+        seenInThisMsg.set(baseHash, occ + 1);
+        // occ=0 不加后缀,保留跨消息"单 prompt 命中"语义;occ>0 加后缀让同消息内
+        // 第 2/3/... 个相同 prompt 各自独立缓存 + 各自独立生成(seed 随机)
+        const promptHash = occ > 0 ? `${baseHash}#${occ}` : baseHash;
 
         // --- 逻辑 A：替换已完成的图片 ---
         if (!onlyTrigger && generatedCache.has(promptHash)) {
