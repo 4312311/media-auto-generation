@@ -22,11 +22,13 @@ let isStreamActive = false;
 let streamInterval = null;
 let updateDebounceTimer = null; 
 
-// 1. 生成结果缓存 (Key: Hash -> Value: HTML Tag)
-const generatedCache = new Map();
-
 // 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
 const failedPrompts = new Map();
+
+// 自动模式 IIFE 完成 → 二次进入 processMessageContent 落地 DOM 的中转暂存。
+// 命中分支消费一次就 delete,因此**跨消息不复用**(每次同 prompt 都重新生成)。
+// 手动模式 / 重生成走 magId 直接替换,不经此 map。
+const inFlightMedia = new Map();
 
 // 2. 历史记录 (冷却锁)
 const promptHistory = new Map();
@@ -71,7 +73,6 @@ function pruneOldPrompts() {
     for (const [hash, timestamp] of promptHistory.entries()) {
         if (now - timestamp > PROMPT_COOLDOWN_MS) {
             promptHistory.delete(hash);
-            generatedCache.delete(hash);
         }
     }
 }
@@ -1913,9 +1914,9 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
     let replacementStats = { image: 0, video: 0 };
 
-    // 同消息内同 prompt 出现 N 次时,各自独立 hash 避免 cache/锁互相命中:
-    // 否则 7 个 <pic prompt="1girl"> 全部命中同一 promptHash → 第 1 个生成后,后 6 个
-    // 全部命中同一张缓存图,瞬间显示 7 张相同图(用户期望 7 张不同图,seed 随机)。
+    // 同消息内同 prompt 出现 N 次时,各自独立 hash 避免 processingHashes 锁互相命中:
+    // 否则 7 个 <pic prompt="1girl"> 全部同一 promptHash → 第 1 个 add 锁后,后 6 个
+    // 都被 has 拦 continue,不生成(用户期望 7 张不同图,seed 随机)。
     const seenInThisMsg = new Map(); // baseHash → 出现次数
 
     // 使用 entries() 获取当前是第几个匹配项 (index)
@@ -1949,22 +1950,24 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         const baseHash = simpleHash(normalizePrompt(modifiedPrompt));
         const occ = seenInThisMsg.get(baseHash) || 0;
         seenInThisMsg.set(baseHash, occ + 1);
-        // occ=0 不加后缀,保留跨消息"单 prompt 命中"语义;occ>0 加后缀让同消息内
-        // 第 2/3/... 个相同 prompt 各自独立缓存 + 各自独立生成(seed 随机)
+        // occ>0 加后缀让同消息内第 2/3/... 个相同 prompt 各自独立 hash,绕过 processingHashes
+        // 并发锁(否则第 1 个 add 后,后 6 个都被 has 拦 continue,不生成)
         const promptHash = occ > 0 ? `${baseHash}#${occ}` : baseHash;
 
-        // --- 逻辑 A：替换已完成的图片 ---
-        if (!onlyTrigger && generatedCache.has(promptHash)) {
-            const cachedMediaTag = generatedCache.get(promptHash);
-            
-            // 执行文本替换
-            currentMessageText = currentMessageText.replace(originalTag, cachedMediaTag);
+        // --- 逻辑 A：落地 IIFE 刚生成完的媒体 ---
+        // inFlightMedia 是 IIFE 完成 → 二次进入 processMessageContent 的中转。命中即消费(delete),
+        // 因此**跨消息不复用**(每次同 prompt 都重新生成;手动模式 / 重生成走 magId 直接替换不经此 map)
+        if (!onlyTrigger && inFlightMedia.has(promptHash)) {
+            const mediaTag = inFlightMedia.get(promptHash);
+            inFlightMedia.delete(promptHash);
+
+            currentMessageText = currentMessageText.replace(originalTag, mediaTag);
             contentModified = true;
-            
-            if (cachedMediaTag.includes('<video')) replacementStats.video++;
+
+            if (mediaTag.includes('<video')) replacementStats.video++;
             else replacementStats.image++;
-            
-            continue; 
+
+            continue;
         }
 
         // --- 逻辑 A-1：失败降级(自动模式 ComfyUI 失败,流式结束后渲染 error 占位符让用户手动重试)---
@@ -1976,7 +1979,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         }
 
         // --- 逻辑 B-0：手动模式占位符 ---
-        // 缓存未命中且 autoReplace='manual' 时,把 originalTag 替换为可点击占位符,不触发生成。
+        // autoReplace='manual' 时,把 originalTag 替换为可点击占位符,不触发生成。
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
             const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state: 'idle' });
@@ -2042,7 +2045,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     rawExtraParams,
                 });
 
-                generatedCache.set(promptHash, mediaTag);
+                // 暂存到 inFlightMedia → 接下来再跑一次 processMessageContent 走"逻辑 A"落地 DOM
+                inFlightMedia.set(promptHash, mediaTag);
                 failedPrompts.delete(promptHash); // 兜底:同一 prompt 先失败后(在另一消息)自动成功,清残留失败记录
 
                 // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
@@ -2205,7 +2209,7 @@ async function startManualGeneration($ph) {
     $ph.attr('data-state', 'loading');
     $ph.find('[data-mag-role="icon"]').attr('class', 'fa-solid fa-circle-notch fa-spin');
 
-    // 注入角色特征 → 与自动模式一致地计算 hash(缓存命中复用)
+    // 注入角色特征 → 与自动模式一致地计算 hash
     const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
     const modifiedPrompt = injectionResult.modifiedPrompt;
     const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
@@ -2231,7 +2235,6 @@ async function startManualGeneration($ph) {
 
         const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
 
-        generatedCache.set(promptHash, mediaWrap);
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
@@ -2265,7 +2268,6 @@ async function startManualGeneration($ph) {
  * 已生成的 mag-media wrapper → 重新调一次 ComfyUI 生成。
  * 与 startManualGeneration 的区别:入口是已生成图(不是占位符),每次都走 generateViaComfy
  * (该函数内部 getActivePreset() 实时读最新 ComfyUI 配置档,所以改完配置立即生效)。
- * 生成成功后:更新当前 wrapper 的 src + 覆盖 generatedCache(同 promptHash 后续命中也用新图)。
  * 不走 promptHistory 冷却检查(冷却只拦自动触发,手动重生成不拦)。
  */
 async function regenerateMedia($media) {
@@ -2274,7 +2276,7 @@ async function regenerateMedia($media) {
     const rawExtraParams = $media.attr('data-extra') || '';
     const mediaType = $media.attr('data-media-type');
 
-    // 注入角色特征,与 startManualGeneration 一致地计算 hash(用于缓存覆盖)
+    // 注入角色特征,与 startManualGeneration 一致地计算 hash(用于 processingHashes 锁 + failedPrompts 失败降级)
     const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
     const modifiedPrompt = injectionResult.modifiedPrompt;
     const promptHash = simpleHash(normalizePrompt(modifiedPrompt));
@@ -2305,8 +2307,6 @@ async function regenerateMedia($media) {
         // 构造新 wrapper(同 magId,replacePlaceholderInMes 用 magId 锚定替换 mes 里的旧 wrapper)
         const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
 
-        // 更新缓存:覆盖同 promptHash 的旧 wrapper,后续新消息命中拿到的是新图
-        generatedCache.set(promptHash, mediaWrap);
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
@@ -2358,7 +2358,7 @@ function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraPar
 
 /**
  * 构造 mag-media wrapper HTML(包 img/video + 4 个 data-mag-role 子元素)。
- * 占位符替换 / 自动模式缓存 共用此函数,保证产物结构一致。
+ * 占位符替换 / 自动模式生成 共用此函数,保证产物结构一致。
  */
 function buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams }) {
     const style = extension_settings[extensionName].style || '';
