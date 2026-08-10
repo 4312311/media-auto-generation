@@ -1489,7 +1489,15 @@ function bindSettingsEvents() {
     $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
-    $('#auto_replace').on('change', function () { extension_settings[extensionName].autoReplace = $(this).val(); saveSettingsDebounced(); });
+    $('#auto_replace').on('change', function () {
+        extension_settings[extensionName].autoReplace = $(this).val();
+        saveSettingsDebounced();
+        // 切到 auto 时,立即处理当前最后一条消息 — 把已有占位符替换为自动生图。
+        // 否则用户切完 auto 后,旧消息里的占位符不会自动触发,得发新消息或刷新才生效。
+        if (extension_settings[extensionName].autoReplace === 'auto') {
+            processMessageContent(true, false);
+        }
+    });
     // 生成方式帮助 popover(仿工作流 JSON 占位符帮助的交互)
     $('#auto_replace_help').off('click.arHelp').on('click.arHelp', function (e) {
         e.stopPropagation(); // 防 ST 浮窗"点外部自动收起"
