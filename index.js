@@ -2743,6 +2743,12 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     await processMessageContent(true, false);
 });
 
+// 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染
+// 否则用户编辑加 <pic prompt> 保存后看不到占位符,要刷新或重进聊天才出
+eventSource.on(event_types.MESSAGE_EDITED, async () => {
+    await processMessageContent(true, false);
+});
+
 // === 发送给 LLM 前:把 mag-media wrapper 还原成简洁 <pic>/<video> 标签 ===
 // 覆盖两种模式: text completion 走 GENERATE_AFTER_COMBINE_PROMPTS, chat completion 走 CHAT_COMPLETION_PROMPT_READY
 // 不分 dryRun,token 计数也要一致,否则 ST 会按 wrapper 长度估算偏高、误砍楼层
