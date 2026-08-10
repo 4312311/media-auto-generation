@@ -166,22 +166,53 @@ function getActivePreset() {
     return s.comfyPresets.find(p => p.name === s.activePresetName) || null;
 }
 
+// ComfyUI 全局串行队列。ComfyUI 后端本身串行处理,客户端不串行的话 N 个并发 fetch 会
+// 全挂在后端队列里,单次超时会被排队等待时间污染。这里强制前一个完成才发下一个。
+let comfyChain = Promise.resolve();
+
+/**
+ * 把 task 串到 ComfyUI 全局串行队列。前一个 job 完成(成功/失败)才执行下一个。
+ * 每个 job 拿到自己的结果/异常,互不阻塞。
+ * @template T
+ * @param {() => Promise<T>} task
+ * @returns {Promise<T>}
+ */
+function enqueueComfyJob(task) {
+    // then 第二参数也是 task — 前一个 job 失败时不阻塞后续
+    const next = comfyChain.then(task, task);
+    comfyChain = next;
+    return next;
+}
+
 /**
  * 通用 ComfyUI 代理调用,body 已含 url(+ 可选 auth),passthrough 给 /api/sd/comfy/<path>
  * @param {string} path ping/samplers/models/schedulers/vaes/generate
  * @param {object} body
+ * @param {number} [timeoutMs=60000] 超时,超时后 abort 并抛"超时"错误
  */
-async function comfyProxy(path, body) {
-    const res = await fetch(`/api/sd/comfy/${path}`, {
-        method: 'POST',
-        headers: getRequestHeaders(),
-        body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ComfyUI ${path} failed: ${text}`);
+async function comfyProxy(path, body, timeoutMs = 60_000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(`/api/sd/comfy/${path}`, {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(`ComfyUI ${path} failed: ${text}`);
+        }
+        return await res.json();
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            throw new Error(`ComfyUI ${path} 超时(${Math.round(timeoutMs / 1000)}s)`);
+        }
+        throw err;
+    } finally {
+        clearTimeout(timer);
     }
-    return await res.json();
 }
 
 const VIDEO_FORMATS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
@@ -228,8 +259,15 @@ function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt)
  * 直接调远程 ComfyUI 生成媒体。返回 { url, format, character }。
  * url 是 ST 后端落盘后的文件路径(/user/images/...),避免 data URI 撑爆 DOM 和聊天存档。
  * @param {string} overrideCharacter 可选,覆盖 character(默认走 context.name2 / groupId / 'media')。测试 tab 传 preset.name。
+ *
+ * 外壳:入串行队列,真正执行交给 generateViaComfyInner。
+ * 这样改 URL/工作流/前缀等配置后点重试,等到 job 真跑时会重新读 active preset,新配置立即生效。
  */
 async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
+    return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter));
+}
+
+async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
     if (!preset.comfyUrl) throw new Error('Active preset has no ComfyUI URL');
@@ -245,7 +283,8 @@ async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
     const body = { url: preset.comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
 
-    const result = await comfyProxy('generate', body);
+    const timeoutMs = mediaType === 'video' ? 120_000 : 20_000;
+    const result = await comfyProxy('generate', body, timeoutMs);
     const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
 
     const context = getContext();
@@ -633,9 +672,9 @@ async function refreshComfyOptions() {
     const body = { url: preset.comfyUrl };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
     const results = await Promise.allSettled([
-        comfyProxy('models', body),
-        comfyProxy('samplers', body),
-        comfyProxy('schedulers', body),
+        comfyProxy('models', body, 10_000),
+        comfyProxy('samplers', body, 10_000),
+        comfyProxy('schedulers', body, 10_000),
     ]);
     console.log('[mag-debug] allSettled done', results.map(r => ({ status: r.status, reason: r.reason ? String(r.reason.message || r.reason).slice(0, 100) : null })));
     const [modelsR, samplersR, schedulersR] = results;
