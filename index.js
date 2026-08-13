@@ -114,6 +114,44 @@ function replacePlaceholderInMes(mes, magId, newTag) {
     return mes.replace(re, newTag);
 }
 
+/**
+ * 反查包含指定 magId 的消息 index。
+ * magId 以 data-mag-id="<magId>" 字面量持久化在 message.mes 里,倒序找(最近消息优先),找不到返回 -1。
+ *
+ * 手动生成/重生成时,点击的占位符可能不在最后一条消息里(比如更早楼层),不能用 chat.length-1 兜底,
+ * 必须按 magId 锚定真实消息,否则会改错消息 → 占位符不替换且 loading 转圈不消失。
+ */
+function findMessageIndexByMagId(magId) {
+    const context = getContext();
+    const needle = `data-mag-id="${escapeHtmlAttribute(magId)}"`;
+    for (let i = context.chat.length - 1; i >= 0; i--) {
+        const m = context.chat[i];
+        if (m && typeof m.mes === 'string' && m.mes.includes(needle)) return i;
+    }
+    return -1;
+}
+
+/**
+ * 按 magId 反查真实消息,把 mediaWrap 替换进该消息的 mes 并重渲当前块。
+ * 手动生成 / 重生成共用:点击的占位符/wrapper 可能在任意楼层(非最后一条),
+ * 必须按 magId 锚定真实消息,否则会改错消息 → 占位符不替换且 loading 转圈不消失。
+ * @returns {Promise<boolean>} 是否成功定位并替换(失败仅 console.warn,不抛错)
+ */
+async function commitMediaToMessage(magId, mediaWrap, callerName) {
+    const messageIndex = findMessageIndexByMagId(magId);
+    const context = getContext();
+    const message = messageIndex >= 0 ? context.chat[messageIndex] : null;
+    if (!message) {
+        console.warn(`[${extensionName}] ${callerName}: 找不到 magId=${magId} 对应的消息,跳过 DOM 替换`);
+        return false;
+    }
+    message.mes = replacePlaceholderInMes(message.mes, magId, mediaWrap);
+    updateMessageBlock(messageIndex, message);
+    await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
+    await context.saveChat();
+    return true;
+}
+
 /** 把 timestamp 格式化为 YYYY-MM-DD HH:mm(用于图库缩略图下方时间显示) */
 function formatGalleryTime(ts) {
     if (!ts || !Number.isFinite(ts)) return '';
@@ -2238,17 +2276,9 @@ async function startManualGeneration($ph) {
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
-        // 用 magId 锚定字符串替换 message.mes 中的占位符 → 最终 wrapper
-        const context = getContext();
-        const messageIndex = context.chat.length - 1;
-        const message = context.chat[messageIndex];
-        if (message) {
-            message.mes = replacePlaceholderInMes(message.mes, magId, mediaWrap);
-            updateMessageBlock(messageIndex, message);
-            await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
-            await context.saveChat();
-        }
-        toastr.success(`替换完成: 1 张${mediaTypeText}`);
+        // 按 magId 反查真实消息并替换(占位符可能在旧楼层,非最后一条),成功才提示
+        const committed = await commitMediaToMessage(magId, mediaWrap, 'startManualGeneration');
+        if (committed) toastr.success(`替换完成: 1 张${mediaTypeText}`);
     } catch (err) {
         console.error(`[${extensionName}] Manual generation failed:`, err);
         if (timer) clearInterval(timer);
@@ -2310,17 +2340,9 @@ async function regenerateMedia($media) {
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
 
-        // 同步到 message.mes + 重渲当前块
-        const context = getContext();
-        const messageIndex = context.chat.length - 1;
-        const message = context.chat[messageIndex];
-        if (message) {
-            message.mes = replacePlaceholderInMes(message.mes, magId, mediaWrap);
-            updateMessageBlock(messageIndex, message);
-            await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
-            await context.saveChat();
-        }
-        toastr.success(`已重新生成: 1 张${mediaTypeText}`);
+        // 按 magId 反查真实消息并替换(wrapper 可能在旧楼层),成功才提示
+        const committed = await commitMediaToMessage(magId, mediaWrap, 'regenerateMedia');
+        if (committed) toastr.success(`已重新生成: 1 张${mediaTypeText}`);
     } catch (err) {
         console.error(`[${extensionName}] Regenerate failed:`, err);
         if (timer) clearInterval(timer);
