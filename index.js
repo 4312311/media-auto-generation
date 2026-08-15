@@ -92,10 +92,14 @@ function escapeHtmlAttribute(value) {
  *
  * wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
  */
+// mag-media wrapper 匹配(reduceMagMediaForLLM 清理 / collectFloorMedia 楼层扫描共用)。
+// mes 里 class 是原始 `mag-media`(DOMPurify 渲染到 DOM 时才加 custom- 前缀,不会写回 mes),防御性同时匹配;
+// wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
+const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
+
 function reduceMagMediaForLLM(text) {
     if (typeof text !== 'string') return text;
-    const wrapperRe = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
-    return text.replace(wrapperRe, (match) => {
+    return text.replace(MAG_MEDIA_WRAP_RE, (match) => {
         const typeMatch = match.match(/\bdata-media-type\s*=\s*"(image|video)"/i);
         const promptMatch = match.match(/\bdata-prompt\s*=\s*"([^"]*)"/i);
         if (!typeMatch || !promptMatch) return match;
@@ -150,6 +154,7 @@ async function commitMediaToMessage(magId, mediaWrap, callerName) {
     updateMessageBlock(messageIndex, message);
     await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
     await context.saveChat();
+    scheduleMediaPreviewRender(); // 手动/重生成落地 mes → 预览浮窗跟进刷新
     return true;
 }
 
@@ -1714,6 +1719,18 @@ function createFloatingUI(settingsHtml) {
         toggleFloatingPanel(true);
     });
 
+    // --- 发送栏"媒体预览"入口(#rightSendForm,发送按钮旁,参考 st-phone 的手机图标) ---
+    // #rightSendForm 的直接 div 子元素自动获得 ST 图标按钮样式(尺寸/hover),不要用
+    // stscript_btn 类(那类按钮默认 display:none,只在执行脚本时显示)
+    if ($('#mag_preview_btn').length === 0 && $('#rightSendForm').length) {
+        $('#rightSendForm').append(`
+            <div id="mag_preview_btn" class="fa-solid fa-images interactable" title="媒体预览" data-i18n="[title]mag_preview_btn_title" tabindex="0" role="button"></div>
+        `);
+    }
+    $('#mag_preview_btn').off('click.mag').on('click.mag', function () {
+        openMediaPreviewModal();
+    });
+
     // --- settings.html 的隐藏寄居容器(单一路径,避免重复 DOM 导致 ID 冲突) ---
     // 平时藏在这里,浮窗打开时 detach 到 panel body,关闭时 detach 回来。
     if ($('#mag_settings_host').length === 0) {
@@ -2166,6 +2183,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!onlyTrigger && contentModified) {
         message.mes = currentMessageText;
         updateMessageBlock(messageIndex, message);
+        // 媒体已落地 mes → 预览浮窗跟进刷新(in-flight 转正式楼层记录)
+        scheduleMediaPreviewRender();
 
         // 成功提示
         let successMsgParts = [];
@@ -2441,6 +2460,7 @@ function pushGalleryEntry(entry) {
     s.galleryManifest.push({ ...entry, timestamp: Date.now() });
     saveSettingsDebounced();
     scheduleGalleryRender();
+    scheduleMediaPreviewRender(); // 生成成功即时出现到预览浮窗(流式中走 in-flight)
 }
 
 /** 合并同一帧内的多次 push,避免批量生成时连续 rebuild */
@@ -2679,6 +2699,197 @@ function closeGroupModal() {
     $m.find('.group-modal-grid').empty();
 }
 
+// --- 媒体预览浮窗(按楼层) ---
+// 流式期间 ST 持续重写消息 DOM,替换进去的图片会被还原,流式结束才可见(ST 固有行为)。
+// 本浮窗独立于消息 DOM:直接扫 context.chat 各楼层 mes + 流式暂存 inFlightMedia,生成中即可看图。
+
+let mediaPreviewRenderPending = false;
+
+/** escapeHtmlAttribute 的逆变换:解码从 mes 扫出来的属性值 */
+function unescapeHtmlAttr(v) {
+    return v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+/** 从 HTML 片段里取 name="..." 属性值(返回原始转义值;容忍属性名与 = 间的空白,与 MAG_MEDIA_WRAP_RE 同风格) */
+function extractAttr(html, name) {
+    const m = html.match(new RegExp('\\b' + name + '\\s*=\\s*"([^"]*)"'));
+    return m ? m[1] : '';
+}
+
+/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt};无 src 返回 null。mediaType 以内层标签名为准 */
+function parseMediaWrapper(block) {
+    // lazy [^>]*?:buildMediaWrap 产物里 src 紧跟标签名,避免贪婪回溯扫过整个 base64
+    const srcMatch = block.match(/<(img|video)\b[^>]*?\ssrc="([^"]*)"/);
+    if (!srcMatch) return null;
+    // magId 格式 `${promptHash}-${index}-${ts36}-${rand}`,base36 创建时间戳在倒数第二段
+    const parts = extractAttr(block, 'data-mag-id').split('-');
+    const ts = parts.length >= 3 ? parseInt(parts[parts.length - 2], 36) : 0;
+    return {
+        ts: Number.isFinite(ts) ? ts : 0,
+        url: unescapeHtmlAttr(srcMatch[2]),
+        mediaType: srcMatch[1] === 'video' ? 'video' : 'image',
+        prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
+    };
+}
+
+/**
+ * 收集当前聊天各楼层的媒体记录:楼层降序,同楼层按创建时间(ts)升序。
+ * 来源:① mes 里持久化的 mag-media wrapper ② 旧格式裸 <img|video prompt=...>(wrapper 重构前)
+ *      ③ 流式期间未落地的 inFlightMedia(归属最新楼层,落地后被消费转入 ①)
+ */
+function collectFloorMedia() {
+    const chat = getContext().chat || [];
+    const records = [];
+    const tagRe = /<(img|video)\b[^>]*>/g;
+
+    for (let i = 0; i < chat.length; i++) {
+        const mes = chat[i]?.mes;
+        if (typeof mes !== 'string' || !mes.includes('<')) continue;
+
+        // ① wrapper
+        let hasWrapper = false;
+        MAG_MEDIA_WRAP_RE.lastIndex = 0;
+        let wm;
+        while ((wm = MAG_MEDIA_WRAP_RE.exec(mes)) !== null) {
+            hasWrapper = true;
+            const parsed = parseMediaWrapper(wm[0]);
+            if (parsed) records.push({ floor: i, ...parsed });
+        }
+
+        // ② 旧格式:先剥掉 wrapper 再扫(wrapper 的 src 是 MB 级 base64,直接扫整个 mes 会空耗一遍),
+        //    剩余部分里找带 prompt 属性的裸 img/video
+        const bare = hasWrapper ? mes.replace(MAG_MEDIA_WRAP_RE, '') : mes;
+        tagRe.lastIndex = 0;
+        let tm;
+        while ((tm = tagRe.exec(bare)) !== null) {
+            if (!tm[0].includes('prompt="')) continue;
+            const srcMatch = tm[0].match(/\ssrc="([^"]*)"/);
+            if (!srcMatch) continue;
+            records.push({
+                floor: i,
+                ts: 0, // 旧格式无创建时间,视为最旧
+                url: unescapeHtmlAttr(srcMatch[1]),
+                mediaType: tm[1] === 'video' ? 'video' : 'image',
+                prompt: unescapeHtmlAttr(extractAttr(tm[0], 'prompt')),
+            });
+        }
+    }
+
+    // ③ 流式暂存,归属最新楼层
+    if (chat.length > 0) {
+        const floor = chat.length - 1;
+        for (const mediaTag of inFlightMedia.values()) {
+            const parsed = parseMediaWrapper(mediaTag);
+            if (parsed) records.push({ floor, ...parsed });
+        }
+    }
+
+    records.sort((a, b) => b.floor - a.floor || (a.ts || 0) - (b.ts || 0));
+    return records;
+}
+
+/** 懒挂媒体预览 modal 到 body(居中对话框 + 暗色遮罩) */
+function ensureMediaPreviewModal() {
+    if ($('#mag_media_preview_modal').length) return;
+    $('body').append(`
+        <div id="mag_media_preview_modal">
+            <div class="preview-modal-dialog">
+                <div class="preview-modal-header">
+                    <span class="preview-modal-title" data-i18n="mag_media_preview_title">媒体预览</span>
+                    <div class="preview-modal-close" title="关闭" data-i18n="[title]mag_media_preview_close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </div>
+                </div>
+                <div class="preview-modal-body"></div>
+            </div>
+        </div>
+    `);
+    const $m = $('#mag_media_preview_modal');
+    $m.find('.preview-modal-close').on('click', closeMediaPreviewModal);
+    // 点暗色遮罩关闭(对话框内的点击不关)
+    $m.on('click', (e) => {
+        if ($(e.target).closest('.preview-modal-dialog').length) return;
+        closeMediaPreviewModal();
+    });
+    $(document).on('keydown.mediaPreview', (e) => {
+        // lightbox 开着时 ESC 优先关 lightbox,不关本浮窗
+        if (e.key === 'Escape' && $m.hasClass('open') && !$('#mag_gallery_lightbox').hasClass('open')) {
+            closeMediaPreviewModal();
+        }
+    });
+    // 点媒体行 → 放大(复用 gallery lightbox,entry 字段与 openGalleryLightbox 一致)
+    $m.find('.preview-modal-body').on('click', '.preview-media-row', function () {
+        const $row = $(this);
+        openGalleryLightbox({
+            url: $row.attr('data-url'),
+            mediaType: $row.attr('data-media-type'),
+            prompt: $row.attr('data-prompt'),
+        });
+    });
+}
+
+/** 渲染浮窗内容(仅 open 状态执行;重建时保留滚动位置) */
+function renderMediaPreviewModal() {
+    const $m = $('#mag_media_preview_modal');
+    if (!$m.length || !$m.hasClass('open')) return;
+
+    const latestFloor = (getContext().chat || []).length - 1;
+    const records = collectFloorMedia();
+    const $body = $m.find('.preview-modal-body');
+
+    releaseVideoEl($body.find('video'));
+    const scrollTop = $body[0].scrollTop;
+    $body.empty();
+
+    if (records.length === 0) {
+        $body.append(`<div class="preview-modal-empty" data-i18n="mag_media_preview_empty">当前聊天暂无生成媒体</div>`);
+        return;
+    }
+
+    let currentFloor = null;
+    for (const r of records) {
+        if (r.floor !== currentFloor) {
+            currentFloor = r.floor;
+            const labelText = r.floor === latestFloor ? '最新' : `第 ${r.floor} 楼的图片`;
+            $body.append(`
+                <div class="preview-floor-sep"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div></div>
+            `);
+        }
+        const escapedUrl = escapeHtmlAttribute(r.url);
+        const mediaTag = r.mediaType === 'video'
+            ? `<video src="${escapedUrl}" preload="metadata" controls muted playsinline></video>`
+            : `<img src="${escapedUrl}" loading="lazy" />`;
+        $body.append(`
+            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}">${mediaTag}</div>
+        `);
+    }
+    $body[0].scrollTop = scrollTop;
+}
+
+/** 合并同一帧内的多次刷新请求 */
+function scheduleMediaPreviewRender() {
+    if (mediaPreviewRenderPending) return;
+    mediaPreviewRenderPending = true;
+    requestAnimationFrame(() => {
+        mediaPreviewRenderPending = false;
+        renderMediaPreviewModal();
+    });
+}
+
+function openMediaPreviewModal() {
+    ensureMediaPreviewModal();
+    $('#mag_media_preview_modal').addClass('open');
+    renderMediaPreviewModal();
+}
+
+function closeMediaPreviewModal() {
+    const $m = $('#mag_media_preview_modal');
+    if (!$m.length || !$m.hasClass('open')) return;
+    $m.removeClass('open');
+    releaseVideoEl($m.find('video'));
+    $m.find('.preview-modal-body').empty();
+}
+
 // --- 测试生成 tab ---
 
 let testGenTimer = null;
@@ -2777,6 +2988,7 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
     // 新一轮生成开始:清掉上一轮残留的未落地媒体(消息被 swipe/删除/切换聊天后扫不到 tag,
     // inFlightMedia 又无 TTL,不清就永久泄漏)
     inFlightMedia.clear();
+    scheduleMediaPreviewRender(); // in-flight 被清空 → 预览浮窗同步移除
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
@@ -2810,10 +3022,17 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     await processMessageContent(true, false);
 });
 
+// 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)+ 关预览浮窗
+eventSource.on(event_types.CHAT_CHANGED, () => {
+    inFlightMedia.clear();
+    closeMediaPreviewModal();
+});
+
 // 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染
 // 否则用户编辑加 <pic prompt> 保存后看不到占位符,要刷新或重进聊天才出
 eventSource.on(event_types.MESSAGE_EDITED, async () => {
     await processMessageContent(true, false);
+    scheduleMediaPreviewRender(); // 编辑可能增删楼层里的媒体 → 预览浮窗跟进
 });
 
 // === 发送给 LLM 前:把 mag-media wrapper 还原成简洁 <pic>/<video> 标签 ===

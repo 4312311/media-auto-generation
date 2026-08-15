@@ -79,6 +79,11 @@
     "mag_gallery_copy": "复制提示词",
     "mag_gallery_video_badge": "视频",
 
+    "mag_preview_btn_title": "媒体预览",
+    "mag_media_preview_title": "媒体预览",
+    "mag_media_preview_close": "关闭",
+    "mag_media_preview_empty": "当前聊天暂无生成媒体",
+
     "mag_tab_test": "测试生成",
     "mag_test_prompt_ph": "提示词,例如:1girl, outdoors...",
     "mag_test_generate_btn": "生成测试图",
