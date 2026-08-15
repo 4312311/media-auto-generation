@@ -2205,6 +2205,78 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 }
 
 /**
+ * 切进聊天时全量扫描旧楼层:把裸 <pic>/<video> 标签转成占位符(仅手动模式)。
+ * processMessageContent 只处理最后一楼,切聊天(CHAT_CHANGED)时中间楼层的裸标签
+ * 没有任何事件会处理 → 永远停留在原始文本,连点击生图的入口都看不到。
+ * 自动模式不动旧楼层:避免每次进聊天连环触发生成;最新楼层仍走原有事件驱动路径。
+ * prompt/参数提取、特征注入、hash 计算与 processMessageContent 逻辑 B-0 保持一致。
+ */
+async function processAllMessagesForPlaceholders() {
+    const s = extension_settings[extensionName];
+    if (!s || s.mediaType === 'disabled') return;
+    if (s.autoReplace !== 'manual') return; // 仅手动模式
+
+    const context = getContext();
+    const chat = context.chat || [];
+    const regexStr = s.mediaType === 'image' ? s.imageRegex : s.videoRegex;
+    if (!regexStr) return;
+    const mediaTagRegex = regexFromString(regexStr);
+
+    const changedFloors = [];
+    for (let i = 0; i < chat.length; i++) {
+        const message = chat[i];
+        if (!message || message.is_user || !message.mes) continue;
+
+        const matches = [...message.mes.matchAll(mediaTagRegex)];
+        if (matches.length === 0) continue;
+
+        let mes = message.mes;
+        let modified = false;
+        for (const [index, match] of matches.entries()) {
+            const originalTag = match[0];
+            // 跳过已经是成品的标签
+            if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
+
+            let rawPrompt = (match[2] || '').trim();
+            let rawExtraParams = match[1] || '';
+            if (!rawPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
+                rawPrompt = match[1].trim();
+                rawExtraParams = match[2] || '';
+            }
+            if (!rawPrompt) continue;
+
+            // 与逻辑 B-0 一致:用注入角色特征后的 prompt 计算 hash
+            const injectionResult = injectCharacterTags(rawPrompt, s.characterTags);
+            const promptHash = simpleHash(normalizePrompt(injectionResult.modifiedPrompt));
+            const placeholder = buildPlaceholder({
+                promptHash,
+                index,
+                mediaType: s.mediaType,
+                rawPrompt,
+                rawExtraParams,
+                originalTag,
+                state: 'idle',
+            });
+            mes = mes.replace(originalTag, placeholder);
+            modified = true;
+        }
+        if (modified) {
+            message.mes = mes;
+            updateMessageBlock(i, message);
+            changedFloors.push(i);
+        }
+    }
+
+    if (changedFloors.length > 0) {
+        for (const i of changedFloors) {
+            await eventSource.emit(event_types.MESSAGE_UPDATED, i);
+        }
+        await context.saveChat();
+        console.log(`[${extensionName}] 旧楼层裸标签已转占位符: 楼层 ${changedFloors.join(', ')}`);
+    }
+}
+
+/**
  * 统一 click handler:占位符 + 生成图 wrapper 共用同一个事件委托。
  * 子元素用 [data-mag-role] 路由(toggle/copy/zoom),主体点击走默认动作
  * (占位符 → 触发生成;wrapper → toggle data-revealed)。
@@ -3022,10 +3094,12 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     await processMessageContent(true, false);
 });
 
-// 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)+ 关预览浮窗
-eventSource.on(event_types.CHAT_CHANGED, () => {
+// 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)
+// + 关预览浮窗 + 旧楼层裸 <pic>/<video> 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders)
+eventSource.on(event_types.CHAT_CHANGED, async () => {
     inFlightMedia.clear();
     closeMediaPreviewModal();
+    await processAllMessagesForPlaceholders();
 });
 
 // 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染
