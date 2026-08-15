@@ -824,6 +824,24 @@
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="comfy" style="display:none;">
+    <div>
+        <label for="comfy_url" data-i18n="mag_comfy_url_global">ComfyUI URL (Global)</label>
+        <div class="flex-container flexGap5 align_center" style="margin-top: 2px;">
+            <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188" style="flex: 0 0 50%; min-width: 0;">
+            <div id="comfy_url_save" class="menu_button menu_button_icon" title="Save current URL to bookmarks" data-i18n="[title]mag_url_save_title" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-bookmark"></i>
+            </div>
+        </div>
+        <div class="flex-container flexGap5 align_center" style="margin-top: 4px;">
+            <select id="comfy_url_bookmark" class="text_pole" style="flex: 1; min-width: 0;" title="Saved bookmarks" data-i18n="[title]mag_url_bookmark_title"></select>
+            <div id="comfy_url_delete" class="menu_button menu_button_icon" title="Remove selected from bookmarks" data-i18n="[title]mag_url_delete_title" style="margin: 0; padding: 5px;">
+                <i class="fa-solid fa-trash"></i>
+            </div>
+        </div>
+    </div>
+
+    <hr style="border: none; border-top: 1px solid var(--SmartThemeBorderColor); margin: 10px 0;">
+
     <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
         <b data-i18n="ComfyUI Presets">ComfyUI Presets</b>
         <small style="opacity: 0.7;" data-i18n="Direct ComfyUI connection">Direct ComfyUI connection</small>
@@ -878,22 +896,6 @@
         <select id="comfy_import_url_bookmark" class="text_pole" style="flex: 1; min-width: 0;" title="History" data-i18n="[title]mag_import_url_bookmark_title"></select>
         <div id="comfy_import_url_delete" class="menu_button menu_button_icon" title="Remove selected from history" data-i18n="[title]mag_import_url_delete_title" style="margin: 0; padding: 5px;">
             <i class="fa-solid fa-trash"></i>
-        </div>
-    </div>
-
-    <div class="margin-top-5">
-        <label for="comfy_url" data-i18n="ComfyUI URL">ComfyUI URL</label>
-        <div class="flex-container flexGap5 align_center" style="margin-top: 2px;">
-            <input id="comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188" style="flex: 0 0 50%; min-width: 0;">
-            <div id="comfy_url_save" class="menu_button menu_button_icon" title="Save current URL to bookmarks" data-i18n="[title]mag_url_save_title" style="margin: 0; padding: 5px;">
-                <i class="fa-solid fa-bookmark"></i>
-            </div>
-        </div>
-        <div class="flex-container flexGap5 align_center" style="margin-top: 4px;">
-            <select id="comfy_url_bookmark" class="text_pole" style="flex: 1; min-width: 0;" title="Saved bookmarks" data-i18n="[title]mag_url_bookmark_title"></select>
-            <div id="comfy_url_delete" class="menu_button menu_button_icon" title="Remove selected from bookmarks" data-i18n="[title]mag_url_delete_title" style="margin: 0; padding: 5px;">
-                <i class="fa-solid fa-trash"></i>
-            </div>
         </div>
     </div>
 

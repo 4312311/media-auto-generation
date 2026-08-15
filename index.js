@@ -50,6 +50,7 @@ const defaultSettings = {
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
     activePresetName: null, // 当前激活的配置档名字
+    activeComfyUrl: '', // 全局激活的 ComfyUI 服务地址(跨 preset 共享)
     comfyUrls: [], // ComfyUI 服务地址簿(跨 preset 共享):[{ name, url }]
     comfyImportUrls: [], // detail 接口 URL 历史(拉取成功后自动入簿):[string]
     galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
@@ -306,10 +307,16 @@ async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
     return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter));
 }
 
+/** 全局激活的 ComfyUI 服务地址(跨 preset 共享) */
+function getActiveComfyUrl() {
+    return String(extension_settings[extensionName].activeComfyUrl || '').trim();
+}
+
 async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
-    if (!preset.comfyUrl) throw new Error('Active preset has no ComfyUI URL');
+    const comfyUrl = getActiveComfyUrl();
+    if (!comfyUrl) throw new Error('No ComfyUI URL configured');
     if (!preset.model) throw new Error('Active preset has no model selected');
 
     // 前缀末尾无逗号 → 自动补一个,避免 "1girl" + "solo" 粘连成 "1girlsolo"
@@ -319,7 +326,7 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const negativePrompt = preset.negativePromptPrefix || '';
     const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt);
 
-    const body = { url: preset.comfyUrl, prompt: `{ "prompt": ${workflow} }` };
+    const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
 
     const timeoutMs = mediaType === 'video' ? 120_000 : 20_000;
@@ -433,12 +440,12 @@ function renderComfyUrlBookmark() {
     $sel.val(urls.some(u => (typeof u === 'string' ? u : u.url) === currentUrl) ? currentUrl : '');
 }
 
-/** 地址簿事件:select 切换 = 写回 input(联动 preset URL);保存 = 把当前 input URL 入簿;删除 = 移除 select 当前选中 */
+/** 地址簿事件:select 切换 = 写回 input(联动全局 activeComfyUrl);保存 = 把当前 input URL 入簿;删除 = 移除 select 当前选中 */
 function bindComfyUrlBookmarkEvents() {
     $('#comfy_url_bookmark').off('.urlBookmark').on('change.urlBookmark', function () {
         const v = String($(this).val() || '').trim();
         if (!v) return;
-        // 写回 input 并触发 change → 已有的 .preset handler 会写回 activePreset.comfyUrl + 清缓存
+        // 写回 input 并触发 change → 已有的 .preset handler 会写回全局 activeComfyUrl + 清缓存
         $('#comfy_url').val(v).trigger('change');
     });
     $('#comfy_url_save').off('.urlBookmark').on('click.urlBookmark', function () {
@@ -529,7 +536,7 @@ function renderPresetFields() {
     // 临时解绑所有字段事件,灌值后再绑回(避免连锁写)
     $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow').off('.preset');
 
-    $('#comfy_url').val(preset?.comfyUrl || '');
+    $('#comfy_url').val(getActiveComfyUrl());
     $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
     $('#comfy_neg_prefix').val(preset?.negativePromptPrefix || '');
     $('#comfy_workflow').val(preset?.workflowJson || '');
@@ -546,8 +553,8 @@ function renderPresetFields() {
     renderComfySelect('#comfy_sampler', comfyCache.samplers, preset?.sampler || '');
     renderComfySelect('#comfy_scheduler', comfyCache.schedulers, preset?.scheduler || '');
 
-    // 字段使能状态(无 preset 时 disabled)
-    $('#comfy_url, #comfy_url_bookmark, #comfy_url_save, #comfy_url_delete, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
+    // 字段使能状态(无 preset 时 disabled;comfy_url 系全局字段不依赖 preset)
+    $('#comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
 
     bindPresetFieldEvents();
     renderPresetPreview();
@@ -603,7 +610,8 @@ function bindPresetFieldEvents() {
     };
 
     $('#comfy_url').on('change.preset', (e) => {
-        writeField('comfyUrl', $(e.target).val().trim());
+        extension_settings[extensionName].activeComfyUrl = $(e.target).val().trim();
+        saveSettingsDebounced();
         // URL 改变 → 清缓存 + 清空 select options(强制刷新)
         resetComfyCache();
         renderComfySelect('#comfy_model', [], getActivePreset()?.model || '');
@@ -634,7 +642,6 @@ function createPreset() {
     });
     presets.push({
         name,
-        comfyUrl: '',
         comfyAuth: '',
         workflowJson: '',
         model: '', sampler: '', scheduler: '',
@@ -703,12 +710,13 @@ function deletePreset() {
 /** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断。每次点击都重新发起。 */
 async function refreshComfyOptions() {
     const preset = getActivePreset();
-    if (!preset || !preset.comfyUrl) {
+    const comfyUrl = getActiveComfyUrl();
+    if (!preset || !comfyUrl) {
         toastr.warning('请先填 ComfyUI 服务地址');
         return;
     }
     toastr.info('正在连接 ComfyUI...');
-    const body = { url: preset.comfyUrl };
+    const body = { url: comfyUrl };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
     const results = await Promise.allSettled([
         comfyProxy('models', body, 10_000),
@@ -723,7 +731,7 @@ async function refreshComfyOptions() {
         comfyCache.models = modelsR.value;
         comfyCache.samplers = samplersR.value;
         comfyCache.schedulers = schedulersR.value;
-        comfyCache.url = preset.comfyUrl;
+        comfyCache.url = comfyUrl;
         toastr.success(`ComfyUI 连接成功(${modelsR.value.length} 模型 / ${samplersR.value.length} 采样器 / ${schedulersR.value.length} 调度器)`);
     } else {
         // 部分或全部失败:重置缓存,避免渲染下拉时混入旧 url 的数据
@@ -1500,6 +1508,21 @@ async function loadSettings() {
                 return item;
             })
             .filter(Boolean);
+    }
+    // URL 全局化迁移:各 preset 的 comfyUrl 去重合并进全局地址簿,激活地址取当前激活档
+    {
+        const gUrls = extension_settings[extensionName].comfyUrls;
+        const activePreset = presets.find(p => p.name === extension_settings[extensionName].activePresetName);
+        const activeUrl = String(activePreset?.comfyUrl || '').trim();
+        for (const p of presets) {
+            const v = String(p.comfyUrl || '').trim();
+            delete p.comfyUrl;
+            if (!v) continue;
+            if (!gUrls.some(u => u.url === v)) gUrls.push({ name: deriveUrlName(v), url: v });
+        }
+        if (!extension_settings[extensionName].activeComfyUrl) {
+            extension_settings[extensionName].activeComfyUrl = activeUrl || gUrls[0]?.url || '';
+        }
     }
     // detail 接口 URL 历史迁移:确保是字符串数组,过滤空值/非字符串
     if (!Array.isArray(extension_settings[extensionName].comfyImportUrls)) {

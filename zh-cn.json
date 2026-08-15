@@ -45,6 +45,7 @@
     "No preset": "无配置档",
     "No preset. Click + to create one.": "暂无配置档 — 点击右上角 + 新建一个",
     "ComfyUI URL": "ComfyUI 服务地址",
+    "mag_comfy_url_global": "ComfyUI 服务地址(全局)",
     "mag_url_bookmark_empty": "-- 暂无已保存地址 --",
     "mag_url_bookmark_title": "从地址簿快速切换 ComfyUI 服务地址(跨配置档共享)",
     "mag_url_save_title": "把当前 ComfyUI URL 保存到地址簿",
