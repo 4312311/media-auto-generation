@@ -15,9 +15,13 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 核心触发机制:消息 DOM 中出现 `<pic prompt="...">` / `<video prompt="...">` 标签(正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 `<img>`/`<video>`。生成结果缓存在 `generatedCache`(避免重复生成),有 3 分钟 prompt 冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED` 做最终 DOM 替换。
 
+**媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 `<pic_Declare>` 描述(**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 pic/video 标签,中间只隔空白/换行;隔着其他内容则不关联),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`,与 `reduceMagMediaForLLM` 共用)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
+
+**旧楼层占位符补扫**:`processMessageContent` 只处理最后一楼(`chat.length - 1`),切进聊天(CHAT_CHANGED)时由 `processAllMessagesForPlaceholders()` 全量扫旧楼层裸 `<pic>/<video>` 标签转成占位符——**仅手动模式**生效(自动模式不动旧楼层,避免每次进聊天连环触发生成),prompt 提取/特征注入/hash 与逻辑 B-0 一致。
+
 ## 文件结构
 
-- `index.js` — 主逻辑(约 700 行,ES Module,无构建步骤,ST 直接加载)
+- `index.js` — 主逻辑(约 3000 行,ES Module,无构建步骤,ST 直接加载)
 - `settings.html` — 设置面板 UI(由 `index.js` 的 `createFloatingUI` 注入到可拖动浮窗 `#media_auto_gen_panel_body`)
 - `manifest.json` — ST 插件清单
 - `zh-cn.json` — 中文翻译
@@ -91,7 +95,11 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 - `isStreamActive` / `streamInterval` — 流式生成期间的状态
 
 ### 核心函数
-- `processMessageContent(isFinal, onlyTrigger)` (~270 行)— **主入口**。匹配最后一条消息中的标签,决定是替换(已有缓存)还是触发生成
+- `processMessageContent(isFinal, onlyTrigger)` — **主入口**。匹配最后一条消息中的标签,决定是替换(已有缓存)还是触发生成
+- `processAllMessagesForPlaceholders()` — CHAT_CHANGED 旧楼层裸标签补扫(仅手动模式,见功能概览)
+- `collectFloorMedia()` / `declareForPosition()` / `renderMediaPreviewModal()` / `scheduleMediaPreviewRender()` — 媒体预览浮窗(见功能概览)
+- `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地
+- `MAG_MEDIA_WRAP_RE` — mag-media wrapper 共享正则(LLM 清理 + 楼层扫描两用)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
 - `requestDebouncedUpdate(isFinal)` — 200ms 防抖更新消息 DOM
 - `loadSettings` / `bindSettingsEvents` / `updateUI` — 设置加载与事件绑定
@@ -102,6 +110,8 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 - `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)
 - `GENERATION_ENDED` / `GENERATION_STOPPED` — 流式结束,做最终替换
 - `MESSAGE_RECEIVED` — 非流式场景,直接处理
+- `MESSAGE_EDITED` — 消息编辑保存后重跑处理 + 刷新预览浮窗
+- `CHAT_CHANGED` — 清 in-flight、关预览浮窗、`processAllMessagesForPlaceholders()` 旧楼层补扫
 
 ### 默认正则(在 `defaultSettings`)
 - 图片: `/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi`

@@ -2805,18 +2805,39 @@ function parseMediaWrapper(block) {
 }
 
 /**
+ * 取位置 pos 处媒体标签前紧邻的 <pic_Declare> 描述。
+ * AI 输出惯例:declare 块包着图片描述,紧贴 pic/video 标签(中间只隔空白/换行);
+ * 隔着其他内容或没有 declare 则返回 null(不关联)。
+ */
+function declareForPosition(declares, text, pos) {
+    for (let j = declares.length - 1; j >= 0; j--) {
+        const d = declares[j];
+        if (d.index + d[0].length > pos) continue;
+        // 只认最近的 declare:它与媒体之间必须全是空白,再往前的更不可能关联
+        const gap = text.slice(d.index + d[0].length, pos);
+        return /^\s*$/.test(gap) ? d[1].trim() : null;
+    }
+    return null;
+}
+
+/**
  * 收集当前聊天各楼层的媒体记录:楼层降序,同楼层按创建时间(ts)升序。
+ * 字段:{ floor, ts, url, mediaType, prompt, declare }
  * 来源:① mes 里持久化的 mag-media wrapper ② 旧格式裸 <img|video prompt=...>(wrapper 重构前)
- *      ③ 流式期间未落地的 inFlightMedia(归属最新楼层,落地后被消费转入 ①)
+ *      ③ 流式期间未落地的 inFlightMedia(归属最新楼层,落地后被消费转入 ①;无 mes 上下文 → declare 为 null)
  */
 function collectFloorMedia() {
     const chat = getContext().chat || [];
     const records = [];
     const tagRe = /<(img|video)\b[^>]*>/g;
+    const declareRe = /<pic_Declare>([\s\S]*?)<\/pic_Declare>/gi;
 
     for (let i = 0; i < chat.length; i++) {
         const mes = chat[i]?.mes;
         if (typeof mes !== 'string' || !mes.includes('<')) continue;
+
+        // declare 块一次扫齐(带位置),供各媒体按位置反查紧邻的描述
+        const declares = [...mes.matchAll(declareRe)];
 
         // ① wrapper
         let hasWrapper = false;
@@ -2825,12 +2846,13 @@ function collectFloorMedia() {
         while ((wm = MAG_MEDIA_WRAP_RE.exec(mes)) !== null) {
             hasWrapper = true;
             const parsed = parseMediaWrapper(wm[0]);
-            if (parsed) records.push({ floor: i, ...parsed });
+            if (parsed) records.push({ floor: i, declare: declareForPosition(declares, mes, wm.index), ...parsed });
         }
 
         // ② 旧格式:先剥掉 wrapper 再扫(wrapper 的 src 是 MB 级 base64,直接扫整个 mes 会空耗一遍),
-        //    剩余部分里找带 prompt 属性的裸 img/video
+        //    剩余部分里找带 prompt 属性的裸 img/video(declare 在 wrapper 外,剥掉后仍保留)
         const bare = hasWrapper ? mes.replace(MAG_MEDIA_WRAP_RE, '') : mes;
+        const bareDeclares = hasWrapper ? [...bare.matchAll(declareRe)] : declares;
         tagRe.lastIndex = 0;
         let tm;
         while ((tm = tagRe.exec(bare)) !== null) {
@@ -2843,6 +2865,7 @@ function collectFloorMedia() {
                 url: unescapeHtmlAttr(srcMatch[1]),
                 mediaType: tm[1] === 'video' ? 'video' : 'image',
                 prompt: unescapeHtmlAttr(extractAttr(tm[0], 'prompt')),
+                declare: declareForPosition(bareDeclares, bare, tm.index),
             });
         }
     }
@@ -2852,7 +2875,7 @@ function collectFloorMedia() {
         const floor = chat.length - 1;
         for (const mediaTag of inFlightMedia.values()) {
             const parsed = parseMediaWrapper(mediaTag);
-            if (parsed) records.push({ floor, ...parsed });
+            if (parsed) records.push({ floor, declare: null, ...parsed });
         }
     }
 
@@ -2918,6 +2941,13 @@ function renderMediaPreviewModal() {
         return;
     }
 
+    // 创建时间优先取图库 manifest(生成完成时刻,最准);没有再退回 magId 时间戳(占位符创建时刻)
+    const manifest = extension_settings[extensionName].galleryManifest || [];
+    const manifestTs = new Map();
+    for (const e of manifest) {
+        if (e?.url) manifestTs.set(e.url, e.timestamp || 0);
+    }
+
     let currentFloor = null;
     for (const r of records) {
         if (r.floor !== currentFloor) {
@@ -2928,11 +2958,14 @@ function renderMediaPreviewModal() {
             `);
         }
         const escapedUrl = escapeHtmlAttribute(r.url);
+        const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
+        const timeTs = manifestTs.get(r.url) || r.ts || 0;
+        const timeHtml = timeTs > 0 ? `<div class="preview-media-time">${formatGalleryTime(timeTs)}</div>` : '';
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls muted playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
         $body.append(`
-            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}">${mediaTag}</div>
+            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}">${declareHtml}${mediaTag}${timeHtml}</div>
         `);
     }
     $body[0].scrollTop = scrollTop;
