@@ -13,7 +13,9 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
 
-核心触发机制:消息 DOM 中出现 `<pic prompt="...">` / `<video prompt="...">` 标签(正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 `<img>`/`<video>`。生成结果缓存在 `generatedCache`(避免重复生成),有 3 分钟 prompt 冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED` 做最终 DOM 替换。
+核心触发机制:消息 DOM 中出现 `<pic prompt="...">` / `<video prompt="...">` 标签(正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 `<img>`/`<video>`。同 prompt 有 3 分钟冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED`/`STOPPED` 后统一落地。
+
+**in-flight 媒体落地**(`landInFlightMedia()`,自动模式):生成完成的媒体先进 `inFlightMedia`(Map<promptHash, {mediaTag, declare, floor, originalTag, regexStr}>),非流式时每张完成立即落地,流式时等 `GENERATION_ENDED` 后的 `requestDebouncedUpdate` 落地。落地按 `floor`+`originalTag` 精确定位**触发时的楼层**——生成耗时 40s+,完成时该楼常已被用户新消息挤到非最后一楼,若只扫最后一楼会媒体丢失+标签永久卡死(裸标签留下,撞 3 分钟冷却不重生成,只能刷新);originalTag 失配(楼层被 swipe/删除/regex 脚本改写)时按 hash 重扫兜底,再失配则丢弃防泄漏。`GENERATION_STARTED` **不**清 inFlightMedia(清了会丢上一轮慢生成的媒体),切聊天才清(CHAT_CHANGED)。
 
 **媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 `<pic_Declare>` 描述(**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 pic/video 标签,中间只隔空白/换行;隔着其他内容则不关联),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`,与 `reduceMagMediaForLLM` 共用)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
 
@@ -89,13 +91,15 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 ## 代码地图(index.js)
 
 ### 关键状态(模块级变量)
-- `generatedCache: Map<hash, htmlTag>` — 已生成完成的媒体标签缓存,避免重复生成
+- `inFlightMedia: Map<promptHash, {mediaTag, declare, floor, originalTag, regexStr}>` — 生成完成待落地的媒体中转(消费即删,见功能概览"in-flight 媒体落地")
 - `promptHistory: Map<hash, timestamp>` — 生成历史,用于 3 分钟冷却(`PROMPT_COOLDOWN_MS`)
 - `processingHashes: Set<hash>` — 正在生成中的锁,防并发重入
+- `failedPrompts: Map<hash, errorMessage>` — 生成失败记录,流式结束后渲染 error 占位符供手动重试
 - `isStreamActive` / `streamInterval` — 流式生成期间的状态
 
 ### 核心函数
-- `processMessageContent(isFinal, onlyTrigger)` — **主入口**。匹配最后一条消息中的标签,决定是替换(已有缓存)还是触发生成
+- `processMessageContent(isFinal, onlyTrigger)` — **主入口**。匹配最后一条消息中的标签:手动模式渲染占位符 / 自动模式触发生成 / 失败降级 error 占位符(媒体落地不在此,见下行)
+- `landInFlightMedia()` — 自动模式媒体落地:按 inFlightMedia 记录的触发楼层+标签原文把成品写回 mes(见功能概览"in-flight 媒体落地")
 - `processAllMessagesForPlaceholders()` — CHAT_CHANGED 旧楼层裸标签补扫(仅手动模式,见功能概览)
 - `collectFloorMedia()` / `declareForPosition()` / `renderMediaPreviewModal()` / `scheduleMediaPreviewRender()` — 媒体预览浮窗(见功能概览)
 - `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地

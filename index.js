@@ -25,8 +25,13 @@ let updateDebounceTimer = null;
 // 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
 const failedPrompts = new Map();
 
-// 自动模式 IIFE 完成 → 二次进入 processMessageContent 落地 DOM 的中转暂存。
-// 命中分支消费一次就 delete,因此**跨消息不复用**(每次同 prompt 都重新生成)。
+// 自动模式 IIFE 完成 → landInFlightMedia() 落地 DOM 的中转暂存。
+// value: { mediaTag, declare, floor, originalTag, regexStr }
+//   - declare:触发时刻从 mes 捕获的紧邻 <pic_Declare> 描述,供流式期间的媒体预览浮窗显示
+//   - floor / originalTag:触发时的楼层号与标签原文。生成耗时 40s+,完成时该楼可能已不是
+//     最后一楼(用户已发下一条)——落地按它们精确定位,不依赖"恰好是最新楼"
+//   - regexStr:触发时用的标签正则,originalTag 失配时(用户 regex 脚本改写了 mes)按 hash 重扫兜底
+// 消费一次就 delete,因此**跨消息不复用**(每次同 prompt 都重新生成)。
 // 手动模式 / 重生成走 magId 直接替换,不经此 map。
 const inFlightMedia = new Map();
 
@@ -96,6 +101,10 @@ function escapeHtmlAttribute(value) {
 // mes 里 class 是原始 `mag-media`(DOMPurify 渲染到 DOM 时才加 custom- 前缀,不会写回 mes),防御性同时匹配;
 // wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
 const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
+
+// <pic_Declare> 描述块(collectFloorMedia 楼层扫描 / processMessageContent 捕获流式 in-flight 媒体的 declare 共用)。
+// matchAll 内部克隆正则,共享 const 无 lastIndex 残留问题。
+const PIC_DECLARE_RE = /<pic_Declare>([\s\S]*?)<\/pic_Declare>/gi;
 
 function reduceMagMediaForLLM(text) {
     if (typeof text !== 'string') return text;
@@ -1955,9 +1964,93 @@ $(function () {
  */
 function requestDebouncedUpdate(isFinal = false) {
     if (updateDebounceTimer) clearTimeout(updateDebounceTimer);
-    updateDebounceTimer = setTimeout(() => {
-        processMessageContent(isFinal, false); // 执行真正的替换
+    updateDebounceTimer = setTimeout(async () => {
+        updateDebounceTimer = null;
+        try {
+            // 先落地 in-flight:标签变成品后带 src 会被扫描跳过,
+            // 避免后续 final 扫描因冷却恰好过期而对同一标签重复触发生成
+            const landed = await landInFlightMedia();
+            await processMessageContent(isFinal, false); // 占位符 / 失败降级 / 触发生成
+            if (landed > 0) {
+                await getContext().saveChat();
+            }
+        } catch (e) {
+            console.error(`[${extensionName}] debounced update failed:`, e);
+        }
     }, 200); // 200ms 缓冲
+}
+
+/**
+ * 把 in-flight 媒体落地到**各自触发时的楼层**(不依赖"最后一楼")。
+ * 生成耗时 40s+,完成时触发楼常已被用户新消息挤到非最后一楼——原来只在最后一楼
+ * 扫描循环里消费 inFlightMedia,导致媒体滞留被冲掉、标签永久卡死(需刷新重新生成)。
+ * 匹配:优先 originalTag 原文精确匹配(流式只追加不改前缀);失配再用 regexStr+hash
+ * 重扫兜底(防御用户 regex 脚本在流式结束后改写 mes 文本)。都失配 = 楼层被 swipe/删除
+ * → 丢弃条目防泄漏(接管原 GENERATION_STARTED 盲清 inFlightMedia 的职责)。
+ * 流式期间不落地(ST 持续重写 message.mes,中途写会被冲掉),留给流式结束统一处理。
+ * @returns {number} 本次落地条数
+ */
+async function landInFlightMedia() {
+    if (inFlightMedia.size === 0 || isStreamActive) return 0;
+    const chat = getContext().chat || [];
+    const s = extension_settings[extensionName];
+    const stats = { image: 0, video: 0 };
+    let landed = 0;
+
+    for (const [promptHash, entry] of [...inFlightMedia]) {
+        const msg = chat[entry.floor];
+        if (!msg || msg.is_user || typeof msg.mes !== 'string') {
+            inFlightMedia.delete(promptHash);
+            continue;
+        }
+
+        let replaced = false;
+        if (entry.originalTag && msg.mes.includes(entry.originalTag)) {
+            msg.mes = msg.mes.replace(entry.originalTag, entry.mediaTag);
+            replaced = true;
+        } else if (entry.regexStr) {
+            // hash 兜底重扫:prompt 提取 / 特征注入 / occ 计数与 processMessageContent 逻辑 B 一致
+            const tagRegex = regexFromString(entry.regexStr);
+            const seen = new Map();
+            for (const m of msg.mes.matchAll(tagRegex)) {
+                if (m[0].includes('src=') || m[0].includes('src =')) continue;
+                let rawPrompt = (m[2] || '').trim();
+                if (!rawPrompt && m[1] && !m[0].includes('light_intensity') && !m[0].includes('videoParams')) {
+                    rawPrompt = m[1].trim();
+                }
+                if (!rawPrompt) continue;
+                const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
+                const occ = seen.get(base) || 0;
+                seen.set(base, occ + 1);
+                if ((occ > 0 ? `${base}#${occ}` : base) === promptHash) {
+                    msg.mes = msg.mes.replace(m[0], entry.mediaTag);
+                    replaced = true;
+                    break;
+                }
+            }
+        }
+
+        inFlightMedia.delete(promptHash); // 无论成败都消费:失配条目留着必泄漏
+        if (!replaced) {
+            console.warn(`[${extensionName}] in-flight 媒体未找到落点(楼层已被 swipe/删除?),丢弃`);
+            continue;
+        }
+
+        updateMessageBlock(entry.floor, msg);
+        if (entry.mediaTag.includes('<video')) stats.video++;
+        else stats.image++;
+        landed++;
+        await eventSource.emit(event_types.MESSAGE_UPDATED, entry.floor);
+    }
+
+    if (landed > 0) {
+        scheduleMediaPreviewRender(); // in-flight 转正式楼层记录 → 预览浮窗跟进
+        const parts = [];
+        if (stats.image > 0) parts.push(`${stats.image} 张图片`);
+        if (stats.video > 0) parts.push(`${stats.video} 个视频`);
+        toastr.success(`替换完成: ${parts.join(', ')}`);
+    }
+    return landed;
 }
 
 /**
@@ -1984,13 +2077,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!regexStr) return;
 
     const mediaTagRegex = regexFromString(regexStr);
-    const matches = [...message.mes.matchAll(mediaTagRegex)];
+    // 快照 mes:生成为异步,期间流式会持续重写 message.mes,match.index / declare 位置都锚定在此快照上
+    const mesText = message.mes;
+    const matches = [...mesText.matchAll(mediaTagRegex)];
     if (matches.length === 0) return;
 
     let contentModified = false;
     let currentMessageText = message.mes;
-
-    let replacementStats = { image: 0, video: 0 };
 
     // 同消息内同 prompt 出现 N 次时,各自独立 hash 避免 processingHashes 锁互相命中:
     // 否则 7 个 <pic prompt="1girl"> 全部同一 promptHash → 第 1 个 add 锁后,后 6 个
@@ -2032,23 +2125,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // 并发锁(否则第 1 个 add 后,后 6 个都被 has 拦 continue,不生成)
         const promptHash = occ > 0 ? `${baseHash}#${occ}` : baseHash;
 
-        // --- 逻辑 A：落地 IIFE 刚生成完的媒体 ---
-        // inFlightMedia 是 IIFE 完成 → 二次进入 processMessageContent 的中转。命中即消费(delete),
-        // 因此**跨消息不复用**(每次同 prompt 都重新生成;手动模式 / 重生成走 magId 直接替换不经此 map)。
-        // !isStreamActive:流式期间绝不消费——ST 流式会持续重写 message.mes,中途落地会被冲掉且媒体已被
-        // 消费删除,最终落地时无货 + 撞 3 分钟冷却 → 标签永不替换。落地统一留给 GENERATION_ENDED 之后。
-        if (!onlyTrigger && !isStreamActive && inFlightMedia.has(promptHash)) {
-            const mediaTag = inFlightMedia.get(promptHash);
-            inFlightMedia.delete(promptHash);
-
-            currentMessageText = currentMessageText.replace(originalTag, mediaTag);
-            contentModified = true;
-
-            if (mediaTag.includes('<video')) replacementStats.video++;
-            else replacementStats.image++;
-
-            continue;
-        }
+        // --- 逻辑 A：已废除,媒体落地统一改走 landInFlightMedia() ---
+        // 原实现按 promptHash 消费 inFlightMedia,但只在"最后一楼"的扫描循环里跑:
+        // 生成耗时 40s+,完成时触发楼常已被用户的新消息挤到非最后一楼 → 媒体滞留 inFlightMedia
+        // 被下一轮 GENERATION_STARTED clear() 冲掉 → 标签永久卡死,只能刷新(清冷却)后重新生成。
+        // landInFlightMedia 按 entry.floor + originalTag 精确定位,见其注释。
 
         // --- 逻辑 A-1：失败降级(自动模式 ComfyUI 失败,流式结束后渲染 error 占位符让用户手动重试)---
         if (!onlyTrigger && failedPrompts.has(promptHash)) {
@@ -2125,8 +2206,19 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     rawExtraParams,
                 });
 
-                // 暂存到 inFlightMedia → 接下来再跑一次 processMessageContent 走"逻辑 A"落地 DOM
-                inFlightMedia.set(promptHash, mediaTag);
+                // 暂存到 inFlightMedia → landInFlightMedia() 按触发楼层落地 DOM。
+                // declare 在触发时刻的 mes 快照上按标签位置捕获(declare 位于 pic/video 标签之前,
+                // 标签能被匹配到时它必已完整输出):流式期间 mes 里还没有 wrapper,
+                // 媒体预览浮窗只能靠这里带出描述,否则要等整条回复结束才可见。
+                // floor/originalTag:生成完成时该楼可能已不是最后一楼(用户已发下一条消息),
+                // 必须靠它们精确定位,否则媒体永不落地(裸标签卡死 + 撞冷却,只能刷新)。
+                inFlightMedia.set(promptHash, {
+                    mediaTag,
+                    declare: declareForPosition([...mesText.matchAll(PIC_DECLARE_RE)], mesText, match.index),
+                    floor: messageIndex,
+                    originalTag,
+                    regexStr,
+                });
                 failedPrompts.delete(promptHash); // 兜底:同一 prompt 先失败后(在另一消息)自动成功,清残留失败记录
 
                 // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
@@ -2135,11 +2227,11 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
 
-                // 非流式:每张完成立即触发 DOM 更新(绕开 200ms 防抖,避免多张同时完成被合并成一次"等齐"显示)
-                // 流式:只存 inFlightMedia 不落地(逻辑 A 有 !isStreamActive 守卫),
-                // GENERATION_ENDED / GENERATION_STOPPED 的 requestDebouncedUpdate(true) 最终落地兜底
+                // 非流式:每张完成立即落地(绕开 200ms 防抖,避免多张同时完成被合并成一次"等齐"显示)
+                // 流式:只存 inFlightMedia 不落地(ST 流式持续重写 message.mes,中途写会被冲掉),
+                // GENERATION_ENDED / GENERATION_STOPPED 的 requestDebouncedUpdate 最终落地兜底
                 if (!isStreamActive) {
-                    await processMessageContent(false, false);
+                    await landInFlightMedia();
                 }
 
             } catch (error) {
@@ -2183,18 +2275,9 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     if (!onlyTrigger && contentModified) {
         message.mes = currentMessageText;
         updateMessageBlock(messageIndex, message);
-        // 媒体已落地 mes → 预览浮窗跟进刷新(in-flight 转正式楼层记录)
+        // 占位符已写入 mes → 预览浮窗跟进刷新
         scheduleMediaPreviewRender();
 
-        // 成功提示
-        let successMsgParts = [];
-        if (replacementStats.image > 0) successMsgParts.push(`${replacementStats.image} 张图片`);
-        if (replacementStats.video > 0) successMsgParts.push(`${replacementStats.video} 个视频`);
-        
-        if (successMsgParts.length > 0) {
-            toastr.success(`替换完成: ${successMsgParts.join(', ')}`);
-        }
-        
         // 触发保存
         await eventSource.emit(event_types.MESSAGE_UPDATED, messageIndex);
         if (isFinal) {
@@ -2824,20 +2907,19 @@ function declareForPosition(declares, text, pos) {
  * 收集当前聊天各楼层的媒体记录:楼层降序,同楼层按创建时间(ts)升序。
  * 字段:{ floor, ts, url, mediaType, prompt, declare }
  * 来源:① mes 里持久化的 mag-media wrapper ② 旧格式裸 <img|video prompt=...>(wrapper 重构前)
- *      ③ 流式期间未落地的 inFlightMedia(归属最新楼层,落地后被消费转入 ①;无 mes 上下文 → declare 为 null)
+ *      ③ 流式期间未落地的 inFlightMedia(归属最新楼层,落地后被消费转入 ①;declare 为触发时刻捕获的快照)
  */
 function collectFloorMedia() {
     const chat = getContext().chat || [];
     const records = [];
     const tagRe = /<(img|video)\b[^>]*>/g;
-    const declareRe = /<pic_Declare>([\s\S]*?)<\/pic_Declare>/gi;
 
     for (let i = 0; i < chat.length; i++) {
         const mes = chat[i]?.mes;
         if (typeof mes !== 'string' || !mes.includes('<')) continue;
 
         // declare 块一次扫齐(带位置),供各媒体按位置反查紧邻的描述
-        const declares = [...mes.matchAll(declareRe)];
+        const declares = [...mes.matchAll(PIC_DECLARE_RE)];
 
         // ① wrapper
         let hasWrapper = false;
@@ -2852,7 +2934,7 @@ function collectFloorMedia() {
         // ② 旧格式:先剥掉 wrapper 再扫(wrapper 的 src 是 MB 级 base64,直接扫整个 mes 会空耗一遍),
         //    剩余部分里找带 prompt 属性的裸 img/video(declare 在 wrapper 外,剥掉后仍保留)
         const bare = hasWrapper ? mes.replace(MAG_MEDIA_WRAP_RE, '') : mes;
-        const bareDeclares = hasWrapper ? [...bare.matchAll(declareRe)] : declares;
+        const bareDeclares = hasWrapper ? [...bare.matchAll(PIC_DECLARE_RE)] : declares;
         tagRe.lastIndex = 0;
         let tm;
         while ((tm = tagRe.exec(bare)) !== null) {
@@ -2870,12 +2952,12 @@ function collectFloorMedia() {
         }
     }
 
-    // ③ 流式暂存,归属最新楼层
+    // ③ 流式暂存,归属最新楼层(declare 为触发生成时捕获的快照,落地后转入 ①)
     if (chat.length > 0) {
         const floor = chat.length - 1;
-        for (const mediaTag of inFlightMedia.values()) {
-            const parsed = parseMediaWrapper(mediaTag);
-            if (parsed) records.push({ floor, declare: null, ...parsed });
+        for (const entry of inFlightMedia.values()) {
+            const parsed = parseMediaWrapper(entry.mediaTag);
+            if (parsed) records.push({ floor, declare: entry.declare ?? null, ...parsed });
         }
     }
 
@@ -3090,10 +3172,9 @@ function bindTestTabEvents() {
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
     processingHashes.clear();
-    // 新一轮生成开始:清掉上一轮残留的未落地媒体(消息被 swipe/删除/切换聊天后扫不到 tag,
-    // inFlightMedia 又无 TTL,不清就永久泄漏)
-    inFlightMedia.clear();
-    scheduleMediaPreviewRender(); // in-flight 被清空 → 预览浮窗同步移除
+    // 注意:这里**不再**盲清 inFlightMedia——上一轮生成慢、完成时楼层已非最后一楼的媒体
+    // 还等着本轮结束后的 landInFlightMedia() 落地,清了就变回"标签永不替换"的老 bug。
+    // 失配(swipe/删除)条目由 landInFlightMedia 自行丢弃;切聊天由 CHAT_CHANGED 清。
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
@@ -3138,8 +3219,12 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
 // 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染
 // 否则用户编辑加 <pic prompt> 保存后看不到占位符,要刷新或重进聊天才出
 eventSource.on(event_types.MESSAGE_EDITED, async () => {
+    const landed = await landInFlightMedia(); // 编辑前触发的生成可能刚好完成,趁此落地
     await processMessageContent(true, false);
     scheduleMediaPreviewRender(); // 编辑可能增删楼层里的媒体 → 预览浮窗跟进
+    if (landed > 0) {
+        try { await getContext().saveChat(); } catch (e) { console.error(`[${extensionName}] saveChat failed:`, e); }
+    }
 });
 
 // === 发送给 LLM 前:把 mag-media wrapper 还原成简洁 <pic>/<video> 标签 ===
