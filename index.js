@@ -1994,8 +1994,10 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
         // --- 逻辑 A：落地 IIFE 刚生成完的媒体 ---
         // inFlightMedia 是 IIFE 完成 → 二次进入 processMessageContent 的中转。命中即消费(delete),
-        // 因此**跨消息不复用**(每次同 prompt 都重新生成;手动模式 / 重生成走 magId 直接替换不经此 map)
-        if (!onlyTrigger && inFlightMedia.has(promptHash)) {
+        // 因此**跨消息不复用**(每次同 prompt 都重新生成;手动模式 / 重生成走 magId 直接替换不经此 map)。
+        // !isStreamActive:流式期间绝不消费——ST 流式会持续重写 message.mes,中途落地会被冲掉且媒体已被
+        // 消费删除,最终落地时无货 + 撞 3 分钟冷却 → 标签永不替换。落地统一留给 GENERATION_ENDED 之后。
+        if (!onlyTrigger && !isStreamActive && inFlightMedia.has(promptHash)) {
             const mediaTag = inFlightMedia.get(promptHash);
             inFlightMedia.delete(promptHash);
 
@@ -2094,11 +2096,10 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 processingHashes.delete(promptHash);
 
                 // 非流式:每张完成立即触发 DOM 更新(绕开 200ms 防抖,避免多张同时完成被合并成一次"等齐"显示)
-                // 流式:保持原逻辑,只在最后一张完成时触发(避免干扰流式渲染,GENERATION_ENDED 会兜底)
+                // 流式:只存 inFlightMedia 不落地(逻辑 A 有 !isStreamActive 守卫),
+                // GENERATION_ENDED / GENERATION_STOPPED 的 requestDebouncedUpdate(true) 最终落地兜底
                 if (!isStreamActive) {
                     await processMessageContent(false, false);
-                } else if (processingHashes.size === 0) {
-                    requestDebouncedUpdate(true);
                 }
 
             } catch (error) {
@@ -2750,6 +2751,9 @@ function bindTestTabEvents() {
 
 eventSource.on(event_types.GENERATION_STARTED, () => {
     processingHashes.clear();
+    // 新一轮生成开始:清掉上一轮残留的未落地媒体(消息被 swipe/删除/切换聊天后扫不到 tag,
+    // inFlightMedia 又无 TTL,不清就永久泄漏)
+    inFlightMedia.clear();
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
