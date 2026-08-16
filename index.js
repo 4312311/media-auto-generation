@@ -1840,10 +1840,23 @@ function createFloatingUI(settingsHtml) {
     // 手机端:点面板外空白处收起浮窗。
     // 用 click(手机端 touch 后只合成一次,无 mousedown/touchstart 双触发问题);
     // 排除面板本体与各入口按钮(否则"点入口打开"的同一冒泡 click 会立刻把它关回去)。
+    // 原生 <select>(配置档切换等)在手机上选完选项后,浏览器补发的合成 click
+    // target 可能不在面板内,会被误判成"点外部"→ 记录面板内 change 时间戳,
+    // 短窗口内到达的 click 不视为点外部(同 initFloatBtnDrag 的 lastTouchTs 思路)。
+    let lastPanelChangeTs = 0;
+    $(document).off('change.magPanelGuard').on('change.magPanelGuard', (e) => {
+        if ($(e.target).closest('#media_auto_gen_panel').length) lastPanelChangeTs = Date.now();
+    });
     $(document).off('click.magPanelOutside').on('click.magPanelOutside', (e) => {
         if (!isMobile()) return;
+        if (Date.now() - lastPanelChangeTs < 600) return;
         const $panel = $('#media_auto_gen_panel');
         if ($panel.css('display') === 'none') return;
+        // 面板内控件的 click 处理器若重渲染并销毁了目标元素(如 preset 缩略图切换 →
+        // renderPresetGallery 的 $grid.empty()),事件冒泡到 document 时 target 已脱离
+        // DOM,closest 查不到面板会被误判"点外部"。脱离 DOM 的 target 必然来自面板内
+        // 交互(真实空白点击落在 body/chat 等常驻元素上,不会脱离),直接放行。
+        if (!e.target.isConnected) return;
         if ($(e.target).closest('#media_auto_gen_panel, #media_auto_gen_float_btn, #mag_wand_entry').length) return;
         toggleFloatingPanel(false);
     });
