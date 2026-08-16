@@ -1837,6 +1837,17 @@ function createFloatingUI(settingsHtml) {
         toggleFloatingPanel(false);
     });
 
+    // 手机端:点面板外空白处收起浮窗。
+    // 用 click(手机端 touch 后只合成一次,无 mousedown/touchstart 双触发问题);
+    // 排除面板本体与各入口按钮(否则"点入口打开"的同一冒泡 click 会立刻把它关回去)。
+    $(document).off('click.magPanelOutside').on('click.magPanelOutside', (e) => {
+        if (!isMobile()) return;
+        const $panel = $('#media_auto_gen_panel');
+        if ($panel.css('display') === 'none') return;
+        if ($(e.target).closest('#media_auto_gen_panel, #media_auto_gen_float_btn, #mag_wand_entry').length) return;
+        toggleFloatingPanel(false);
+    });
+
     initTabs();
 }
 
