@@ -106,16 +106,100 @@ const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-med
 // matchAll 内部克隆正则,共享 const 无 lastIndex 残留问题。
 const PIC_DECLARE_RE = /<pic_Declare>([\s\S]*?)<\/pic_Declare>/gi;
 
+// 发给 LLM 前的 wrapper 折叠专用(reduceMagMediaForLLM)。与 MAG_MEDIA_WRAP_RE 的区别:
+// ① 同时覆盖 mag-placeholder(未生成的占位符对 LLM 同样应还原成 <pic>,否则占位符 HTML 泄漏教 LLM 模仿)
+// ② 内容部分用 guard 排除嵌套 mag span → 只匹配"最内层"wrapper。LLM 伪造的假壳(旧版插件泄漏
+//   wrapper HTML 教出来的)会把真 wrapper 套在里面,非贪婪匹配到第一个 </span> 会把假壳的模仿尾巴
+//   (<small data-mag-role=...> 串)和孤立 </span> 残骸原样漏给 LLM,形成污染循环;配合下面的
+//   循环 replace 由内向外逐层折叠,外层折叠会整体吞掉内层产物与伪造尾巴,循环 2 次即可清理嵌套。
+const MAG_WRAP_LLM_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-(?:media|placeholder)\b[^"]*"[^>]*>(?:(?!<span\b[^>]*\bmag-)[\s\S])*?<\/span>/gi;
+
+// 游离 data-mag-role 元素(LLM 伪造尾巴的构成部分):
+// ① 紧闭合的完整元素(内容里不许再出现 small/i 标签,防止未闭合的开标签跨元素误吞正文)连同内容一起删;
+// ② 剩下的未闭合开标签只删标签本身,保住被它吞掉的正文。
+const MAG_ROLE_ELEMENT_RE = /<(small|i)\b[^>]*\bdata-mag-role\b[^>]*>(?:(?!<\/?(?:small|i)\b)[\s\S])*?<\/\1\s*>/gi;
+const MAG_ROLE_OPEN_RE = /<(?:small|i)\b[^>]*\bdata-mag-role\b[^>]*>/gi;
+// 未能折叠(缺 data-media-type/data-prompt 等属性不齐)的假壳/占位符开标签,兜底剥掉
+const MAG_SPAN_OPEN_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\bmag-[^"]*"[^>]*>/gi;
+
 function reduceMagMediaForLLM(text) {
     if (typeof text !== 'string') return text;
-    return text.replace(MAG_MEDIA_WRAP_RE, (match) => {
-        const typeMatch = match.match(/\bdata-media-type\s*=\s*"(image|video)"/i);
-        const promptMatch = match.match(/\bdata-prompt\s*=\s*"([^"]*)"/i);
-        if (!typeMatch || !promptMatch) return match;
-        const tag = typeMatch[1] === 'video' ? 'video' : 'pic';
-        // promptMatch[1] 已是 escapeHtmlAttribute 处理过的字符串,直接拼到新 attribute 即可
-        return `<${tag} prompt="${promptMatch[1]}" />`;
-    });
+    let t = text;
+    // 由内向外迭代折叠;内容无可折叠时 replace 结果不变即收敛(上限 10 轮防御性兜底)
+    for (let i = 0; i < 10; i++) {
+        const next = t.replace(MAG_WRAP_LLM_RE, (match) => {
+            const typeMatch = match.match(/\bdata-media-type\s*=\s*"(image|video)"/i);
+            const promptMatch = match.match(/\bdata-prompt\s*=\s*"([^"]*)"/i);
+            if (!typeMatch || !promptMatch) return match;
+            const tag = typeMatch[1] === 'video' ? 'video' : 'pic';
+            // promptMatch[1] 已是 escapeHtmlAttribute 处理过的字符串,直接拼到新 attribute 即可
+            return `<${tag} prompt="${promptMatch[1]}" />`;
+        });
+        if (next === t) break;
+        t = next;
+    }
+    // 兜底:剥掉没能折叠的伪造残骸,不让任何 mag-* 碎片进 LLM 上下文
+    return t
+        .replace(MAG_ROLE_ELEMENT_RE, '')
+        .replace(MAG_ROLE_OPEN_RE, '')
+        .replace(MAG_SPAN_OPEN_RE, '');
+}
+
+/**
+ * 中和 LLM 伪造的 mag-* HTML(它模仿 wrapper 格式写的假壳 + 模仿尾巴),入口防御。
+ * 只对"本轮新生成的内容"调用(新楼全量 / continue 只处理追加段)——插件自己落地的
+ * wrapper 只会出现在这些位置之外,因此无需区分真假:
+ * - mag wrapper/占位符 span 开标签 → 剥掉(遗留的孤立 </span> 浏览器解析时无害,LLM 侧由
+ *   reduceMagMediaForLLM 兜底)
+ * - 紧闭合的 data-mag-role 元素 → 连内容删(prompt 文本 + 按钮文字都是 UI 碎片)
+ * - 未闭合的 data-mag-role 开标签 → 只删标签本身,保住被它吞的正文(未闭合 <small> 会让
+ *   后续文字逐层变小变暗,正是"图片后文字越来越小+蒙层叠加"渲染事故的根源)
+ * 剥完后内部的 <pic>/<video> 标签原样保留,继续走正常生成管线(假壳里抄来的 prompt 也能
+ * 借此重新生成真图)。
+ */
+function sanitizeLlmMagHtml(text) {
+    if (typeof text !== 'string' || !/<(?:span|small|i)\b[^>]*mag-/i.test(text)) return text;
+    return text
+        .replace(MAG_SPAN_OPEN_RE, '')
+        .replace(MAG_ROLE_ELEMENT_RE, '')
+        .replace(MAG_ROLE_OPEN_RE, '');
+}
+
+// 生成开始时的最后楼 mes 快照(入口防御用):结束时据此区分"新楼/swipe 重写"(全量中和)
+// 与"continue 追加"(只中和追加段——前缀里可能有插件此前落地的真 wrapper,不能误伤)。
+let preGenerationMesSnapshot = null;
+
+/**
+ * AI 消息落地时中和 LLM 伪造的 mag-* HTML。
+ * 时机:MESSAGE_RECEIVED / GENERATION_ENDED(STOPPED) —— 插件要等这之后才写占位符和
+ * wrapper,此刻 mes 里的 mag-* HTML 必然是 LLM 写的,判据无歧义。编辑/切聊天的重扫路径
+ * 不调用(存量楼层不动,交给用户决定)。
+ */
+async function sanitizeFreshLlmMessage() {
+    const context = getContext();
+    const chat = context.chat;
+    if (!Array.isArray(chat) || chat.length === 0) return;
+    const lastIndex = chat.length - 1;
+    const message = chat[lastIndex];
+    if (!message || typeof message.mes !== 'string') return;
+
+    let cleaned;
+    const snap = preGenerationMesSnapshot;
+    if (snap && snap.index === lastIndex && typeof snap.mes === 'string') {
+        if (message.mes === snap.mes) return; // 生成了但没追加内容(立即中断),别碰可能有真 wrapper 的旧内容
+        if (message.mes.startsWith(snap.mes)) {
+            // continue:只处理追加段
+            cleaned = snap.mes + sanitizeLlmMagHtml(message.mes.slice(snap.mes.length));
+        }
+    }
+    if (cleaned === undefined) cleaned = sanitizeLlmMagHtml(message.mes);
+    if (cleaned === message.mes) return;
+
+    console.warn(`[${extensionName}] 已剥离 LLM 伪造的 mag-* HTML(楼层 ${lastIndex})`);
+    message.mes = cleaned;
+    updateMessageBlock(lastIndex, message);
+    await eventSource.emit(event_types.MESSAGE_UPDATED, lastIndex);
+    try { await context.saveChat(); } catch (e) { console.error(`[${extensionName}] saveChat failed:`, e); }
 }
 
 /**
@@ -3181,7 +3265,10 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 
     const context = getContext();
     if (!context.chat || context.chat.length === 0) return;
-    
+
+    // 快照生成开始时的最后楼 mes,sanitizeFreshLlmMessage 据此区分 continue 追加 / 新楼
+    preGenerationMesSnapshot = { index: context.chat.length - 1, mes: String(context.chat[context.chat.length - 1]?.mes ?? '') };
+
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
     
@@ -3196,7 +3283,8 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
-    
+
+    await sanitizeFreshLlmMessage(); // 先剥 LLM 伪造的 mag-* HTML,再让最终处理面对干净 mes
     pruneOldPrompts();
     // 流式结束，申请一次最终更新
     requestDebouncedUpdate(true);
@@ -3207,6 +3295,7 @@ eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
 // 非流式/加载时
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
+    await sanitizeFreshLlmMessage(); // 新 AI 楼,mes 里的 mag-* HTML 必为 LLM 伪造
     pruneOldPrompts();
     await processMessageContent(true, false);
 });

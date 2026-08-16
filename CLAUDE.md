@@ -21,6 +21,10 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 **旧楼层占位符补扫**:`processMessageContent` 只处理最后一楼(`chat.length - 1`),切进聊天(CHAT_CHANGED)时由 `processAllMessagesForPlaceholders()` 全量扫旧楼层裸 `<pic>/<video>` 标签转成占位符——**仅手动模式**生效(自动模式不动旧楼层,避免每次进聊天连环触发生成),prompt 提取/特征注入/hash 与逻辑 B-0 一致。
 
+**LLM 伪造 mag-* HTML 防御**(双端,切断污染循环):LLM 一旦见过 wrapper HTML(旧版插件没有还原功能、或跨设备拷贝的旧聊天),会模仿输出"假壳 wrapper + 模仿尾巴"——在 `<pic>` 外套伪造的 mag-media span、`</span>` 后重复输出 `<small data-mag-role=...>` 尾巴且常少写 `</small>`;未闭合 small 吞掉后续正文,叠加嵌套后文字逐层变小变暗(12.75px→10.6→8.85px + role 元素 opacity:0.7)、图片套 0.7 蒙层,即"图片后文字越来越小变暗"渲染事故。防御:
+- **入口** `sanitizeFreshLlmMessage()`:MESSAGE_RECEIVED / GENERATION_ENDED(STOPPED) 时(插件尚未写入任何 wrapper,此刻 mes 里的 mag-* HTML 必为 LLM 伪造,判据无歧义)调 `sanitizeLlmMagHtml()` 中和——剥 mag span 开标签 + 游离 data-mag-role 元素(紧闭合的连内容删、未闭合的只删开标签保正文),`<pic>` 原样保留走正常管线。continue 场景用 `GENERATION_STARTED` 时快照的最后楼 mes(`preGenerationMesSnapshot`)把处理范围限制在追加段,不误伤同楼已落地的真 wrapper;编辑/切聊天重扫路径**不**调用(存量楼层不动)。
+- **出口** `reduceMagMediaForLLM` 最内层优先迭代折叠(`MAG_WRAP_LLM_RE` 的 guard 禁止内容嵌套 mag span):假壳套真身时由内向外折叠,外层整体吞掉内层产物与伪造尾巴,4 组嵌套实测折叠成恰好 4 个 `<pic>`;mag-placeholder 也还原成 `<pic>`;末尾兜底剥残骸(`MAG_ROLE_ELEMENT_RE`/`MAG_ROLE_OPEN_RE`/`MAG_SPAN_OPEN_RE`),保证零 mag-* 碎片进上下文。
+
 ## 文件结构
 
 - `index.js` — 主逻辑(约 3000 行,ES Module,无构建步骤,ST 直接加载)
@@ -104,6 +108,8 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 - `collectFloorMedia()` / `declareForPosition()` / `renderMediaPreviewModal()` / `scheduleMediaPreviewRender()` — 媒体预览浮窗(见功能概览)
 - `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地
 - `MAG_MEDIA_WRAP_RE` — mag-media wrapper 共享正则(LLM 清理 + 楼层扫描两用)
+- `reduceMagMediaForLLM` / `MAG_WRAP_LLM_RE` — 发 LLM 前还原 wrapper(最内层迭代折叠 + 兜底剥残骸,见功能概览"LLM 伪造 mag-* HTML 防御")
+- `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
 - `requestDebouncedUpdate(isFinal)` — 200ms 防抖更新消息 DOM
 - `loadSettings` / `bindSettingsEvents` / `updateUI` — 设置加载与事件绑定
@@ -111,9 +117,9 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 - `renderCharacterTagsList` — 角色特征列表 UI 渲染
 
 ### 事件监听(底部)
-- `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)
-- `GENERATION_ENDED` / `GENERATION_STOPPED` — 流式结束,做最终替换
-- `MESSAGE_RECEIVED` — 非流式场景,直接处理
+- `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)+ 快照最后楼 mes(入口防御用)
+- `GENERATION_ENDED` / `GENERATION_STOPPED` — 流式结束,先 `sanitizeFreshLlmMessage()` 中和伪造 mag-* HTML,再做最终替换
+- `MESSAGE_RECEIVED` — 非流式场景,同样先中和再处理
 - `MESSAGE_EDITED` — 消息编辑保存后重跑处理 + 刷新预览浮窗
 - `CHAT_CHANGED` — 清 in-flight、关预览浮窗、`processAllMessagesForPlaceholders()` 旧楼层补扫
 
