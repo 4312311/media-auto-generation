@@ -110,5 +110,9 @@
 
     "mag_lora_title": "LoRA 强度",
     "mag_lora_hint": "从工作流 JSON 自动提取,编辑后自动写回",
-    "mag_lora_empty": "当前工作流无 LoRA 节点"
+    "mag_lora_empty": "当前工作流无 LoRA 节点",
+    "mag_lora_add": "新增 LoRA",
+    "mag_lora_add_label": "新增 LoRA",
+    "mag_lora_add_ph": "输入关键字过滤,或完整文件名后回车",
+    "mag_lora_remove": "移除此 LoRA"
 }

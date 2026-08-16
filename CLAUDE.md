@@ -9,7 +9,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
 | 主要配置 | `main` | 总开关与正则:媒体类型(disabled/image/video)、图片/视频正则、`<img>` 标签的 style 属性 |
-| ComfyUI 配置 | `comfy` | tab 顶部是**全局 ComfyUI 地址**(`activeComfyUrl` + 地址簿下拉 `comfyUrls`,跨配置档共享,hr 分隔线隔开);下方是多配置档系统:model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
+| ComfyUI 配置 | `comfy` | tab 顶部是**全局 ComfyUI 地址**(`activeComfyUrl` + 地址簿下拉 `comfyUrls`,跨配置档共享,hr 分隔线隔开);下方是多配置档系统:model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。工作流 JSON 下方 LoRA 编辑列表:行内改 `strength_model` 自动写回;行尾 × 删除节点;『新增 LoRA』下拉按 `comfyCache.loras` 过滤选择(列表由 `refreshComfyOptions` 拉 `/api/sd/comfy/loras` —— **ST 后端本地补丁端点**,旧后端 404 时降级为手动输入文件名回车)。增删是图手术(`addLoraToWorkflow` 链尾插入 / `removeLoraFromWorkflow` 旁路重接),写回会整体重排 JSON 排版。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
 

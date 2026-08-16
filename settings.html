@@ -898,6 +898,40 @@
         white-space: nowrap;
     }
     #comfy_lora_list .mag-lora-strength { width: 80px; flex-shrink: 0; }
+    #comfy_lora_list .mag-lora-delete { flex-shrink: 0; padding: 2px 5px; }
+    /* --- LoRA 新增下拉(可输入过滤) --- */
+    #comfy_lora_add_row { position: relative; margin-top: 4px; }
+    #comfy_lora_add_input { width: 100%; }
+    #comfy_lora_add_dropdown {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 1000;
+        max-height: 240px;
+        overflow-y: auto;
+        margin-top: 2px;
+        padding: 4px;
+        background: var(--SmartThemeBlurTintColor);
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        font-size: 0.85em;
+    }
+    #comfy_lora_add_dropdown .mag-lora-option {
+        padding: 4px 6px;
+        border-radius: 4px;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    #comfy_lora_add_dropdown .mag-lora-option:hover { background: rgba(127,127,127,0.2); }
+    #comfy_lora_add_dropdown .mag-lora-dd-hint {
+        padding: 6px;
+        opacity: 0.7;
+        text-align: center;
+    }
     .mag_lora_empty {
         text-align: center;
         opacity: 0.6;
@@ -1108,6 +1142,14 @@
         <small style="opacity: 0.7; font-size: 0.85em; display: block;" data-i18n="mag_lora_hint">从工作流 JSON 自动提取,编辑后自动写回</small>
         <div id="comfy_lora_list"></div>
         <div id="comfy_lora_empty" class="mag_lora_empty" style="display:none;" data-i18n="mag_lora_empty">No LoRA nodes in current workflow</div>
+        <div id="comfy_lora_add_row" style="display:none;">
+            <input id="comfy_lora_add_input" type="text" class="text_pole" placeholder="输入关键字过滤,或完整文件名后回车" data-i18n="[placeholder]mag_lora_add_ph">
+            <div id="comfy_lora_add_dropdown"></div>
+        </div>
+        <div id="comfy_lora_add_btn" class="menu_button" style="display: inline-flex; gap: 5px; align-items: center; margin-top: 6px;" title="新增 LoRA" data-i18n="[title]mag_lora_add">
+            <i class="fa-solid fa-plus interactable"></i>
+            <span data-i18n="mag_lora_add_label">新增 LoRA</span>
+        </div>
     </div>
 
     <div class="margin-top-5" style="text-align: right;">

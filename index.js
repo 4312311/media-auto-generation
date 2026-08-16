@@ -324,7 +324,7 @@ function enqueueComfyJob(task) {
 
 /**
  * 通用 ComfyUI 代理调用,body 已含 url(+ 可选 auth),passthrough 给 /api/sd/comfy/<path>
- * @param {string} path ping/samplers/models/schedulers/vaes/generate
+ * @param {string} path ping/samplers/models/schedulers/vaes/loras/generate(loras 为本地后端补丁端点)
  * @param {object} body
  * @param {number} [timeoutMs=60000] 超时,超时后 abort 并抛"超时"错误
  */
@@ -443,12 +443,13 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
 
 // --- 配置档(Preset)UI 渲染 ---
 
-// 缓存最近一次拉到的 model/sampler/scheduler 列表(避免每次切换 preset 都重新拉)
-const comfyCache = { models: [], samplers: [], schedulers: [], url: '' };
+// 缓存最近一次拉到的 model/sampler/scheduler/lora 列表(避免每次切换 preset 都重新拉)
+const comfyCache = { models: [], samplers: [], schedulers: [], loras: [], url: '' };
 function resetComfyCache() {
     comfyCache.models = [];
     comfyCache.samplers = [];
     comfyCache.schedulers = [];
+    comfyCache.loras = [];
     comfyCache.url = '';
 }
 
@@ -849,6 +850,12 @@ async function refreshComfyOptions() {
             toastr.warning(`部分失败(${okCount}/${results.length}):${failed}`);
         }
     }
+    // LoRA 列表单独拉:/loras 是本地补丁端点,旧后端 404 也不影响主流程(下拉降级为手动输入)
+    const lorasR = await comfyProxy('loras', body, 10_000).catch(err => {
+        console.debug('[media-auto-generation] loras list unavailable:', err?.message || err);
+        return null;
+    });
+    comfyCache.loras = Array.isArray(lorasR) ? lorasR : [];
     renderPresetFields();
 }
 
@@ -1201,6 +1208,122 @@ function setLoraStrengthInJson(jsonText, nodeId, newStrength) {
     return jsonText.slice(0, openIdx) + newText + jsonText.slice(closeIdx + 1);
 }
 
+// --- LoRA 节点增删:对工作流 JSON 做图手术(链尾插入 / 删除旁路重接) ---
+
+/** 解析当前工作流文本;空/无效时 toastr 报错并返回 null */
+function parseActiveWorkflow() {
+    const text = ($('#comfy_workflow').val() || '').trim();
+    if (!text) { toastr.error('工作流 JSON 为空,无法操作 LoRA'); return null; }
+    try { return JSON.parse(text); }
+    catch (e) { toastr.error(`工作流 JSON 无效:${e.message}`); return null; }
+}
+
+/**
+ * 把全图里引用 [fromId, slot] 的输入改指到 slotReplacer(slot) 返回的新 ref。
+ * replacer 返回 undefined 表示该 slot 不动。返回替换次数。
+ */
+function repointWorkflowRefs(parsed, fromId, slotReplacer) {
+    const from = String(fromId);
+    let count = 0;
+    for (const node of Object.values(parsed)) {
+        const inputs = node?.inputs;
+        if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) continue;
+        for (const [key, val] of Object.entries(inputs)) {
+            if (Array.isArray(val) && val.length === 2 && String(val[0]) === from && typeof val[1] === 'number') {
+                const to = slotReplacer(val[1]);
+                if (to) { inputs[key] = to; count++; }
+            }
+        }
+    }
+    return count;
+}
+
+/** 写回工作流(DOM + preset + 持久化 + 重新校验并刷新 LoRA 列表) */
+function commitWorkflowJson(parsed, preset) {
+    const newText = JSON.stringify(parsed, null, 2);
+    $('#comfy_workflow').val(newText);
+    preset.workflowJson = newText;
+    saveSettingsDebounced();
+    validateComfyWorkflow();
+}
+
+/**
+ * 新增 LoRA 节点:插到模型链最下游(离采样器最近的 LoRA 之后;无 LoRA 时接在采样器的 model 源上)。
+ * class_type 沿用链上已有 LoRA 节点(LoraLoader 会一并接好 clip),否则用 LoraLoaderModelOnly。
+ */
+function addLoraToWorkflow(loraName) {
+    const preset = getActivePreset();
+    if (!preset) return;
+    const name = String(loraName || '').trim();
+    if (!name) return;
+    const parsed = parseActiveWorkflow();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+
+    const loras = extractLorasFromParsed(parsed);
+    // 链尾 = 输出没有被其他 LoRA 节点当作 model 输入消费的那个 LoRA
+    let tail = null;
+    if (loras.length) {
+        const upstreamRefs = new Set(loras.map(l => {
+            const ref = parsed[l.nodeId]?.inputs?.model;
+            return Array.isArray(ref) ? `${ref[0]}\u0000${ref[1]}` : null;
+        }).filter(Boolean));
+        tail = loras.find(l => !upstreamRefs.has(`${l.nodeId}\u00000`)) || loras[0];
+    }
+
+    let sourceRef;      // 新 LoRA 的 model 输入指向(插在它的下游)
+    let cls = 'LoraLoaderModelOnly';
+    let clipRef;
+    if (tail) {
+        sourceRef = [String(tail.nodeId), 0];
+        cls = parsed[tail.nodeId]?.class_type || cls;
+        if (cls === 'LoraLoader') {
+            clipRef = parsed[tail.nodeId]?.inputs?.clip;
+            if (!Array.isArray(clipRef)) { cls = 'LoraLoaderModelOnly'; clipRef = undefined; }
+        }
+    } else {
+        // 无 LoRA:从任意带 model 引用输入的节点(采样器等)找模型源头
+        for (const node of Object.values(parsed)) {
+            const ref = node?.inputs?.model;
+            if (Array.isArray(ref) && parsed[String(ref[0])]) { sourceRef = [String(ref[0]), ref[1]]; break; }
+        }
+        if (!sourceRef) { toastr.error('工作流中找不到模型链(Loader/采样器),无法插入 LoRA'); return; }
+    }
+
+    // 新节点 id:数值 key 最大值 + 1(避免撞已有 key)
+    const newId = String(Object.keys(parsed).reduce((m, k) => Math.max(m, Number.parseInt(k, 10) || 0), 0) + 1);
+
+    // 先重接消费方(引用 sourceRef 的 → 指向新节点),再挂新节点(避免误改新节点自己的 model)
+    repointWorkflowRefs(parsed, sourceRef[0], slot => {
+        if (slot === sourceRef[1]) return [newId, 0];
+        if (cls === 'LoraLoader' && slot === 1) return [newId, 1];
+        return undefined;
+    });
+
+    const inputs = { lora_name: name, strength_model: 1, model: [sourceRef[0], sourceRef[1]] };
+    if (cls === 'LoraLoader') { inputs.strength_clip = 1; inputs.clip = clipRef; }
+    parsed[newId] = { inputs, class_type: cls };
+
+    commitWorkflowJson(parsed, preset);
+}
+
+/** 删除 LoRA 节点:消费方旁路重接到该节点的上游(model/clip) */
+function removeLoraFromWorkflow(nodeId) {
+    const preset = getActivePreset();
+    if (!preset || nodeId === undefined || nodeId === null) return;
+    const parsed = parseActiveWorkflow();
+    if (!parsed) return;
+    const node = parsed[String(nodeId)];
+    if (!node || typeof node !== 'object') return;
+
+    const modelRef = Array.isArray(node.inputs?.model) ? node.inputs.model : null;
+    const clipRef = Array.isArray(node.inputs?.clip) ? node.inputs.clip : null;
+    delete parsed[String(nodeId)];
+    repointWorkflowRefs(parsed, nodeId, slot =>
+        slot === 0 ? modelRef : (slot === 1 ? clipRef : undefined));
+
+    commitWorkflowJson(parsed, preset);
+}
+
 let loraRenderSig = null;
 
 /**
@@ -1215,6 +1338,7 @@ function renderLoraEditor(parsed) {
     if (!preset) {
         $wrap.css('display', 'none');
         loraRenderSig = null;
+        closeLoraAddRow();
         return;
     }
     $wrap.css('display', 'block');
@@ -1246,12 +1370,13 @@ function renderLoraEditor(parsed) {
             <div class="mag-lora-row">
                 <span class="mag-lora-name" title="${name}">${name}</span>
                 <input type="number" class="text_pole mag-lora-strength" step="0.05" value="${row.strengthModel}" data-node-id="${escapeHtmlAttribute(row.nodeId)}">
+                <div class="menu_button menu_button_icon mag-lora-delete" data-node-id="${escapeHtmlAttribute(row.nodeId)}" title="移除" data-i18n="[title]mag_lora_remove"><i class="fa-solid fa-xmark interactable"></i></div>
             </div>
         `);
     }
 }
 
-/** 绑定 LoRA 强度输入 change(事件委托到容器,列表重渲染后不失效) */
+/** 绑定 LoRA 强度输入 change + 行删除 + 新增下拉(事件委托到容器,列表重渲染后不失效) */
 function bindLoraEvents() {
     $('#comfy_lora_list').off('change.lora').on('change.lora', '.mag-lora-strength', function () {
         const nodeId = $(this).attr('data-node-id');
@@ -1272,6 +1397,91 @@ function bindLoraEvents() {
         preset.workflowJson = newText;
         saveSettingsDebounced();
     });
+
+    $('#comfy_lora_list').off('click.loraDelete').on('click.loraDelete', '.mag-lora-delete', function () {
+        removeLoraFromWorkflow($(this).attr('data-node-id'));
+    });
+
+    $('#comfy_lora_add_btn').off('click.lora').on('click.lora', function () {
+        toggleLoraAddRow();
+    });
+    $('#comfy_lora_add_input').off('input.lora keydown.lora')
+        .on('input.lora', renderLoraAddDropdown)
+        .on('keydown.lora', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); confirmLoraAdd(); }
+            else if (e.key === 'Escape') { closeLoraAddRow(); }
+        });
+    $('#comfy_lora_add_dropdown').off('click.lora').on('click.lora', '.mag-lora-option', function () {
+        addLoraToWorkflow($(this).attr('data-name'));
+        closeLoraAddRow();
+    });
+    // 点外部收起新增下拉(排除输入行/按钮自身,防开闭对冲)
+    $(document).off('click.loraClose').on('click.loraClose', function (e) {
+        if (!$('#comfy_lora_add_row').is(':visible')) return;
+        if (!$(e.target).closest('#comfy_lora_add_row, #comfy_lora_add_btn').length) closeLoraAddRow();
+    });
+}
+
+/** 展开/收起 LoRA 新增行;show 缺省时取反当前状态 */
+function toggleLoraAddRow(show) {
+    const $row = $('#comfy_lora_add_row');
+    const willShow = show === undefined ? !$row.is(':visible') : !!show;
+    if (willShow) {
+        $row.css('display', 'block');
+        renderLoraAddDropdown();
+        $('#comfy_lora_add_input').trigger('focus');
+    } else {
+        closeLoraAddRow();
+    }
+}
+
+function closeLoraAddRow() {
+    $('#comfy_lora_add_row').css('display', 'none');
+    $('#comfy_lora_add_input').val('');
+    $('#comfy_lora_add_dropdown').empty();
+}
+
+/** 渲染新增下拉列表:按输入框关键字过滤 comfyCache.loras(最多 100 条) */
+function renderLoraAddDropdown() {
+    const $dd = $('#comfy_lora_add_dropdown');
+    if (!$dd.length) return;
+    const query = ($('#comfy_lora_add_input').val() || '').trim().toLowerCase();
+    const all = comfyCache.loras || [];
+    $dd.empty();
+    if (!all.length) {
+        $dd.append('<div class="mag-lora-dd-hint">无 LoRA 列表,请先点上方『连接』按钮拉取;也可直接输入完整文件名后回车</div>');
+        return;
+    }
+    const filtered = all.filter(n => String(n).toLowerCase().includes(query));
+    if (!filtered.length) {
+        $dd.append('<div class="mag-lora-dd-hint">无匹配项</div>');
+        return;
+    }
+    const MAX = 100;
+    for (const name of filtered.slice(0, MAX)) {
+        $dd.append(`<div class="mag-lora-option" data-name="${escapeHtmlAttribute(name)}" title="${escapeHtmlAttribute(name)}">${escapeHtmlAttribute(name)}</div>`);
+    }
+    if (filtered.length > MAX) {
+        $dd.append(`<div class="mag-lora-dd-hint">… 共 ${filtered.length} 项,输入关键字过滤</div>`);
+    }
+}
+
+/** 回车确认新增:精确匹配 > 唯一过滤项 > 列表为空时用输入原文 */
+function confirmLoraAdd() {
+    const raw = ($('#comfy_lora_add_input').val() || '').trim();
+    if (!raw) return;
+    const all = comfyCache.loras || [];
+    const q = raw.toLowerCase();
+    const exact = all.find(n => String(n).toLowerCase() === q);
+    let name = exact;
+    if (!name) {
+        const filtered = all.filter(n => String(n).toLowerCase().includes(q));
+        if (filtered.length === 1) name = filtered[0];
+        else if (!all.length) name = raw;
+    }
+    if (!name) { toastr.info('请从下拉列表中选择一个 LoRA(输入关键字过滤)'); return; }
+    addLoraToWorkflow(name);
+    closeLoraAddRow();
 }
 
 function bindPresetEvents() {

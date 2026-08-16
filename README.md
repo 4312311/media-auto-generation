@@ -21,7 +21,7 @@
 
 **简易教程**
 - 1.本地comfyUI环境必须安装sega加速，不然龟速，使用wan2.2的smooth mix模型。新手建议到b站找个带sega加速的整合包。
-- 2.将仓库中的comfyui-flow.json拖到comfyUI中，然后去下载里面所需的各种模型，lora就自己去搭配下载吧，支持2个lora，能跑起来以后把comfyui-flow.json中的lora_name改成自己下的lora
+- 2.将仓库中的comfyui-flow.json拖到comfyUI中，然后去下载里面所需的各种模型，lora就自己去搭配下载吧，支持2个lora，能跑起来以后把comfyui-flow.json中的lora_name改成自己下的lora（也可以直接在插件ComfyUI配置tab的LoRA列表里新增/删除，点『连接』后下拉可选ComfyUI里已装的lora）
 - 3.把改好的json复制到酒馆生图插件中的comfyUI工作流里保存
 - 4.正面提示词和负面提示词自己填，正面提示词一定要加上${promot}
 - 5.改分辨率，工作流里的节点17就是分辨率配置
