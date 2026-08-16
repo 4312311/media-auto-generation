@@ -3031,18 +3031,21 @@ function renderMediaPreviewModal() {
     }
 
     let currentFloor = null;
+    let floorSeq = 0; // 楼内序号:层内按创建时间正序,即展示顺序编号
     for (const r of records) {
         if (r.floor !== currentFloor) {
             currentFloor = r.floor;
+            floorSeq = 0;
             const labelText = r.floor === latestFloor ? '最新' : `第 ${r.floor} 楼的图片`;
             $body.append(`
                 <div class="preview-floor-sep"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div></div>
             `);
         }
+        floorSeq++;
         const escapedUrl = escapeHtmlAttribute(r.url);
         const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
-        const timeHtml = timeTs > 0 ? `<div class="preview-media-time">${formatGalleryTime(timeTs)}</div>` : '';
+        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''}</div>`;
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls muted playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
