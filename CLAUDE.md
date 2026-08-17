@@ -129,8 +129,9 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `renderCharacterTagsList` — 角色特征列表 UI 渲染
 
 ### 事件监听(底部)
-- `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)+ 快照最后楼 mes(入口防御用)
-- `GENERATION_ENDED` / `GENERATION_STOPPED` — 流式结束,先 `sanitizeFreshLlmMessage()` 中和伪造 mag-* HTML,再做最终替换
+- `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)+ 快照最后楼 mes(入口防御用)。回调**必须检查第 3 个参数 dryRun 并忽略**——dryRun 调用只有 STARTED 没有 ENDED,不忽略会让 isStreamActive 永真(见"ST 前端踩坑笔记"最后一条)
+- 流式轮询带自愈:盯 `body.dataset.generating`(ST 的 UI 锁定标志),"见过 true 后变删除"却没等到 ENDED 就自行按流式结束收尾(onGenerationFinished 幂等,与真 ENDED 重复执行无害)
+- `GENERATION_ENDED` / `GENERATION_STOPPED` — 流式结束,先 `sanitizeFreshLlmMessage()` 中和伪造 mag-* HTML(带 try/catch 防异常挡住落地),再做最终替换
 - `MESSAGE_RECEIVED` — 非流式场景,同样先中和再处理
 - `MESSAGE_EDITED` — 消息编辑保存后重跑处理 + 刷新预览浮窗
 - `CHAT_CHANGED` — 清 in-flight、关预览浮窗、`processAllMessagesForPlaceholders()` 旧楼层补扫
@@ -169,6 +170,8 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - **`extension_settings` 是模块作用域变量,不在 `window` 上**。Playwright `browser_evaluate` 读不到 `window.extension_settings`。验证持久化只能"改 → 等 1s → 刷新 → 读 DOM"(或直接读文件 `data/default-user/settings.json`)。
 
 - **Playwright 自动化 ST 编辑消息框,原生 `ta.value=` 赋值会静默失败**。ST 用 jQuery 管理 `.edit_textarea`,保存按钮是 **`.mes_edit_done`**(不是 mes_edit_save),正确姿势:`$(ta).val(新值).trigger('input')` → `$(mes块.querySelector('.mes_edit_done')).trigger('click')`。原生赋值后点保存:jQuery 读到空值,消息内存态被清空(文件未落盘,刷新可恢复)。另外合成 `click()` 对部分 ST 按钮不生效时改用 `$(el).trigger('click')`。整页刷新(navigate)后 ST 不恢复聊天,处于无聊天状态——测完要重新点角色卡进聊天,否则"最后一楼"相关验证全部对着欢迎页跑。
+
+- **`GENERATION_STARTED` 无条件 emit(连 dryRun 也发),`GENERATION_ENDED` 唯一 emit 点是 `hideStopButton()`(`script.js:3477`)且带 NOOP 保护(停止按钮从未显示过就不发)**。装了 ST-Prompt-Template / QR2 之类会发 `Generate(..., dryRun=true)` 组装 prompt 的扩展时,dryRun 调用会把依赖 STARTED 的"流式中"状态拉起且永远等不到 ENDED;更阴的是真实生成的 ENDED 落地窗口期(本插件 200ms 防抖)常被紧随其后的 dryRun STARTED 覆盖 → `isStreamActive` 重新拉真 → 媒体永久滞留 + 500ms 轮询永转 + 3 分钟冷却到期对旧标签无限重复触发生成(2026-08 实测:烧 ComfyUI 三轮同图)。**防御双保险**:① STARTED 回调查第 3 个参数 `dryRun` 为 true 直接 return(顺带避免 dryRun 误清 `processingHashes` 并发锁);② 流式轮询里盯 `body.dataset.generating`(`deactivateSendButtons` 设 'true' / `activateSendButtons` 删),用"曾见 true 后被删"门槛(UI 锁定晚于 STARTED,直接判空会在 prompt 构建期误判)检测 ENDED 丢失,自行按流式结束收尾。
 
 ## Git
 

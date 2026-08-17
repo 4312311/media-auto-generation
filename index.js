@@ -2309,6 +2309,7 @@ async function landInFlightMedia() {
         if (isStreamActive && entry.floor === chat.length - 1) continue;
         const msg = chat[entry.floor];
         if (!msg || msg.is_user || typeof msg.mes !== 'string') {
+            console.warn(`[${extensionName}] in-flight 媒体楼层无效(floor=${entry.floor}),丢弃`);
             inFlightMedia.delete(promptHash);
             continue;
         }
@@ -2386,6 +2387,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     const mesText = message.mes;
     const matches = [...mesText.matchAll(mediaTagRegex)];
     if (matches.length === 0) return;
+    if (isFinal) console.log(`[${extensionName}] 最终扫描: 楼${messageIndex} 匹配 ${matches.length} 个标签`);
 
     let contentModified = false;
     let currentMessageText = message.mes;
@@ -2462,6 +2464,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             if (now - lastGenTime < PROMPT_COOLDOWN_MS) continue;
         }
 
+        console.log(`[${extensionName}] 触发生成: ${mediaType} hash=${String(promptHash).slice(0, 12)} floor=${messageIndex} isFinal=${isFinal} prompt=${modifiedPrompt.slice(0, 60)}`);
         processingHashes.add(promptHash);
         promptHistory.set(promptHash, now);
 
@@ -2522,6 +2525,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     originalTag,
                     regexStr,
                 });
+                console.log(`[${extensionName}] 生成成功: hash=${String(promptHash).slice(0, 12)} floor=${messageIndex} isStreamActive=${isStreamActive}`);
                 failedPrompts.delete(promptHash); // 兜底:同一 prompt 先失败后(在另一消息)自动成功,清残留失败记录
 
                 // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
@@ -3592,7 +3596,18 @@ function bindTestTabEvents() {
 
 // --- 事件监听 ---
 
-eventSource.on(event_types.GENERATION_STARTED, () => {
+eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
+    // dryRun 生成(Prompt-Template / QR2 等扩展只组装 prompt 的预演调用)也会 emit
+    // GENERATION_STARTED(ST 无条件 emit,script.js:4240),但它不进 finishGenerating,
+    // 永不 emit GENERATION_ENDED。若不过滤:isStreamActive 被拉起后等不到 ENDED,
+    // 500ms 轮询永转、媒体永滞留(流式目标楼判定),冷却到期还会对旧标签无限重复
+    // 触发生成;真实生成的 ENDED 落地窗口期(200ms 防抖)也会被紧随的 dryRun STARTED
+    // 覆盖成死锁(2026-08 实测:regenerate 后 dryRun 抢在落地前 150ms 拉起流式态)。
+    if (dryRun) {
+        console.log(`[${extensionName}] GENERATION_STARTED(dryRun): 忽略,不进入流式状态`);
+        return;
+    }
+    console.log(`[${extensionName}] GENERATION_STARTED(type=${type}): inFlight=${inFlightMedia.size} processing=${processingHashes.size}`);
     processingHashes.clear();
     // 注意:这里**不再**盲清 inFlightMedia——上一轮生成慢、完成时楼层已非最后一楼的媒体
     // 还等着本轮结束后的 landInFlightMedia() 落地,清了就变回"标签永不替换"的老 bug。
@@ -3606,11 +3621,28 @@ eventSource.on(event_types.GENERATION_STARTED, () => {
 
     isStreamActive = true;
     if (streamInterval) clearInterval(streamInterval);
-    
+
+    // 自愈观察:ST 的 GENERATION_ENDED 唯一 emit 点是 hideStopButton(带 NOOP 保护——
+    // 停止按钮从未显示过就不发)。凡 ENDED 丢失/被覆盖的路径(扩展接管生成、异常 early
+    // return、ENDED 后紧跟 dryRun STARTED 把落地窗口覆盖等),isStreamActive 会永久卡 true、
+    // 媒体永久滞留。这里盯住 ST 的 UI 锁定标志(deactivateSendButtons 设 'true' /
+    // activateSendButtons 删除):见过 true 之后一旦被删,说明 ST 认为生成已结束,
+    // 直接按流式结束收尾(与真 ENDED 重复执行无害,两路都是幂等的清理+落地)。
+    // 用"曾见 true"门槛而非直接判空:STARTED 先于 UI 锁定 emit,流式未锁定的窗口期
+    // (prompt 构建阶段)不能误判为已结束。
+    let sawUiLocked = false;
+
     // 流式期间只触发生成，不修改界面
     streamInterval = setInterval(() => {
         if (!isStreamActive) { clearInterval(streamInterval); return; }
-        processMessageContent(false, true); 
+        if (document.body.dataset.generating === 'true') {
+            sawUiLocked = true;
+        } else if (sawUiLocked) {
+            console.warn(`[${extensionName}] GENERATION_ENDED 丢失(UI 已解锁),轮询自愈按流式结束收尾`);
+            onGenerationFinished();
+            return;
+        }
+        processMessageContent(false, true);
     }, 500);
 });
 
@@ -3619,7 +3651,11 @@ const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
 
-    await sanitizeFreshLlmMessage(); // 先剥 LLM 伪造的 mag-* HTML,再让最终处理面对干净 mes
+    try {
+        await sanitizeFreshLlmMessage(); // 先剥 LLM 伪造的 mag-* HTML,再让最终处理面对干净 mes
+    } catch (e) {
+        console.error(`[${extensionName}] sanitizeFreshLlmMessage failed:`, e); // 防御:不让它异常挡住后面的落地
+    }
     pruneOldPrompts();
     // 流式结束，申请一次最终更新
     requestDebouncedUpdate(true);
@@ -3638,6 +3674,7 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
 // 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)
 // + 关预览浮窗 + 旧楼层裸 [image]/[video] 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders)
 eventSource.on(event_types.CHAT_CHANGED, async () => {
+    if (inFlightMedia.size > 0) console.warn(`[${extensionName}] CHAT_CHANGED: 清空 ${inFlightMedia.size} 条滞留 in-flight 媒体`);
     inFlightMedia.clear();
     closeMediaPreviewModal();
     await processAllMessagesForPlaceholders();
