@@ -37,17 +37,29 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 调试工作流(重要)
 
-**绝对不要在 ST UI 里点 "Update" 按钮!** 那会执行 `git pull`,覆盖本地未提交的修改。本目录就是开发目录,改完文件直接浏览器刷新(Cmd+R)即可生效,ST 启动时读取磁盘文件。
+**绝对不要在 ST UI 里点 "Update" 按钮!** 那会执行 `git pull`,覆盖本地未提交的修改。本目录就是开发目录,改完文件直接浏览器刷新(Cmd/Ctrl+R)即可生效,ST 启动时读取磁盘文件。
 
 ### 标准调试协议(按此步骤执行)
 
-本目录 local config (`~/.claude.json`) 已配置 **playwright** MCP,以下步骤假设它可用。若不可用(检查 `claude mcp list`),改用"手动回退"小节。
+本目录 local config (`~/.claude.json`) 已配置 **playwright** MCP,以下步骤假设它可用。若不可用(检查 `claude mcp list`),改用"手动回退"小节。注意 local config **不随 git 仓库走**,换新机器要重装(macOS / Windows 通用):
+```bash
+claude mcp add playwright -- npx @playwright/mcp@latest
+```
 
 **步骤 1 — 确认 ST 在运行**
+
+两台开发机(macOS / Windows,Windows 上 Claude Code 跑 Git Bash)检查命令不同:
+
 ```bash
-lsof -i :8000 -sTCP:LISTEN  # 没输出就启动 ST
+# macOS
+lsof -i :8000 -sTCP:LISTEN
+# Windows(Git Bash;已实测能命中 netstat 输出格式)
+netstat -ano | grep -E ':8000\s.*LISTENING'   # 没输出就启动 ST
 ```
-ST 默认端口 8000,启动脚本:`/Users/zy/game/SillyTavern-Launcher/SillyTavern/start.sh`(建议 `tee` 到 `logs/st-debug.log` 方便 Claude 读取后端报错)
+
+ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Claude 才能直接读后端报错):
+- **macOS**:ST 根 `/Users/zy/game/SillyTavern-Launcher/SillyTavern/`,用 `./start.sh 2>&1 | tee logs/st-debug.log`
+- **Windows**:ST 根就是本插件目录往上四级的 `F:\silly`。Git Bash 里用 `cd /f/silly && node server.js 2>&1 | tee st-debug.log`(根目录的 `start.sh` 也能跑但每次先 npm install 较慢;`Start.bat` 是给双击用的,日志不方便读取)
 
 **步骤 2 — 打开 ST 并登录**
 用 playwright 打开 `http://localhost:8000`,选择有该插件配置的用户登录。打开后停留在能触发媒体生成的聊天页(需要有角色卡 + 插件已启用 image/video 模式)。
@@ -56,7 +68,7 @@ ST 默认端口 8000,启动脚本:`/Users/zy/game/SillyTavern-Launcher/SillyTave
 直接 Edit `index.js` / `settings.html` 等。ST 用 ES Module 加载,文件保存即磁盘生效,**不需要任何 reload/重新安装**。
 
 **步骤 4 — 让浏览器重新加载插件代码**
-- 优先:playwright 调浏览器刷新(`Cmd+R` 等效动作)
+- 优先:playwright 调浏览器刷新(`Cmd/Ctrl+R` 等效动作)
 - ST 的前端是 SPA,刷新整页是最可靠的"重新加载插件代码"方式
 - 仅改 `settings.html` 也需要刷新,因为它是启动时 fetch 的
 
@@ -72,10 +84,10 @@ ST 默认端口 8000,启动脚本:`/Users/zy/game/SillyTavern-Launcher/SillyTave
 
 ### 后端日志(图片/视频调用 SD 失败时查)
 
-```bash
-ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
-```
-若 ST 没有日志输出,提示用户用 `./start.sh 2>&1 | tee logs/st-debug.log` 重启 ST。SD/ComfyUI 自己的日志在它们各自的运行终端。
+- **macOS**:`ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/`
+- **Windows**:`F:\silly` 下没有 `logs/` 目录,后端输出只在启动它的终端里——要 Claude 能查就用步骤 1 的 `node server.js 2>&1 | tee st-debug.log` 启动,日志落在 ST 根 `st-debug.log`
+
+若 ST 已在跑但没接 tee,提示用户按上述方式重启 ST。SD/ComfyUI 自己的日志在它们各自的运行终端。
 
 ### Playwright MCP 调用要点
 
@@ -88,7 +100,7 @@ ls /Users/zy/game/SillyTavern-Launcher/SillyTavern/logs/
 ### 手动回退(没有 Playwright 时)
 
 让用户:
-1. 在 ST 浏览器里 Cmd+R 刷新
+1. 在 ST 浏览器里 Cmd/Ctrl+R 刷新
 2. 复制 DevTools Console 的报错粘给你
 3. 必要时截图给你(zai-mcp-server 可分析图像)
 
