@@ -7,10 +7,35 @@
 **功能介绍**
 - <img width="476" height="265" alt="image" src="https://github.com/user-attachments/assets/dcd07111-b73f-4c41-8cae-e9e7ae3c1059" />
 
-- 1.AI回复的消息中包含有`<video prompt="...">` 标签时，可触发自动生成视频。
-- 2.也支持图片生成功能，但是比较简陋，只支持行内替换模式，默认是`<img prompt="...">`格式才触发生图
+- 1.AI回复的消息中包含有`[video]提示词[/video]` 标签时，可触发自动生成视频。
+- 2.也支持图片生成功能，只支持行内替换模式，`[image]提示词[/image]`格式触发生图
 - 3.只支持世界书生图或者生成视频
 - 4.支持自定义图片/视频的样式配置
+
+**触发标签说明**
+- 图片：`[image]SD提示词[/image]`；视频：`[video]SD提示词[/video]`。提示词写在标签体内，引号、换行都不会破坏标签结构；AI 偶尔漏写闭合标签时按行内内容兜底触发。
+- 旧的 `<pic prompt="...">` / `<video prompt="...">` 属性式格式已废弃，不再识别。
+
+**发给 LLM 前的还原（ST 正则扩展配置，必读）**
+
+生成完成的图片/视频在聊天记录里是 mag-media wrapper（span 包裹）。本插件**不再**在发送前把它还原成触发标签，请用酒馆自带的**正则（Regex）扩展**配置还原，否则 wrapper（含 base64 图片数据）会原样进入 LLM 上下文：
+
+- 打开 `扩展 → 正则（Regex）`，新建两条脚本：
+
+**图片规则**
+```
+Find Regex:    /<span class="mag-(?:media|placeholder)[^"]*"(?=[^>]*\bdata-media-type="image")(?=[^>]*\bdata-prompt="([^"]*)")[^>]*>[\s\S]*?<\/span>/g
+Replace With:  [image]$1[/image]
+```
+
+**视频规则**
+```
+Find Regex:    /<span class="mag-(?:media|placeholder)[^"]*"(?=[^>]*\bdata-media-type="video")(?=[^>]*\bdata-prompt="([^"]*)")[^>]*>[\s\S]*?<\/span>/g
+Replace With:  [video]$1[/video]
+```
+
+- 两条都勾选：作用于 **AI Output**；选项勾 **Only Format Prompt**（只改发送给 LLM 的内容，不改聊天记录与显示）；不勾 Run on Edit。
+- 作用：wrapper / 占位符整体（含 base64）被折叠回 `[image]提示词[/image]`，LLM 看到的始终是干净的触发标签，也就不会模仿输出 wrapper HTML。
 
 **comfyUI生成视频介绍**
 - comfyUI生成视频的成本较高，无论是学习成本还是硬件成本。

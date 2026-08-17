@@ -47,8 +47,12 @@ const PROMPT_COOLDOWN_MS = 180000;
 // 默认设置 (新增 characterTags)
 const defaultSettings = {
     mediaType: 'disabled',
-    imageRegex: '/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
-    videoRegex: '/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi',
+    // BBCode 式触发标签(成对优先,漏闭合时按行内内容兜底):
+    // 分支1 [image]prompt[/image] —— 组1=prompt,体内非贪婪到闭合标签,引号/换行/[ 权重语法都不是结构性字符
+    // 分支2 [image]prompt        —— 组2=prompt,AI 漏写 [/image] 时取行内内容(到换行或 [ 止)
+    // 旧 <pic prompt="..."> 属性式格式已废弃,不做兼容(存量聊天未生成标签不再触发)
+    imageRegex: '/\\[image\\][ \\t]*([\\s\\S]*?)[ \\t]*\\[\\/image\\]|\\[image\\][ \\t]*([^\\n\\[]+)/gi',
+    videoRegex: '/\\[video\\][ \\t]*([\\s\\S]*?)[ \\t]*\\[\\/video\\]|\\[video\\][ \\t]*([^\\n\\[]+)/gi',
     style: 'width:100%;height:auto',
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
@@ -74,6 +78,16 @@ function normalizePrompt(str) {
     return str.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
+/**
+ * 从触发正则的 match 里提取 prompt(三处扫描点共用)。
+ * 新正则两分支各一组捕获:组1=[image]...[/image] 成对分支,组2=漏闭合行内兜底分支。
+ * 体内是自然语言,引号/换行都不是结构性字符;此处把换行折叠成空格,
+ * 保证存进 wrapper data-prompt / 展示 / ST Regex 还原出去的都是单行干净文本。
+ */
+function extractTagPrompt(m) {
+    return ((m[1] ?? m[2]) || '').trim().replace(/\s+/g, ' ');
+}
+
 function pruneOldPrompts() {
     const now = Date.now();
     for (const [hash, timestamp] of promptHistory.entries()) {
@@ -88,31 +102,16 @@ function escapeHtmlAttribute(value) {
     return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-/**
- * 把 mag-media wrapper(生成完成的图/视频)还原成简洁的 <pic prompt="..."> / <video prompt="...">,
- * 用于发给 LLM 前的清理 —— 避免 LLM 看到历史里的 wrapper HTML 后学着输出 HTML。
- *
- * mes 里 class 是原始 `mag-media`(DOMPurify 在渲染到 DOM 时才加 custom- 前缀,不会写回 mes),
- * 但为防御性同时匹配 custom-mag-media。
- *
- * wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
- */
-// mag-media wrapper 匹配(reduceMagMediaForLLM 清理 / collectFloorMedia 楼层扫描共用)。
+// mag-media wrapper 匹配(collectFloorMedia 楼层扫描用)。
 // mes 里 class 是原始 `mag-media`(DOMPurify 渲染到 DOM 时才加 custom- 前缀,不会写回 mes),防御性同时匹配;
 // wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
 const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
 
-// <pic_Declare> 描述块(collectFloorMedia 楼层扫描 / processMessageContent 捕获流式 in-flight 媒体的 declare 共用)。
+// declare 描述块(collectFloorMedia 楼层扫描 / processMessageContent 捕获流式 in-flight 媒体的 declare 共用)。
+// 兼容两种格式:① [img_Declare]...[/img_Declare](2026-08 起用户角色卡的 BBCode 新格式)② <pic_Declare>...</pic_Declare>(旧卡,存量聊天兼容)。
+// 开/闭标签用交替而非两组捕获 → 单捕获组,declareForPosition 的 d[1] 取值不用分支。
 // matchAll 内部克隆正则,共享 const 无 lastIndex 残留问题。
-const PIC_DECLARE_RE = /<pic_Declare>([\s\S]*?)<\/pic_Declare>/gi;
-
-// 发给 LLM 前的 wrapper 折叠专用(reduceMagMediaForLLM)。与 MAG_MEDIA_WRAP_RE 的区别:
-// ① 同时覆盖 mag-placeholder(未生成的占位符对 LLM 同样应还原成 <pic>,否则占位符 HTML 泄漏教 LLM 模仿)
-// ② 内容部分用 guard 排除嵌套 mag span → 只匹配"最内层"wrapper。LLM 伪造的假壳(旧版插件泄漏
-//   wrapper HTML 教出来的)会把真 wrapper 套在里面,非贪婪匹配到第一个 </span> 会把假壳的模仿尾巴
-//   (<small data-mag-role=...> 串)和孤立 </span> 残骸原样漏给 LLM,形成污染循环;配合下面的
-//   循环 replace 由内向外逐层折叠,外层折叠会整体吞掉内层产物与伪造尾巴,循环 2 次即可清理嵌套。
-const MAG_WRAP_LLM_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-(?:media|placeholder)\b[^"]*"[^>]*>(?:(?!<span\b[^>]*\bmag-)[\s\S])*?<\/span>/gi;
+const PIC_DECLARE_RE = /(?:\[img_Declare\]|<pic_Declare>)([\s\S]*?)(?:\[\/img_Declare\]|<\/pic_Declare>)/gi;
 
 // 游离 data-mag-role 元素(LLM 伪造尾巴的构成部分):
 // ① 紧闭合的完整元素(内容里不许再出现 small/i 标签,防止未闭合的开标签跨元素误吞正文)连同内容一起删;
@@ -122,39 +121,16 @@ const MAG_ROLE_OPEN_RE = /<(?:small|i)\b[^>]*\bdata-mag-role\b[^>]*>/gi;
 // 未能折叠(缺 data-media-type/data-prompt 等属性不齐)的假壳/占位符开标签,兜底剥掉
 const MAG_SPAN_OPEN_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\bmag-[^"]*"[^>]*>/gi;
 
-function reduceMagMediaForLLM(text) {
-    if (typeof text !== 'string') return text;
-    let t = text;
-    // 由内向外迭代折叠;内容无可折叠时 replace 结果不变即收敛(上限 10 轮防御性兜底)
-    for (let i = 0; i < 10; i++) {
-        const next = t.replace(MAG_WRAP_LLM_RE, (match) => {
-            const typeMatch = match.match(/\bdata-media-type\s*=\s*"(image|video)"/i);
-            const promptMatch = match.match(/\bdata-prompt\s*=\s*"([^"]*)"/i);
-            if (!typeMatch || !promptMatch) return match;
-            const tag = typeMatch[1] === 'video' ? 'video' : 'pic';
-            // promptMatch[1] 已是 escapeHtmlAttribute 处理过的字符串,直接拼到新 attribute 即可
-            return `<${tag} prompt="${promptMatch[1]}" />`;
-        });
-        if (next === t) break;
-        t = next;
-    }
-    // 兜底:剥掉没能折叠的伪造残骸,不让任何 mag-* 碎片进 LLM 上下文
-    return t
-        .replace(MAG_ROLE_ELEMENT_RE, '')
-        .replace(MAG_ROLE_OPEN_RE, '')
-        .replace(MAG_SPAN_OPEN_RE, '');
-}
-
 /**
  * 中和 LLM 伪造的 mag-* HTML(它模仿 wrapper 格式写的假壳 + 模仿尾巴),入口防御。
  * 只对"本轮新生成的内容"调用(新楼全量 / continue 只处理追加段)——插件自己落地的
  * wrapper 只会出现在这些位置之外,因此无需区分真假:
- * - mag wrapper/占位符 span 开标签 → 剥掉(遗留的孤立 </span> 浏览器解析时无害,LLM 侧由
- *   reduceMagMediaForLLM 兜底)
+ * - mag wrapper/占位符 span 开标签 → 剥掉(遗留的孤立 </span> 浏览器解析时无害;
+ *   LLM 侧的 wrapper 还原由 ST Regex 扩展承担,见 README)
  * - 紧闭合的 data-mag-role 元素 → 连内容删(prompt 文本 + 按钮文字都是 UI 碎片)
  * - 未闭合的 data-mag-role 开标签 → 只删标签本身,保住被它吞的正文(未闭合 <small> 会让
  *   后续文字逐层变小变暗,正是"图片后文字越来越小+蒙层叠加"渲染事故的根源)
- * 剥完后内部的 <pic>/<video> 标签原样保留,继续走正常生成管线(假壳里抄来的 prompt 也能
+ * 剥完后内部的 [image]/[video] 标签原样保留,继续走正常生成管线(假壳里抄来的 prompt 也能
  * 借此重新生成真图)。
  */
 function sanitizeLlmMagHtml(text) {
@@ -1796,6 +1772,14 @@ async function loadSettings() {
     if (typeof extension_settings[extensionName].autoReplace === 'boolean') {
         extension_settings[extensionName].autoReplace = extension_settings[extensionName].autoReplace ? 'auto' : 'manual';
     }
+    // 触发正则迁移:含旧 <pic/<video 属性式格式的(含历史默认值——它源码字符串转义有 bug 从未生效
+    // ——或用户手配的旧格式)一律换成 [image]/[video] 新默认;已是新格式或无关自定义值不动
+    if (typeof extension_settings[extensionName].imageRegex === 'string' && extension_settings[extensionName].imageRegex.includes('<pic')) {
+        extension_settings[extensionName].imageRegex = defaultSettings.imageRegex;
+    }
+    if (typeof extension_settings[extensionName].videoRegex === 'string' && extension_settings[extensionName].videoRegex.includes('<video')) {
+        extension_settings[extensionName].videoRegex = defaultSettings.videoRegex;
+    }
     // 配置档迁移:确保 comfyPresets 是数组,失效的 activePresetName 回落
     if (!Array.isArray(extension_settings[extensionName].comfyPresets)) {
         extension_settings[extensionName].comfyPresets = [];
@@ -2306,17 +2290,23 @@ function requestDebouncedUpdate(isFinal = false) {
  * 匹配:优先 originalTag 原文精确匹配(流式只追加不改前缀);失配再用 regexStr+hash
  * 重扫兜底(防御用户 regex 脚本在流式结束后改写 mes 文本)。都失配 = 楼层被 swipe/删除
  * → 丢弃条目防泄漏(接管原 GENERATION_STARTED 盲清 inFlightMedia 的职责)。
- * 流式期间不落地(ST 持续重写 message.mes,中途写会被冲掉),留给流式结束统一处理。
+ * 流式期间只滞留"流式目标楼(最后一楼)"——它的 mes 被 ST 持续重写,中途写会被冲掉;
+ * 非流式楼(生成耗时 40s+,触发楼常已被挤到非最后一楼)照常落地。
  * @returns {number} 本次落地条数
  */
 async function landInFlightMedia() {
-    if (inFlightMedia.size === 0 || isStreamActive) return 0;
+    if (inFlightMedia.size === 0) return 0;
     const chat = getContext().chat || [];
     const s = extension_settings[extensionName];
     const stats = { image: 0, video: 0 };
     let landed = 0;
 
     for (const [promptHash, entry] of [...inFlightMedia]) {
+        // 只滞留"正在被流式重写的楼"(最后一楼):此刻写 mes 会被 ST 的流式重写冲掉,
+        // 留给 GENERATION_ENDED 防抖 / 完成回调下次落地。非流式楼不受流式影响,照常落地。
+        // (原先顶层 isStreamActive 一票否决,流式结束事件一旦丢失/时序异常,媒体永久滞留,
+        // 标签永不替换——2026-08 实测事故:生成成功入图库但零落地)
+        if (isStreamActive && entry.floor === chat.length - 1) continue;
         const msg = chat[entry.floor];
         if (!msg || msg.is_user || typeof msg.mes !== 'string') {
             inFlightMedia.delete(promptHash);
@@ -2332,11 +2322,7 @@ async function landInFlightMedia() {
             const tagRegex = regexFromString(entry.regexStr);
             const seen = new Map();
             for (const m of msg.mes.matchAll(tagRegex)) {
-                if (m[0].includes('src=') || m[0].includes('src =')) continue;
-                let rawPrompt = (m[2] || '').trim();
-                if (!rawPrompt && m[1] && !m[0].includes('light_intensity') && !m[0].includes('videoParams')) {
-                    rawPrompt = m[1].trim();
-                }
+                let rawPrompt = extractTagPrompt(m);
                 if (!rawPrompt) continue;
                 const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
                 const occ = seen.get(base) || 0;
@@ -2405,25 +2391,24 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     let currentMessageText = message.mes;
 
     // 同消息内同 prompt 出现 N 次时,各自独立 hash 避免 processingHashes 锁互相命中:
-    // 否则 7 个 <pic prompt="1girl"> 全部同一 promptHash → 第 1 个 add 锁后,后 6 个
+    // 否则 7 个 [image]1girl[/image] 全部同一 promptHash → 第 1 个 add 锁后,后 6 个
     // 都被 has 拦 continue,不生成(用户期望 7 张不同图,seed 随机)。
     const seenInThisMsg = new Map(); // baseHash → 出现次数
 
     // 使用 entries() 获取当前是第几个匹配项 (index)
     for (const [index, match] of matches.entries()) {
         const originalTag = match[0];
-        // 跳过已经是成品的标签
-        if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
 
-        let rawPrompt = (match[2] || "").trim();
-        let rawExtraParams = match[1] || "";
-
-        if (!rawPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
-            rawPrompt = match[1].trim();
-            rawExtraParams = match[2] || "";
-        }
+        let rawPrompt = extractTagPrompt(match);
 
         if (!rawPrompt) continue;
+
+        // 流式期间(isFinal=false)只认成对分支(组1):漏闭合兜底分支(组2)会把半截流式输出
+        // 当成漏闭合标签——每轮轮询 prompt 都在变长 → hash 每轮不同 → 冷却/并发锁全失效,
+        // 疯狂重复触发生成;落地时半截 originalTag 又是完整标签的前缀,前缀替换会留下
+        // [/image] 残尾。兜底分支只在消息完整后(GENERATION_ENDED / MESSAGE_RECEIVED /
+        // MESSAGE_EDITED 的 isFinal=true)生效。
+        if (!isFinal && !match[1]) continue;
 
         // --- 新增: 角色固定特征拦截与注入 ---
         const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
@@ -2452,7 +2437,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
         // --- 逻辑 A-1：失败降级(自动模式 ComfyUI 失败,流式结束后渲染 error 占位符让用户手动重试)---
         if (!onlyTrigger && failedPrompts.has(promptHash)) {
-            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state: 'error', error: failedPrompts.get(promptHash) });
+            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag, state: 'error', error: failedPrompts.get(promptHash) });
             currentMessageText = currentMessageText.replace(originalTag, placeholder);
             contentModified = true;
             continue;
@@ -2462,7 +2447,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // autoReplace='manual' 时,把 originalTag 替换为可点击占位符,不触发生成。
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
-            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state: 'idle' });
+            const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag, state: 'idle' });
             currentMessageText = currentMessageText.replace(originalTag, placeholder);
             contentModified = true;
             continue;
@@ -2522,11 +2507,10 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     mediaType,
                     url,
                     rawPrompt,
-                    rawExtraParams,
                 });
 
                 // 暂存到 inFlightMedia → landInFlightMedia() 按触发楼层落地 DOM。
-                // declare 在触发时刻的 mes 快照上按标签位置捕获(declare 位于 pic/video 标签之前,
+                // declare 在触发时刻的 mes 快照上按标签位置捕获(declare 位于 [image]/[video] 标签之前,
                 // 标签能被匹配到时它必已完整输出):流式期间 mes 里还没有 wrapper,
                 // 媒体预览浮窗只能靠这里带出描述,否则要等整条回复结束才可见。
                 // floor/originalTag:生成完成时该楼可能已不是最后一楼(用户已发下一条消息),
@@ -2547,10 +2531,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 processingHashes.delete(promptHash);
 
                 // 非流式:每张完成立即落地(绕开 200ms 防抖,避免多张同时完成被合并成一次"等齐"显示)
-                // 流式:只存 inFlightMedia 不落地(ST 流式持续重写 message.mes,中途写会被冲掉),
-                // GENERATION_ENDED / GENERATION_STOPPED 的 requestDebouncedUpdate 最终落地兜底
+                // 流式:GENERATION_ENDED 的防抖会统一落地;这里再挂 10s 延迟重试兜底——
+                // 防流式结束事件丢失/时序异常时媒体滞留(landInFlightMedia 内部会跳过流式目标楼,
+                // 不会误写;非流式楼则直接落地)。超长流式输出期间重试会自然空转,无害。
                 if (!isStreamActive) {
                     await landInFlightMedia();
+                } else {
+                    setTimeout(() => { landInFlightMedia(); }, 10000);
                 }
 
             } catch (error) {
@@ -2607,7 +2594,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 }
 
 /**
- * 切进聊天时全量扫描旧楼层:把裸 <pic>/<video> 标签转成占位符(仅手动模式)。
+ * 切进聊天时全量扫描旧楼层:把裸 [image]/[video] 标签转成占位符(仅手动模式)。
  * processMessageContent 只处理最后一楼,切聊天(CHAT_CHANGED)时中间楼层的裸标签
  * 没有任何事件会处理 → 永远停留在原始文本,连点击生图的入口都看不到。
  * 自动模式不动旧楼层:避免每次进聊天连环触发生成;最新楼层仍走原有事件驱动路径。
@@ -2636,15 +2623,8 @@ async function processAllMessagesForPlaceholders() {
         let modified = false;
         for (const [index, match] of matches.entries()) {
             const originalTag = match[0];
-            // 跳过已经是成品的标签
-            if (originalTag.includes('src=') || originalTag.includes('src =')) continue;
 
-            let rawPrompt = (match[2] || '').trim();
-            let rawExtraParams = match[1] || '';
-            if (!rawPrompt && match[1] && !match[0].includes('light_intensity') && !match[0].includes('videoParams')) {
-                rawPrompt = match[1].trim();
-                rawExtraParams = match[2] || '';
-            }
+            let rawPrompt = extractTagPrompt(match);
             if (!rawPrompt) continue;
 
             // 与逻辑 B-0 一致:用注入角色特征后的 prompt 计算 hash
@@ -2655,7 +2635,6 @@ async function processAllMessagesForPlaceholders() {
                 index,
                 mediaType: s.mediaType,
                 rawPrompt,
-                rawExtraParams,
                 originalTag,
                 state: 'idle',
             });
@@ -2758,7 +2737,6 @@ async function onMagClick(e) {
 async function startManualGeneration($ph) {
     const magId = $ph.attr('data-mag-id');
     const rawPrompt = $ph.attr('data-prompt');
-    const rawExtraParams = $ph.attr('data-extra');
     const mediaType = $ph.attr('data-media-type');
 
     $ph.attr('data-state', 'loading');
@@ -2788,7 +2766,7 @@ async function startManualGeneration($ph) {
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
 
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
@@ -2820,7 +2798,6 @@ async function startManualGeneration($ph) {
 async function regenerateMedia($media) {
     const magId = $media.attr('data-mag-id');
     const rawPrompt = $media.attr('data-prompt');
-    const rawExtraParams = $media.attr('data-extra') || '';
     const mediaType = $media.attr('data-media-type');
 
     // 注入角色特征,与 startManualGeneration 一致地计算 hash(用于 processingHashes 锁 + failedPrompts 失败降级)
@@ -2852,7 +2829,7 @@ async function regenerateMedia($media) {
         if (toast) toastr.clear(toast);
 
         // 构造新 wrapper(同 magId,replacePlaceholderInMes 用 magId 锚定替换 mes 里的旧 wrapper)
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
 
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
@@ -2878,7 +2855,7 @@ async function regenerateMedia($media) {
  * 用 data-mag-role 属性锚定样式/事件,绕开 ST sanitizer 的 custom- 前缀。
  * 自动模式失败降级(error 态)和手动模式 idle 占位符共用此函数。
  */
-function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraParams, originalTag, state, error }) {
+function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag, state, error }) {
     const magId = `${promptHash}-${index}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const phClass = mediaType === 'video' ? 'mag-ph-video' : 'mag-ph-image';
     let iconClass, labelText, promptText;
@@ -2892,30 +2869,25 @@ function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, rawExtraPar
         promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
     }
     const errorAttr = state === 'error' ? ` data-error="${escapeHtmlAttribute(error || '')}"` : '';
-    return `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="${state}" data-view="default" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-extra="${escapeHtmlAttribute(rawExtraParams)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}"${errorAttr} contenteditable="false"><i class="fa-solid ${iconClass}" data-mag-role="icon"></i><small data-mag-role="label">${labelText}</small><small data-mag-role="prompt-text">${escapeHtmlAttribute(promptText)}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="toggle">prompt描述</small></span>`;
+    return `<span class="mag-placeholder ${phClass}" data-mag-id="${escapeHtmlAttribute(magId)}" data-state="${state}" data-view="default" data-prompt="${escapeHtmlAttribute(rawPrompt)}" data-media-type="${mediaType}" data-original-tag="${escapeHtmlAttribute(originalTag)}"${errorAttr} contenteditable="false"><i class="fa-solid ${iconClass}" data-mag-role="icon"></i><small data-mag-role="label">${labelText}</small><small data-mag-role="prompt-text">${escapeHtmlAttribute(promptText)}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="toggle">prompt描述</small></span>`;
 }
 
 /**
  * 构造 mag-media wrapper HTML(包 img/video + 4 个 data-mag-role 子元素)。
  * 占位符替换 / 自动模式生成 共用此函数,保证产物结构一致。
  */
-function buildMediaWrap({ magId, mediaType, url, rawPrompt, rawExtraParams }) {
+function buildMediaWrap({ magId, mediaType, url, rawPrompt }) {
     const style = extension_settings[extensionName].style || '';
     const escapedUrl = escapeHtmlAttribute(url);
     const escapedPrompt = escapeHtmlAttribute(rawPrompt);
-    const escapedParams = escapeHtmlAttribute(rawExtraParams || '');
     const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
     const escapedPromptText = escapeHtmlAttribute(promptText);
 
-    let mediaInner;
-    if (mediaType === 'video') {
-        mediaInner = `<video src="${escapedUrl}" ${escapedParams ? `videoParams="${escapedParams}"` : ''} prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`;
-    } else {
-        const lightAttr = escapedParams ? `light_intensity="${escapedParams}"` : 'light_intensity="0"';
-        mediaInner = `<img src="${escapedUrl}" ${lightAttr} prompt="${escapedPrompt}" style="${style}" />`;
-    }
+    const mediaInner = mediaType === 'video'
+        ? `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`
+        : `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
 
-    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-extra="${escapedParams}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
+    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
@@ -3190,7 +3162,7 @@ function extractAttr(html, name) {
     return m ? m[1] : '';
 }
 
-/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,magId,extra};无 src 返回 null。mediaType 以内层标签名为准 */
+/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,magId};无 src 返回 null。mediaType 以内层标签名为准 */
 function parseMediaWrapper(block) {
     // lazy [^>]*?:buildMediaWrap 产物里 src 紧跟标签名,避免贪婪回溯扫过整个 base64
     const srcMatch = block.match(/<(img|video)\b[^>]*?\ssrc="([^"]*)"/);
@@ -3204,13 +3176,12 @@ function parseMediaWrapper(block) {
         mediaType: srcMatch[1] === 'video' ? 'video' : 'image',
         prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
         magId: unescapeHtmlAttr(extractAttr(block, 'data-mag-id')),
-        extra: unescapeHtmlAttr(extractAttr(block, 'data-extra')),
     };
 }
 
 /**
  * 取位置 pos 处媒体标签前紧邻的 <pic_Declare> 描述。
- * AI 输出惯例:declare 块包着图片描述,紧贴 pic/video 标签(中间只隔空白/换行);
+ * AI 输出惯例:declare 块包着图片描述,紧贴 [image]/[video] 标签(中间只隔空白/换行);
  * 隔着其他内容或没有 declare 则返回 null(不关联)。
  */
 function declareForPosition(declares, text, pos) {
@@ -3500,7 +3471,6 @@ async function regenerateFloorMedia(floor) {
                     mediaType: r.mediaType,
                     url,
                     rawPrompt: r.prompt,
-                    rawExtraParams: r.extra || '',
                 });
                 const committed = r.magId
                     ? await commitMediaToMessage(r.magId, mediaWrap, 'regenerateFloorMedia')
@@ -3666,7 +3636,7 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
 });
 
 // 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)
-// + 关预览浮窗 + 旧楼层裸 <pic>/<video> 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders)
+// + 关预览浮窗 + 旧楼层裸 [image]/[video] 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders)
 eventSource.on(event_types.CHAT_CHANGED, async () => {
     inFlightMedia.clear();
     closeMediaPreviewModal();
@@ -3674,7 +3644,7 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
 });
 
 // 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染
-// 否则用户编辑加 <pic prompt> 保存后看不到占位符,要刷新或重进聊天才出
+// 否则用户编辑加 [image] 标签保存后看不到占位符,要刷新或重进聊天才出
 eventSource.on(event_types.MESSAGE_EDITED, async () => {
     const landed = await landInFlightMedia(); // 编辑前触发的生成可能刚好完成,趁此落地
     await processMessageContent(true, false);
@@ -3684,31 +3654,5 @@ eventSource.on(event_types.MESSAGE_EDITED, async () => {
     }
 });
 
-// === 发送给 LLM 前:把 mag-media wrapper 还原成简洁 <pic>/<video> 标签 ===
-// 覆盖两种模式: text completion 走 GENERATE_AFTER_COMBINE_PROMPTS, chat completion 走 CHAT_COMPLETION_PROMPT_READY
-// 不分 dryRun,token 计数也要一致,否则 ST 会按 wrapper 长度估算偏高、误砍楼层
-
-// text completion: payload 是 { prompt: string, dryRun }
-eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, (eventData) => {
-    if (eventData && typeof eventData.prompt === 'string') {
-        eventData.prompt = reduceMagMediaForLLM(eventData.prompt);
-    }
-});
-
-// chat completion: payload 是 { chat: Array<{role, content}>, dryRun }
-// content 可能是 string 或多模态数组(vision),两种都要处理
-eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, (eventData) => {
-    if (!eventData || !Array.isArray(eventData.chat)) return;
-    for (const msg of eventData.chat) {
-        if (!msg) continue;
-        if (typeof msg.content === 'string') {
-            msg.content = reduceMagMediaForLLM(msg.content);
-        } else if (Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-                if (part && typeof part.text === 'string') {
-                    part.text = reduceMagMediaForLLM(part.text);
-                }
-            }
-        }
-    }
-});
+// 发送给 LLM 前的 wrapper → [image]/[video] 还原已移交 ST Regex 扩展承担(配置见 README),
+// 插件不再挂 GENERATE_AFTER_COMBINE_PROMPTS / CHAT_COMPLETION_PROMPT_READY 出口监听。

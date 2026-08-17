@@ -1,6 +1,6 @@
 # Media Auto Generation — 开发说明
 
-SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-generation 改写,扩展为支持视频生成。通过 ST 自带的 SD/ComfyUI 接口,在 AI 回复包含 `<pic prompt="...">` 或 `<video prompt="...">` 标签时自动生成图片/视频并替换到消息中。
+SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-generation 改写,扩展为支持视频生成。通过 ST 自带的 SD/ComfyUI 接口,在 AI 回复包含 `[image]...[/image]` 或 `[video]...[/video]` 标签时自动生成图片/视频并替换到消息中。
 
 ## 功能概览
 
@@ -13,17 +13,17 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
 
-核心触发机制:消息 DOM 中出现 `<pic prompt="...">` / `<video prompt="...">` 标签(正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 `<img>`/`<video>`。同 prompt 有 3 分钟冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED`/`STOPPED` 后统一落地。
+核心触发机制:消息中出现 `[image]提示词[/image]` / `[video]提示词[/video]` 标签(BBCode 式,prompt 在标签体内,正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 mag-media wrapper(内嵌 `<img>`/`<video>`)。同 prompt 有 3 分钟冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED`/`STOPPED` 后统一落地。prompt 提取统一走 `extractTagPrompt(match)`(组1=成对分支、组2=漏闭合兜底分支,换行折叠为空格)。**流式期间(isFinal=false)只认成对分支(组1),兜底分支被守卫跳过**——否则半截流式输出每轮匹配到不同长度的行内前缀,hash 每轮不同导致冷却/并发锁全失效、疯狂重复触发生成,且落地时半截 originalTag 是完整标签前缀,前缀替换会留下 `[/image]` 残尾(2026-08 实测事故)。旧 `<pic prompt="...">` 属性式格式已废弃不做兼容——属性内引号/换行是结构性字符,AI 输出易坏;loadSettings 里检测存值含 `<pic`/`<video` 自动迁移到新默认正则(注意:历史默认正则的源码字符串用单反斜杠,经 JS 字面量解析 `\s`→`s`、`\b`→退格,从未生效过,用户实际用的是 UI 手配正则)。
 
-**in-flight 媒体落地**(`landInFlightMedia()`,自动模式):生成完成的媒体先进 `inFlightMedia`(Map<promptHash, {mediaTag, declare, floor, originalTag, regexStr}>),非流式时每张完成立即落地,流式时等 `GENERATION_ENDED` 后的 `requestDebouncedUpdate` 落地。落地按 `floor`+`originalTag` 精确定位**触发时的楼层**——生成耗时 40s+,完成时该楼常已被用户新消息挤到非最后一楼,若只扫最后一楼会媒体丢失+标签永久卡死(裸标签留下,撞 3 分钟冷却不重生成,只能刷新);originalTag 失配(楼层被 swipe/删除/regex 脚本改写)时按 hash 重扫兜底,再失配则丢弃防泄漏。`GENERATION_STARTED` **不**清 inFlightMedia(清了会丢上一轮慢生成的媒体),切聊天才清(CHAT_CHANGED)。
+**in-flight 媒体落地**(`landInFlightMedia()`,自动模式):生成完成的媒体先进 `inFlightMedia`(Map<promptHash, {mediaTag, declare, floor, originalTag, regexStr}>),非流式时每张完成立即落地,流式时等 `GENERATION_ENDED` 后的 `requestDebouncedUpdate` 落地(生成完成回调另有 10s 延迟重试兜底流式结束事件丢失)。落地按 `floor`+`originalTag` 精确定位**触发时的楼层**——生成耗时 40s+,完成时该楼常已被用户新消息挤到非最后一楼,若只扫最后一楼会媒体丢失+标签永久卡死(裸标签留下,撞 3 分钟冷却不重生成,只能刷新);originalTag 失配(楼层被 swipe/删除/regex 脚本改写)时按 hash 重扫兜底,再失配则丢弃防泄漏。**流式期间只滞留"流式目标楼(最后一楼)"**(它的 mes 被 ST 流式持续重写,中途写会被冲掉),非流式楼照常落地——不能顶层 `isStreamActive` 一票否决,否则流式结束事件丢失/时序异常时媒体永久滞留(2026-08 实测:生成成功入图库但零落地)。`GENERATION_STARTED` **不**清 inFlightMedia(清了会丢上一轮慢生成的媒体),切聊天才清(CHAT_CHANGED)。
 
-**媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 `<pic_Declare>` 描述(**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 pic/video 标签,中间只隔空白/换行;隔着其他内容则不关联),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`,与 `reduceMagMediaForLLM` 共用)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
+**媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 declare 描述(`PIC_DECLARE_RE` 兼容 `[img_Declare]...[/img_Declare]`(2026-08 起用户卡的 BBCode 新格式)与 `<pic_Declare>...</pic_Declare>`(旧卡)两种;**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 [image]/[video] 标签,中间只隔空白/换行;隔着其他内容则不关联;declare 是用户卡的约定,插件只读不约束格式),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
 
-**旧楼层占位符补扫**:`processMessageContent` 只处理最后一楼(`chat.length - 1`),切进聊天(CHAT_CHANGED)时由 `processAllMessagesForPlaceholders()` 全量扫旧楼层裸 `<pic>/<video>` 标签转成占位符——**仅手动模式**生效(自动模式不动旧楼层,避免每次进聊天连环触发生成),prompt 提取/特征注入/hash 与逻辑 B-0 一致。
+**旧楼层占位符补扫**:`processMessageContent` 只处理最后一楼(`chat.length - 1`),切进聊天(CHAT_CHANGED)时由 `processAllMessagesForPlaceholders()` 全量扫旧楼层裸 `[image]/[video]` 标签转成占位符——**仅手动模式**生效(自动模式不动旧楼层,避免每次进聊天连环触发生成),prompt 提取/特征注入/hash 与逻辑 B-0 一致。
 
-**LLM 伪造 mag-* HTML 防御**(双端,切断污染循环):LLM 一旦见过 wrapper HTML(旧版插件没有还原功能、或跨设备拷贝的旧聊天),会模仿输出"假壳 wrapper + 模仿尾巴"——在 `<pic>` 外套伪造的 mag-media span、`</span>` 后重复输出 `<small data-mag-role=...>` 尾巴且常少写 `</small>`;未闭合 small 吞掉后续正文,叠加嵌套后文字逐层变小变暗(12.75px→10.6→8.85px + role 元素 opacity:0.7)、图片套 0.7 蒙层,即"图片后文字越来越小变暗"渲染事故。防御:
-- **入口** `sanitizeFreshLlmMessage()`:MESSAGE_RECEIVED / GENERATION_ENDED(STOPPED) 时(插件尚未写入任何 wrapper,此刻 mes 里的 mag-* HTML 必为 LLM 伪造,判据无歧义)调 `sanitizeLlmMagHtml()` 中和——剥 mag span 开标签 + 游离 data-mag-role 元素(紧闭合的连内容删、未闭合的只删开标签保正文),`<pic>` 原样保留走正常管线。continue 场景用 `GENERATION_STARTED` 时快照的最后楼 mes(`preGenerationMesSnapshot`)把处理范围限制在追加段,不误伤同楼已落地的真 wrapper;编辑/切聊天重扫路径**不**调用(存量楼层不动)。
-- **出口** `reduceMagMediaForLLM` 最内层优先迭代折叠(`MAG_WRAP_LLM_RE` 的 guard 禁止内容嵌套 mag span):假壳套真身时由内向外折叠,外层整体吞掉内层产物与伪造尾巴,4 组嵌套实测折叠成恰好 4 个 `<pic>`;mag-placeholder 也还原成 `<pic>`;末尾兜底剥残骸(`MAG_ROLE_ELEMENT_RE`/`MAG_ROLE_OPEN_RE`/`MAG_SPAN_OPEN_RE`),保证零 mag-* 碎片进上下文。
+**LLM 伪造 mag-* HTML 防御**(入口单端;出口还原已移交 ST Regex 扩展):LLM 一旦见过 wrapper HTML(跨设备拷贝的旧聊天等存量污染),会模仿输出"假壳 wrapper + 模仿尾巴"——在 `[image]` 外套伪造的 mag-media span、`</span>` 后重复输出 `<small data-mag-role=...>` 尾巴且常少写 `</small>`;未闭合 small 吞掉后续正文,叠加嵌套后文字逐层变小变暗(12.75px→10.6→8.85px + role 元素 opacity:0.7)、图片套 0.7 蒙层,即"图片后文字越来越小变暗"渲染事故。防御:
+- **入口** `sanitizeFreshLlmMessage()`:MESSAGE_RECEIVED / GENERATION_ENDED(STOPPED) 时(插件尚未写入任何 wrapper,此刻 mes 里的 mag-* HTML 必为 LLM 伪造,判据无歧义)调 `sanitizeLlmMagHtml()` 中和——剥 mag span 开标签 + 游离 data-mag-role 元素(紧闭合的连内容删、未闭合的只删开标签保正文),`[image]` 原样保留走正常管线。continue 场景用 `GENERATION_STARTED` 时快照的最后楼 mes(`preGenerationMesSnapshot`)把处理范围限制在追加段,不误伤同楼已落地的真 wrapper;编辑/切聊天重扫路径**不**调用(存量楼层不动)。
+- **出口(已移除,由 ST Regex 扩展承担)**:发 LLM 前把 wrapper/占位符还原成 `[image]prompt[/image]` 的正则脚本配置在 README"发给 LLM 前的还原"章节——两条规则(wrapper/占位符通吃,lookahead 双锚点取 `data-media-type`/`data-prompt`,勾 AI Output + Only Format Prompt)。**插件不再挂 GENERATE_AFTER_COMBINE_PROMPTS / CHAT_COMPLETION_PROMPT_READY 监听**;若 ST Regex 未配置,wrapper(含 MB 级 base64)会原样进 LLM 上下文。历史:插件曾内置 `reduceMagMediaForLLM` 出口折叠,2026-08 应用户要求删除改走 ST 原生正则。
 
 ## 文件结构
 
@@ -73,7 +73,7 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - 仅改 `settings.html` 也需要刷新,因为它是启动时 fetch 的
 
 **步骤 5 — 复现 + 捕获 console**
-触发一次媒体生成(发一条带 `<pic prompt="...">` 或 `<video prompt="...">` 的消息,或让 AI 回复带标签)。用 playwright 读取 console:
+触发一次媒体生成(发一条带 `[image]...[/image]` 或 `[video]...[/video]` 的消息,或让 AI 回复带标签)。用 playwright 读取 console:
 - `[media-auto-generation]` 开头的 log = 插件主动打的(角色注入、生成成功/失败)
 - 报错堆栈里的 `extensions/third-party/media-auto-generation` = 插件代码崩了
 - 其他报错(SD/ComfyUI/网络)= 后端或外部服务问题
@@ -119,9 +119,9 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `processAllMessagesForPlaceholders()` — CHAT_CHANGED 旧楼层裸标签补扫(仅手动模式,见功能概览)
 - `collectFloorMedia()` / `declareForPosition()` / `renderMediaPreviewModal()` / `scheduleMediaPreviewRender()` — 媒体预览浮窗(见功能概览)
 - `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地
-- `MAG_MEDIA_WRAP_RE` — mag-media wrapper 共享正则(LLM 清理 + 楼层扫描两用)
-- `reduceMagMediaForLLM` / `MAG_WRAP_LLM_RE` — 发 LLM 前还原 wrapper(最内层迭代折叠 + 兜底剥残骸,见功能概览"LLM 伪造 mag-* HTML 防御")
-- `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览)
+- `MAG_MEDIA_WRAP_RE` — mag-media wrapper 正则(collectFloorMedia 楼层扫描用)
+- `extractTagPrompt(match)` — 从触发正则 match 提取 prompt(三处扫描点共用:processMessageContent / landInFlightMedia hash 重扫 / processAllMessagesForPlaceholders),组1=成对分支、组2=漏闭合兜底,换行折叠为空格
+- `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览;出口还原已移交 ST Regex 扩展)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
 - `requestDebouncedUpdate(isFinal)` — 200ms 防抖更新消息 DOM
 - `loadSettings` / `bindSettingsEvents` / `updateUI` — 设置加载与事件绑定
@@ -136,10 +136,11 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `CHAT_CHANGED` — 清 in-flight、关预览浮窗、`processAllMessagesForPlaceholders()` 旧楼层补扫
 
 ### 默认正则(在 `defaultSettings`)
-- 图片: `/<pic\b(?![^>]*\bsrc\s*=)(?:(?:(?!\bprompt\b)[^>])*\blight_intensity\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi`
-- 视频: `/<video\b(?:(?:(?!\bprompt\b)[^>])*\bvideoParams\s*=\s*"([^"]*)")?(?:(?!\bprompt\b)[^>])*\bprompt\s*=\s*"([^"]*)"[^>]*>/gi`
 
-捕获组 1 = 额外参数(图片:`light_intensity,sunshine`;视频:`frameCount,width,height`),捕获组 2 = prompt
+- 图片: `/\[image\][ \t]*([\s\S]*?)[ \t]*\[\/image\]|\[image\][ \t]*([^\n\[]+)/gi`
+- 视频: `/\[video\][ \t]*([\s\S]*?)[ \t]*\[\/video\]|\[video\][ \t]*([^\n\[]+)/gi`
+
+双分支:分支 1 成对标签(组 1 = prompt,非贪婪到闭合标签,体内引号/换行/`[` 权重语法均安全);分支 2 漏闭合兜底(组 2 = 行内内容,到换行或 `[` 止)。**注意源码里必须写双反斜杠**(`'\\[image\\]...'`)——单反斜杠会被 JS 字符串字面量解析吃掉(`\s`→`s`、`\b`→退格符),旧版默认正则就坏在这里从未生效过。旧参数管线(light_intensity/videoParams → data-extra 透传)已整体删除,占位符/wrapper 不再有 data-extra 属性。
 
 ## 依赖的 ST API
 
@@ -165,7 +166,9 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 
 - **ST 全局 i18n 字典优先级 > 插件 zh-cn.json**。简单 key 名(单字/常见词如 `"New"`、`"Save"`、`"Delete"`)会被全局字典覆盖,插件的翻译不生效(本插件 `"New": "新建"` 没生效,因为全局翻成 `"最新"`)。**防御措施**:插件 i18n key 加独特后缀(如 `"New Preset"` 而非 `"New"`、`"comfy_save"` 而非 `"Save"`)。
 
-- **`extension_settings` 是模块作用域变量,不在 `window` 上**。Playwright `browser_evaluate` 读不到 `window.extension_settings`。验证持久化只能"改 → 等 1s → 刷新 → 读 DOM"。
+- **`extension_settings` 是模块作用域变量,不在 `window` 上**。Playwright `browser_evaluate` 读不到 `window.extension_settings`。验证持久化只能"改 → 等 1s → 刷新 → 读 DOM"(或直接读文件 `data/default-user/settings.json`)。
+
+- **Playwright 自动化 ST 编辑消息框,原生 `ta.value=` 赋值会静默失败**。ST 用 jQuery 管理 `.edit_textarea`,保存按钮是 **`.mes_edit_done`**(不是 mes_edit_save),正确姿势:`$(ta).val(新值).trigger('input')` → `$(mes块.querySelector('.mes_edit_done')).trigger('click')`。原生赋值后点保存:jQuery 读到空值,消息内存态被清空(文件未落盘,刷新可恢复)。另外合成 `click()` 对部分 ST 按钮不生效时改用 `$(el).trigger('click')`。整页刷新(navigate)后 ST 不恢复聊天,处于无聊天状态——测完要重新点角色卡进聊天,否则"最后一楼"相关验证全部对着欢迎页跑。
 
 ## Git
 
@@ -175,8 +178,9 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 ## 测试要点
 
 改完后至少验证:
-1. 图片模式(`<pic prompt="...">`)→ 是否替换、是否走缓存
-2. 视频模式(`<video prompt="...">`)→ 是否替换、参数解析
+1. 图片模式(`[image]...[/image]`)→ 是否替换、是否走缓存;漏闭合(`[image]prompt` 行尾无 `[/image]`)兜底是否触发
+2. 视频模式(`[video]...[/video]`)→ 是否替换
 3. 流式模式 → 流式期间提前触发生成(500ms 轮询只触发不改 DOM,固定行为无开关),流式结束统一替换
 4. 角色特征注入 → 命中角色名后是否附加 tag
 5. 冷却逻辑 → 同一 prompt 3 分钟内不重复生成
+6. ST Regex 还原规则配置后,发 LLM 的上下文里 wrapper 被还原成 `[image]prompt[/image]`(聊天记录与显示不变)
