@@ -377,6 +377,23 @@
         border-top: 2px solid var(--SmartThemeQuoteColor, rgba(120,160,255,0.8));
         opacity: 0.6;
     }
+    /* 楼层重生按钮:分隔行行尾,padding 加大点击热区(手机端友好) */
+    #mag_media_preview_modal .preview-floor-regen-btn {
+        cursor: pointer;
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 1em;
+        opacity: 0.65;
+        padding: 4px 6px;
+        white-space: nowrap;
+    }
+    #mag_media_preview_modal .preview-floor-regen-btn:hover {
+        opacity: 1;
+        color: var(--SmartThemeQuoteColor, rgba(120,160,255,0.9));
+    }
+    #mag_media_preview_modal .preview-floor-regen-btn.busy {
+        pointer-events: none;
+        opacity: 0.5;
+    }
     #mag_media_preview_modal .preview-media-row {
         cursor: pointer;
         margin-bottom: 10px;

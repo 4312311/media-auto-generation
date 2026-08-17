@@ -368,11 +368,12 @@ let _wfValidateTimer = null;
 
 /**
  * 工作流占位符替换。占位符在 JSON 里带引号("%key%"),用 JSON.stringify 自动转义。
+ * @param {boolean} forceRandomSeed 强制随机 seed(楼层级重新生成用:固定 seed 下重生成结果与旧图几乎相同)
  */
-function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt) {
-    const seed = Number.isFinite(preset.seed) && preset.seed >= 0
-        ? preset.seed
-        : Math.floor(Math.random() * 1_000_000_000);
+function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt, forceRandomSeed = false) {
+    const seed = forceRandomSeed || !(Number.isFinite(preset.seed) && preset.seed >= 0)
+        ? Math.floor(Math.random() * 1_000_000_000)
+        : preset.seed;
     const replacements = {
         model: preset.model,
         sampler: preset.sampler,
@@ -401,8 +402,8 @@ function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt)
  * 外壳:入串行队列,真正执行交给 generateViaComfyInner。
  * 这样改 URL/工作流/前缀等配置后点重试,等到 job 真跑时会重新读 active preset,新配置立即生效。
  */
-async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter) {
-    return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter));
+async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false) {
+    return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed));
 }
 
 /** 全局激活的 ComfyUI 服务地址(跨 preset 共享) */
@@ -410,7 +411,7 @@ function getActiveComfyUrl() {
     return String(extension_settings[extensionName].activeComfyUrl || '').trim();
 }
 
-async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter) {
+async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
     const comfyUrl = getActiveComfyUrl();
@@ -422,7 +423,7 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const sep = prefix && !prefix.endsWith(',') ? ',' : '';
     const finalPrompt = prefix + sep + modifiedPrompt;
     const negativePrompt = preset.negativePromptPrefix || '';
-    const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt);
+    const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
 
     const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
@@ -3189,7 +3190,7 @@ function extractAttr(html, name) {
     return m ? m[1] : '';
 }
 
-/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt};无 src 返回 null。mediaType 以内层标签名为准 */
+/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,magId,extra};无 src 返回 null。mediaType 以内层标签名为准 */
 function parseMediaWrapper(block) {
     // lazy [^>]*?:buildMediaWrap 产物里 src 紧跟标签名,避免贪婪回溯扫过整个 base64
     const srcMatch = block.match(/<(img|video)\b[^>]*?\ssrc="([^"]*)"/);
@@ -3202,6 +3203,8 @@ function parseMediaWrapper(block) {
         url: unescapeHtmlAttr(srcMatch[2]),
         mediaType: srcMatch[1] === 'video' ? 'video' : 'image',
         prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
+        magId: unescapeHtmlAttr(extractAttr(block, 'data-mag-id')),
+        extra: unescapeHtmlAttr(extractAttr(block, 'data-extra')),
     };
 }
 
@@ -3275,7 +3278,7 @@ function collectFloorMedia() {
         const floor = chat.length - 1;
         for (const entry of inFlightMedia.values()) {
             const parsed = parseMediaWrapper(entry.mediaTag);
-            if (parsed) records.push({ floor, declare: entry.declare ?? null, ...parsed });
+            if (parsed) records.push({ floor, declare: entry.declare ?? null, inFlight: true, ...parsed });
         }
     }
 
@@ -3321,6 +3324,12 @@ function ensureMediaPreviewModal() {
             prompt: $row.attr('data-prompt'),
         });
     });
+    // 点楼层分隔行的重生按钮 → 整楼层媒体重新生成(body 内容会被重渲,委托抗重渲)
+    $m.find('.preview-modal-body').on('click', '.preview-floor-regen-btn', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        await regenerateFloorMedia(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
+    });
 }
 
 /** 渲染浮窗内容(仅 open 状态执行;重建时保留滚动位置) */
@@ -3355,8 +3364,11 @@ function renderMediaPreviewModal() {
             currentFloor = r.floor;
             floorSeq = 0;
             const labelText = r.floor === latestFloor ? '最新' : `第 ${r.floor} 楼的图片`;
+            // 楼层重生按钮:busy 时转圈 + 禁用(重渲由 floorRegenBusy 驱动,落地触发的刷新也能保持禁用态)
+            const busy = floorRegenBusy.has(r.floor);
+            const btnIcon = busy ? 'fa-circle-notch fa-spin busy' : 'fa-rotate-right';
             $body.append(`
-                <div class="preview-floor-sep"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div></div>
+                <div class="preview-floor-sep" data-floor="${r.floor}"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div><i class="fa-solid ${btnIcon} preview-floor-regen-btn" title="重新生成本楼层全部媒体"></i></div>
             `);
         }
         floorSeq++;
@@ -3396,6 +3408,125 @@ function closeMediaPreviewModal() {
     $m.removeClass('open');
     releaseVideoEl($m.find('video'));
     $m.find('.preview-modal-body').empty();
+}
+
+/**
+ * 把楼层 mes 里的旧格式裸 <img|video> 标签(按 url 锚定第一个匹配)替换为新 wrapper 并重渲。
+ * 旧格式没有 magId,不能走 replacePlaceholderInMes;扫描前先剥 wrapper(与 collectFloorMedia 同款,
+ * 避免 wrapper 的 MB 级 base64 空扫一遍)。收尾与 commitMediaToMessage 一致。
+ * @returns {Promise<boolean>} 是否成功定位并替换
+ */
+async function commitBareMediaToMessage(floor, oldUrl, mediaWrap, callerName) {
+    const context = getContext();
+    const message = context.chat?.[floor];
+    if (!message || typeof message.mes !== 'string') {
+        console.warn(`[${extensionName}] ${callerName}: 楼层 ${floor} 不存在,跳过裸标签替换`);
+        return false;
+    }
+    const bare = message.mes.replace(MAG_MEDIA_WRAP_RE, '');
+    const tagRe = /<(img|video)\b[^>]*>/g;
+    let replaced = false;
+    let tm;
+    while ((tm = tagRe.exec(bare)) !== null) {
+        if (!tm[0].includes('prompt="')) continue;
+        const srcMatch = tm[0].match(/\ssrc="([^"]*)"/);
+        if (!srcMatch || unescapeHtmlAttr(srcMatch[1]) !== oldUrl) continue;
+        // 函数形式替换:mediaWrap 里的 $&/$' 等序列不会被当替换模式解释
+        message.mes = message.mes.replace(tm[0], () => mediaWrap);
+        replaced = true;
+        break;
+    }
+    if (!replaced) {
+        console.warn(`[${extensionName}] ${callerName}: 楼层 ${floor} 未找到 src 匹配的裸标签(oldUrl=${String(oldUrl).slice(0, 80)}),跳过`);
+        return false;
+    }
+    updateMessageBlock(floor, message);
+    await eventSource.emit(event_types.MESSAGE_UPDATED, floor);
+    await context.saveChat();
+    scheduleMediaPreviewRender();
+    return true;
+}
+
+// 楼层级重新生成进行中的楼层号(renderMediaPreviewModal 据此渲染按钮禁用态)
+const floorRegenBusy = new Set();
+
+/**
+ * 楼层级重新生成(媒体预览浮窗按钮入口):把指定楼层全部已落地媒体逐张重新生成并原位替换。
+ * 与单张 regenerateMedia 的区别:① 批量顺序执行(ComfyUI 后端本就串行,enqueueComfyJob 全局队列)
+ * ② 强制随机 seed(固定 seed 下重生结果与旧图几乎相同,楼层重生失去意义) ③ 绕过 promptHistory
+ * 冷却(显式用户操作)。in-flight 媒体跳过(尚在生成,mes 里没有可替换锚点);单张失败不中断后续。
+ */
+async function regenerateFloorMedia(floor) {
+    if (!Number.isInteger(floor) || floor < 0) return;
+    if (floorRegenBusy.has(floor)) return;
+
+    const records = collectFloorMedia().filter(r => r.floor === floor && !r.inFlight);
+    if (records.length === 0) {
+        toastr.info('该楼层没有可重新生成的媒体');
+        return;
+    }
+
+    floorRegenBusy.add(floor);
+    scheduleMediaPreviewRender(); // 重渲出按钮禁用态
+
+    let timer = null;
+    let seconds = 0;
+    let toast = null;
+    const total = records.length;
+    let ok = 0;
+    let fail = 0;
+    const progressText = () => `⏳ 重新生成第 ${floor} 楼媒体 ${ok + fail}/${total}...`;
+
+    try {
+        toast = toastr.info(`${progressText()} 0s`, '', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        timer = setInterval(() => {
+            seconds++;
+            if (toast && toast.find) toast.find('.toast-message').text(`${progressText()} ${seconds}s`);
+        }, 1000);
+
+        for (const [i, r] of records.entries()) {
+            const injectionResult = injectCharacterTags(r.prompt, extension_settings[extensionName].characterTags);
+            const promptHash = simpleHash(normalizePrompt(injectionResult.modifiedPrompt));
+            if (processingHashes.has(promptHash)) {
+                fail++; // 该 prompt 正被其他流程生成,本轮跳过
+                continue;
+            }
+            processingHashes.add(promptHash);
+            try {
+                const { url, format, character, finalPrompt } = await generateViaComfy(injectionResult.modifiedPrompt, r.mediaType, null, true);
+                // 旧格式裸标签没有 magId,合成一个(buildPlaceholder 同款格式,时间戳可供预览排序)
+                const mediaWrap = buildMediaWrap({
+                    magId: r.magId || `${promptHash}-${i}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                    mediaType: r.mediaType,
+                    url,
+                    rawPrompt: r.prompt,
+                    rawExtraParams: r.extra || '',
+                });
+                const committed = r.magId
+                    ? await commitMediaToMessage(r.magId, mediaWrap, 'regenerateFloorMedia')
+                    : await commitBareMediaToMessage(floor, r.url, mediaWrap, 'regenerateFloorMedia');
+                if (!committed) {
+                    fail++;
+                    continue;
+                }
+                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType: r.mediaType, format });
+                ok++;
+            } catch (err) {
+                console.error(`[${extensionName}] Floor regenerate failed (floor=${floor}, prompt=${String(r.prompt).slice(0, 80)}):`, err);
+                fail++;
+            } finally {
+                processingHashes.delete(promptHash);
+            }
+        }
+
+        if (toast) toastr.clear(toast);
+        if (fail === 0) toastr.success(`第 ${floor} 楼重新生成完成: 成功 ${ok} 张`);
+        else toastr.warning(`第 ${floor} 楼重新生成完成: 成功 ${ok} 张,失败 ${fail} 张`);
+    } finally {
+        if (timer) clearInterval(timer);
+        floorRegenBusy.delete(floor);
+        scheduleMediaPreviewRender();
+    }
 }
 
 // --- 测试生成 tab ---
