@@ -114,5 +114,9 @@
     "mag_lora_add": "新增 LoRA",
     "mag_lora_add_label": "新增 LoRA",
     "mag_lora_add_ph": "输入关键字过滤,或完整文件名后回车",
-    "mag_lora_remove": "移除此 LoRA"
+    "mag_lora_remove": "移除此 LoRA",
+
+    "mag_upscale_model": "放大模型(可选)",
+    "mag_upscale_none": "不使用",
+    "mag_upscale_hint": "选择后生成时自动在输出节点前插入放大链(不改动工作流 JSON);列表来自 ComfyUI 的 models/upscale_models"
 }

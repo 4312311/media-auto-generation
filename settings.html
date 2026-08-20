@@ -395,15 +395,8 @@
         opacity: 0.5;
     }
     #mag_media_preview_modal .preview-media-row {
-        cursor: pointer;
         margin-bottom: 10px;
         padding: 0 6px; /* 图片左右留一点边距,不顶满对话框 */
-        border-radius: 6px;
-        overflow: hidden;
-        transition: box-shadow 0.12s;
-    }
-    #mag_media_preview_modal .preview-media-row:hover {
-        box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, rgba(120,160,255,0.8));
     }
     #mag_media_preview_modal .preview-media-declare {
         color: var(--SmartThemeBodyColor, #fff);
@@ -432,6 +425,13 @@
         height: auto; /* 高度自适应:按媒体原始宽高比撑开,不再截到固定高度 */
         min-height: 120px; /* loading=lazy 未加载时占位,避免刷新重建后 scrollTop 失效跳顶 */
         background: rgba(0,0,0,0.3);
+        border-radius: 6px;
+        cursor: pointer; /* 只有媒体本体可点开放大,declare/时间文字不放大 */
+        transition: box-shadow 0.12s;
+    }
+    #mag_media_preview_modal .preview-media-row img:hover,
+    #mag_media_preview_modal .preview-media-row video:hover {
+        box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, rgba(120,160,255,0.8));
     }
     /* 手机端整体再缩一档,避免占屏过大 */
     @media (max-width: 500px) {
@@ -567,10 +567,15 @@
 
     /* --- 浮动按钮吸附态(挂在 body 下,不在 panel_body 内,所以不能用 panel_body 前缀) ---
        用 transform 而非 left/top 实现吸附隐藏,避开 ST 全局 html{perspective:1000px} 让 right/bottom 失效的 quirk */
-    #media_auto_gen_float_btn { transition: transform .18s ease, opacity .18s ease; }
+    /* touch-action:none:手机端触摸拖动不被浏览器当滚动手势接管(接管后 touchmove 变 touchcancel,浮标"拖不出来"的根因) */
+    #media_auto_gen_float_btn { transition: transform .18s ease, opacity .18s ease; touch-action: none; }
     #media_auto_gen_float_btn.mag-docked-left { transform: translateX(-65%); opacity: .5; }
     #media_auto_gen_float_btn.mag-docked-right { transform: translateX(65%); opacity: .5; }
+    /* 手机端覆盖(按钮小,65% 隐藏后只剩 14px 半透明缝,看不见也点不中):少藏一点 + 提高不透明度 */
+    #media_auto_gen_float_btn.mag-mobile.mag-docked-left { transform: translateX(-45%); opacity: .8; }
+    #media_auto_gen_float_btn.mag-mobile.mag-docked-right { transform: translateX(45%); opacity: .8; }
     #media_auto_gen_float_btn.mag-dragging { transition: none; }
+    #media_auto_gen_panelheader { touch-action: none; }
 
     /* === 手动模式占位符 + 生成图 wrapper(都在 #chat 消息 DOM 内,会被 ST sanitizer 加 custom- 前缀) ===
        规则:外层 .mag-* 同时列原始 + .custom-mag-* 前缀选择器;
@@ -1104,6 +1109,12 @@
             <label data-i18n="Scheduler">Scheduler</label>
             <select id="comfy_scheduler" class="text_pole"></select>
         </div>
+    </div>
+
+    <div class="margin-top-5">
+        <label for="comfy_upscale" data-i18n="mag_upscale_model">Upscale Model (optional)</label>
+        <select id="comfy_upscale" class="text_pole"></select>
+        <small style="opacity: 0.7; font-size: 0.85em; display: block;" data-i18n="mag_upscale_hint">选择后生成时自动在输出节点前插入放大链(不改动工作流 JSON)</small>
     </div>
 
     <div class="flex-container flexGap5 margin-top-5">

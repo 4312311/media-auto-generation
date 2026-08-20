@@ -2,6 +2,10 @@
 
 SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-generation 改写,扩展为支持视频生成。通过 ST 自带的 SD/ComfyUI 接口,在 AI 回复包含 `[image]...[/image]` 或 `[video]...[/video]` 标签时自动生成图片/视频并替换到消息中。
 
+## 铁律(最高优先级,覆盖一切默认行为)
+
+**绝对禁止通过修改 SillyTavern 源码(`F:\silly\src\` 等酒馆本体文件)的方式来实现插件功能。** 插件的任何能力只能依靠:插件自身代码 / ST 原生已有的 API / 浏览器能力(如带 `--enable-cors-header` 的 ComfyUI 直连)。插件装在别人机器上时不会有这些补丁,靠改宿主源码实现的功能等于只在开发机上成立。ST 后端缺端点时,先找浏览器直连等替代路径(参考 `fetchComfyComboOptions` 及其封装 `fetchLorasDirect` / `fetchUpscaleModelsDirect`)。LoRA/放大模型列表均已迁移为浏览器直连,插件不再调用任何后端补丁端点;macOS 机 `/api/sd/comfy/loras` 后端补丁已成死代码,可自行移除。
+
 ## 功能概览
 
 入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 4 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
@@ -9,7 +13,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
 | 主要配置 | `main` | 总开关与正则:媒体类型(disabled/image/video)、图片/视频正则、`<img>` 标签的 style 属性 |
-| ComfyUI 配置 | `comfy` | tab 顶部是**全局 ComfyUI 地址**(`activeComfyUrl` + 地址簿下拉 `comfyUrls`,跨配置档共享,hr 分隔线隔开);下方是多配置档系统:model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。工作流 JSON 下方 LoRA 编辑列表:行内改 `strength_model` 自动写回;行尾 × 删除节点;『新增 LoRA』下拉按 `comfyCache.loras` 过滤选择(列表由 `refreshComfyOptions` 拉 `/api/sd/comfy/loras` —— **ST 后端本地补丁端点**,旧后端 404 时降级为手动输入文件名回车)。增删是图手术(`addLoraToWorkflow` 链尾插入 / `removeLoraFromWorkflow` 旁路重接),写回会整体重排 JSON 排版。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
+| ComfyUI 配置 | `comfy` | tab 顶部是**全局 ComfyUI 地址**(`activeComfyUrl` + 地址簿下拉 `comfyUrls`,跨配置档共享,hr 分隔线隔开);下方是多配置档系统:model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。Sampler/Scheduler 行下方**放大模型下拉**(`preset.upscaleModel`,首项『不使用』=空值不注入;选中后**生成时**由 `injectUpscaleIntoWorkflowJson` 动态图手术注入 `UpscaleModelLoader` + `ImageUpscaleWithModel`——插在终端图像输出节点(输出未被任何节点消费、且 `images` 输入为节点引用的节点,PreviewImage/SaveImage/VideoCombine 通吃)之前,同源终端共享一个放大节点,异源各插一个;工作流已带接线好的放大链时只覆盖 loader 的 `model_name`;**不改动 preset.workflowJson**,JSON 无效/找不到终端时打 warn 原样放行)。列表由 `refreshComfyOptions` 调 `fetchUpscaleModelsDirect` **浏览器直连** ComfyUI `/object_info/UpscaleModelLoader`(兼容新版 `["COMBO",{options}]` 与旧版 `[0]` 数组两种返回)——**要求 ComfyUI 启动带 `--enable-cors-header`**(Windows 机的 `F:\romote confyUI\start_comfyui_directly.bat` 已加;不带该参数时浏览器直连被新版 ComfyUI 的 Origin 校验 403,拉不到列表只降级为下拉回显已存值,生成注入不受影响)。工作流 JSON 下方 LoRA 编辑列表:行内改 `strength_model` 自动写回;行尾 × 删除节点;『新增 LoRA』下拉按 `comfyCache.loras` 过滤选择(列表由 `refreshComfyOptions` 调 `fetchLorasDirect` **浏览器直连** ComfyUI `/object_info/LoraLoader`(节点缺失时退 `LoraLoaderModelOnly`),同样要求 `--enable-cors-header`;失败降级为手动输入文件名回车)。点『连接』拉到的五类列表(models/samplers/schedulers/loras/upscaleModels)按 ComfyUI 地址分档持久化到 `comfyListCache`(key 去尾斜杠;只覆盖本轮成功拉到的组,部分失败保留旧档);`renderPresetFields` 开头有失配守卫——内存 `comfyCache.url` ≠ 当前地址时 `hydrateComfyCacheFromSettings()` 自动灌回存档,刷新页面/切配置档/地址簿切走再切回都不需要重新连接,点『连接』才刷新为最新。增删是图手术(`addLoraToWorkflow` 链尾插入 / `removeLoraFromWorkflow` 旁路重接),写回会整体重排 JSON 排版。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
 
@@ -104,6 +108,17 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 2. 复制 DevTools Console 的报错粘给你
 3. 必要时截图给你(zai-mcp-server 可分析图像)
 
+### 流式/异步时序类 bug 调试守则(2026-08 "生成了没落地"事故复盘沉淀)
+
+这类 bug(事件驱动 + 异步回调 + 状态标志)的调试守则,按优先级:
+
+1. **第一时间拿用户窗口的 console**,别自己闷头推。playwright 是独立 Chromium,读不到用户正在用的浏览器;而本插件这类 bug 的决定性证据(落地失败 warn / 事件时序)只在用户窗口产生。开口要:"复测一次,把 console 里 `[media-auto-generation]` 开头的行和所有 warn/error 复制给我"。
+2. **代码推演最多 2 轮**。两次都得出"应该通"而实测不通,说明推演的某个前提错了——继续推演不产出新信息,立即换路:要么要 console,要么给可疑分支加日志让用户复测时证据自动产生。
+3. **修这类 bug 时,同步给静默 return/skip 分支加日志**。`landInFlightMedia` 的 isStreamActive 跳过、失配丢弃都是零日志黑洞——正是"图库有记录但零落地却无任何线索"的原因。修复 + 加可观测性一起交付,复测即产出证据。
+4. **推测性修复要明说,并附复测脚本**。修复无法在本地复现验证时(能复现的场景早就修好了),交付时说明"这是基于排除法的推测",并给确认清单 + 还坏时的反馈模板(要什么信息),减少反馈往返失真。
+5. **设计会被重复执行的匹配逻辑时,先做增量输入审查**:问"输入在两次执行之间变化时(流式半截输出),每次的匹配结果/hash 是否稳定?"。冷却/并发锁等幂等防御挡不住"输入本身在变"的场景(2026-08 兜底分支疯狂触发事故的根因)。
+6. **在宿主(ST)上做写操作自动化前,先 grep 宿主源码确认控件机制**(编辑框 jQuery 管理、`.mes_edit_done`),读操作无害可以试探,写操作错姿势会污染用户数据。
+
 ## 代码地图(index.js)
 
 ### 关键状态(模块级变量)
@@ -123,9 +138,10 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `extractTagPrompt(match)` — 从触发正则 match 提取 prompt(三处扫描点共用:processMessageContent / landInFlightMedia hash 重扫 / processAllMessagesForPlaceholders),组1=成对分支、组2=漏闭合兜底,换行折叠为空格
 - `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览;出口还原已移交 ST Regex 扩展)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
+- `applyWorkflowPlaceholders` / `injectUpscaleIntoWorkflowJson` / `generateViaComfy` — ComfyUI 生成管线:占位符替换 → 放大模型注入(preset.upscaleModel 非空时)→ 串行队列发 `/api/sd/comfy/generate`(见功能概览 ComfyUI 配置 tab 行)
 - `requestDebouncedUpdate(isFinal)` — 200ms 防抖更新消息 DOM
 - `loadSettings` / `bindSettingsEvents` / `updateUI` — 设置加载与事件绑定
-- `createFloatingUI` / `initPanelDrag` / `initFloatBtnDrag` / `toggleFloatingPanel` — 浮动按钮 + 可拖动浮窗(自写 mousedown,不依赖 ST `dragElement`,见"ST 前端踩坑笔记")
+- `createFloatingUI` / `initPanelDrag` / `initFloatBtnDrag` / `toggleFloatingPanel` — 浮动按钮 + 可拖动浮窗(自写 mousedown,不依赖 ST `dragElement`,见"ST 前端踩坑笔记")。浮标另有:`floatBtnMetrics`(默认位尺寸/边距参数)/ `clampFloatBtnIntoView`(恢复落盘位置 & resize/orientationchange 时把浮标拉回屏内,只改视觉不落盘)/ `resetFloatBtnPosition`(手机端从 wand 菜单打开面板时把浮标重置回默认右下角并落盘——浮标被吸附/挤出屏后的救援通道)+ 模块级 `floatBtnDockedEdge` 吸附运行态(手机端吸附少藏:settings.html 的 `.mag-mobile` 覆盖为 translateX ±45%/opacity .8,桌面 ±65%/.5)
 - `renderCharacterTagsList` — 角色特征列表 UI 渲染
 
 ### 事件监听(底部)
@@ -153,6 +169,45 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 
 调用 SD 接口时,prompt 中可用 ST 的宏(如 `{{setvar::xxx::yyy}}`),会被 ST 解析后传给 ComfyUI。
 
+## 工程模型与设计原则(2026-08 标签格式迁移事故沉淀)
+
+### 给 LLM 设计触发标签格式的原则
+
+- **prompt 放标签体内,不放属性**:`<pic prompt="...">` 属性式里引号/换行/`&` 是结构性字符,AI 写场景描述天然带这些字符,一写就坏;`[image]prompt[/image]` 体内是自然语言,无转义需求。AI 对"标签包裹内容"结构的遵循率也远高于"属性含长文本"。
+- **成对闭合天然抗流式半截**:闭合标签(`[/image]`)出现前正则不匹配 → 流式轮询期间半截输出不会误触发。漏闭合兜底分支则相反,必须配"消息完整后才生效"的守卫(见代码地图 processMessageContent)。
+- **避开有强先验的标签名**:`[img]` 是几十年标准 BBCode 贴图标签,会诱导 AI 往体内填 URL 而不是 prompt 描述;中文名(`[图]`)会和中文正文里的方括号旁白混。
+- **幂等防御挡不住"输入在变"**:冷却(promptHistory)/并发锁(processingHashes)/hash 去重的前提是"同输入重复出现";流式增量输出下每轮匹配到不同长度的半截文本 → hash 每轮不同 → 全部防御失效、疯狂触发生成。任何会被轮询执行的匹配逻辑,设计时必须做增量输入审查。
+
+### 流式期间写回 message.mes 的竞态模型
+
+- **只有"流式目标楼"(chat 最后一楼)的 mes 会被 ST 流式持续重写**——中途往它写 wrapper 会被下一个 chunk 冲掉;非流式楼层不受影响,随时可写。所以写回逻辑要按"目标楼是否正在被流式重写"分层,**不能顶层 isStreamActive 一票否决**(否则事件异常时媒体永久滞留)。
+- **异步长任务(生成 40s+)会跨越流式生命周期**:触发在流式中、完成可能在流式结束后(或反之)。收尾不能只信任单一事件链(GENERATION_ENDED 防抖),完成回调要带独立的延迟重试兜底(本插件 10s)。
+- **in-flight 落地三要素**:promptHash(对账)+ floor(触发楼层,非最后一楼)+ originalTag(标签原文)——生成耗时期间楼层结构会变,只记 hash 不记位置就是"图库有记录但零落地"。
+
+### 消息数据三层模型与证据链定位
+
+排障时先分清证据在哪一层,再交叉定位断点:
+
+| 层 | 特性 | 可查证据 |
+|---|---|---|
+| `context.chat[i].mes` | 数据层,wrapper 存原始 `class="mag-media"` | 仅运行时可读(模块作用域,不在 window) |
+| `.mes_text` DOM | 渲染层,sanitizer 加 `custom-` 前缀、自定义标签(`<StatusPlaceHolderImpl>` 等)会展开,textContent 远大于 mes 长度 | playwright 可读,但**不能当 mes 真值** |
+| `data/<user>/chats/**.jsonl` | 持久层,**首行是 chat_metadata 不是消息**(楼层索引偏移 1);swipe 时 mes=当前分支、swipes 数组存其余分支 | 文件直读;**mtime 判断"内存事故是否落盘"**;每行一个 JSON |
+
+辅助证据源:图库 `galleryManifest.timestamp` = 生成成功的独立产物记录(在 inFlightMedia.set 之后一行 push,**有图库条目 = 生成成功且已暂存**,断点必在落地段);ComfyUI `/queue` `/history` = 后端实际调用;`data/<user>/settings.json` 直读 extension_settings(绕过 window 不可达)。
+
+### 正则的两种存在形态与转义边界
+
+- **正则字面量**(`/...\/gi` 直接 const,如 MAG_MEDIA_WRAP_RE)无转义问题;**配置字符串**(存 settings、走 `regexFromString` 解析,如 imageRegex)在源码字符串字面量里必须**双反斜杠**——单反斜杠经 JS 解析 `\s`→`s`、`\b`→退格符,正则沉默失效(历史默认正则坏在这里从未生效,用户实际一直在用 UI 手配值)。
+- 验证方法:node 一行 `eval` 该字符串字面量打印解析值,再拿真实数据 matchAll——不要信肉眼。
+- **HTML 属性值是转义过的**(`data-prompt` 里 `"` → `&quot;`):插件内回读用 `unescapeHtmlAttr`;但 ST Regex 只做字符串替换**不会 unescape**,还原给 LLM 的 prompt 里实体会原样出现(SD tag 场景概率低,已知边界)。
+
+### ST Regex 扩展(出口还原的承接方)
+
+- Find Regex 输入走 `regexFromString` 解析——支持 `/pattern/flags` 字面量格式;Replace 用 `$1` 反向引用。
+- **Only Format Prompt(promptOnly)**:只改发送给 LLM 的 prompt,不动 mes / 不动显示——正是 wrapper 出口还原要的语义。
+- 匹配 wrapper/占位符要用 **lookahead 双锚点**(`(?=[^>]*data-media-type="...")(?=[^>]*data-prompt="...")`)取属性:media wrapper 与 placeholder 的**属性顺序不同**,不能按顺序捕获。
+
 ## ST 前端踩坑笔记
 
 写浮层 / 拖动 UI 时一定会踩的坑,提前规避:
@@ -160,6 +215,8 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - **`dragElement($el)`(`scripts/RossAscends-mods.js:477`)不能用于内嵌浮窗的标题栏**。它强依赖 `.drag-grabber` 类,而 ST 全局 CSS 在 `style.css:790` 强制 `.drag-grabber { position: absolute; }`,会把标题栏从文档流中拔出、叠到下方控件上(本插件曾导致关闭按钮盖住下方 checkbox)。仅适用于 ST 自带 movingUI 浥浮工具栏。需要可拖动浮窗时自写 `mousedown`/`touchstart`(参考本插件 `initPanelDrag` / `initFloatBtnDrag`)。还有:它把位置写进 `power_user.movingUIState`、`power_user.movingUI === false` 时直接 abort、`isMobile()` 时禁用 — 三层耦合都不适合第三方常驻浮层。
 
 - **jQuery `.toggle()` 对 `display:flex` 元素会强制变成 `display:block`**。用 `.css('display', 'flex' / 'none')` 显式控制,不要用 `.toggle()` / `.show()`。
+
+- **手机端触摸拖动必须给拖动目标加 CSS `touch-action:none`**(浮标与浮窗标题栏都加了,settings.html)。不加时浏览器把触摸当滚动手势接管,touchmove 流被 `touchcancel` 打断 → "拖不动/拖一半卡死"(2026-08 实测:浮标吸附到屏幕边后手机上拖不出来)。`preventDefault` 救不了——document 级 touch 监听在现代浏览器默认 passive,jQuery `$.on` 又不支持传 passive 选项;监听清理也要把 `touchcancel` 与 `touchend` 并列。另:手机浏览器地址栏收展/旋屏会改 `innerHeight`,拖动时钳制过的位置会整个出屏——恢复落盘位置与 resize/orientationchange 都要再钳一次(本插件 `clampFloatBtnIntoView`)。
 
 - **`saveSettingsDebounced` 实际防抖 1000ms**(`debounce_timeout.relaxed`,见 `scripts/constants.js:14`)。验证位置/设置持久化时,改完至少等 1s 再刷新,否则保存还没落盘。需要立即 flush(如显式"保存"按钮)用 `saveSettings()`(`script.js:7819`),无防抖。
 

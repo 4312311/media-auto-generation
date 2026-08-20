@@ -61,6 +61,7 @@ const defaultSettings = {
     activePresetName: null, // 当前激活的配置档名字
     activeComfyUrl: '', // 全局激活的 ComfyUI 服务地址(跨 preset 共享)
     comfyUrls: [], // ComfyUI 服务地址簿(跨 preset 共享):[{ name, url }]
+    comfyListCache: {}, // 点『连接』拉到的列表持久化(按地址分档):{ [url]: { models, samplers, schedulers, loras, upscaleModels, savedAt } }
     comfyImportUrls: [], // detail 接口 URL 历史(拉取成功后自动入簿):[string]
     galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
 };
@@ -300,7 +301,7 @@ function enqueueComfyJob(task) {
 
 /**
  * 通用 ComfyUI 代理调用,body 已含 url(+ 可选 auth),passthrough 给 /api/sd/comfy/<path>
- * @param {string} path ping/samplers/models/schedulers/vaes/loras/generate(loras 为本地后端补丁端点)
+ * @param {string} path ping/samplers/models/schedulers/vaes/generate(LoRA/放大模型列表不走代理,见 fetchLorasDirect / fetchUpscaleModelsDirect)
  * @param {object} body
  * @param {number} [timeoutMs=60000] 超时,超时后 abort 并抛"超时"错误
  */
@@ -330,6 +331,53 @@ async function comfyProxy(path, body, timeoutMs = 60_000) {
 }
 
 const VIDEO_FORMATS = new Set(['mp4', 'webm', 'mov', 'avi', 'mkv']);
+
+/**
+ * 浏览器直连 ComfyUI 拉 object_info 里某节点某参数的下拉选项列表。
+ * 不走 ST 后端代理——要求 ComfyUI 启动带 --enable-cors-header(否则跨域请求被 Origin 校验 403)。
+ * 兼容新版 object_info 的 ["COMBO",{options}] 与旧版的 [0] 数组两种返回结构。
+ * @param {string} nodeName 节点 class_type(如 UpscaleModelLoader / LoraLoader)
+ * @param {string} paramName 参数名(如 model_name / lora_name)
+ * @param {string} comfyUrl ComfyUI 服务地址
+ * @param {number} [timeoutMs=10000] 超时抛错
+ * @returns {Promise<string[]>} 选项字符串数组
+ */
+async function fetchComfyComboOptions(nodeName, paramName, comfyUrl, timeoutMs = 10_000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const base = String(comfyUrl || '').trim().replace(/\/+$/, '');
+        const res = await fetch(`${base}/object_info/${nodeName}`, { signal: controller.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const param = data?.[nodeName]?.input?.required?.[paramName];
+        const list = Array.isArray(param?.[0]) ? param[0] : (Array.isArray(param?.[1]?.options) ? param[1].options : null);
+        if (!Array.isArray(list)) throw new Error(`object_info 返回里没有 ${paramName} 列表`);
+        return list.filter(n => typeof n === 'string');
+    } catch (err) {
+        if (err.name === 'AbortError') throw new Error(`ComfyUI object_info 超时(${Math.round(timeoutMs / 1000)}s)`);
+        throw err;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/** 直连拉放大模型列表(models/upscale_models) */
+function fetchUpscaleModelsDirect(comfyUrl, timeoutMs) {
+    return fetchComfyComboOptions('UpscaleModelLoader', 'model_name', comfyUrl, timeoutMs);
+}
+
+/**
+ * 直连拉 LoRA 列表(models/loras)。优先 LoraLoader(ComfyUI 核心自带);
+ * 极简/魔改环境缺它时退回 LoraLoaderModelOnly,再不行抛错由调用方降级(手动输入文件名)。
+ */
+async function fetchLorasDirect(comfyUrl, timeoutMs = 10_000) {
+    try {
+        return await fetchComfyComboOptions('LoraLoader', 'lora_name', comfyUrl, timeoutMs);
+    } catch {
+        return fetchComfyComboOptions('LoraLoaderModelOnly', 'lora_name', comfyUrl, timeoutMs);
+    }
+}
 
 /**
  * 工作流 JSON 中受插件支持的占位符清单。顺序即 popover 显示顺序。
@@ -371,6 +419,78 @@ function applyWorkflowPlaceholders(workflowJson, preset, prompt, negativePrompt,
 }
 
 /**
+ * 生成时动态注入放大模型:在终端图像输出节点(PreviewImage / SaveImage / VideoCombine 等,
+ * 即"输出没有被其他节点消费且带 images 节点引用输入"的节点)前插入 UpscaleModelLoader + ImageUpscaleWithModel。
+ * 工作流已带接好线的放大链时只覆盖 loader 的 model_name(下拉选择优先),不重复插节点。
+ * 同源终端共享一个放大节点,异源终端各插一个;找不到终端节点时原样返回(打 warn)。
+ * JSON 解析失败也原样返回(占位符/结构问题交给后端报错)。
+ * @param {string} workflowJson 占位符已替换完的工作流 JSON 文本
+ * @param {string} modelName 放大模型文件名(preset.upscaleModel)
+ * @returns {string} 注入后的工作流 JSON 文本
+ */
+function injectUpscaleIntoWorkflowJson(workflowJson, modelName) {
+    let parsed;
+    try {
+        parsed = JSON.parse(workflowJson);
+    } catch (e) {
+        console.warn(`[${extensionName}] workflow JSON invalid, skip upscale injection:`, e?.message || e);
+        return workflowJson;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return workflowJson;
+
+    // 已有接好线的放大链 → 只改 loader 的 model_name
+    const wiredLoaderIds = new Set();
+    for (const node of Object.values(parsed)) {
+        const ref = node?.inputs?.upscale_model;
+        if (node?.class_type === 'ImageUpscaleWithModel' && Array.isArray(ref) && parsed[String(ref[0])]?.class_type === 'UpscaleModelLoader') {
+            wiredLoaderIds.add(String(ref[0]));
+        }
+    }
+    if (wiredLoaderIds.size) {
+        for (const id of wiredLoaderIds) parsed[id].inputs.model_name = modelName;
+        return JSON.stringify(parsed);
+    }
+
+    // 终端节点 = 自身 id 未被任何节点引用,且 images 输入是有效节点引用
+    const referenced = new Set();
+    for (const node of Object.values(parsed)) {
+        const inputs = node?.inputs;
+        if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) continue;
+        for (const val of Object.values(inputs)) {
+            if (Array.isArray(val) && val.length === 2 && typeof val[1] === 'number') referenced.add(String(val[0]));
+        }
+    }
+    const terminals = [];
+    for (const [id, node] of Object.entries(parsed)) {
+        const img = node?.inputs?.images;
+        if (!referenced.has(id) && Array.isArray(img) && parsed[String(img[0])]) {
+            terminals.push({ id, source: [String(img[0]), img[1]] });
+        }
+    }
+    if (!terminals.length) {
+        console.warn(`[${extensionName}] no terminal image output node found, skip upscale injection`);
+        return workflowJson;
+    }
+
+    // 新节点 id:数值 key 最大值起递增(与 addLoraToWorkflow 同法,避免撞已有 key)
+    const loaderId = String(Object.keys(parsed).reduce((m, k) => Math.max(m, Number.parseInt(k, 10) || 0), 0) + 1);
+    parsed[loaderId] = { inputs: { model_name: modelName }, class_type: 'UpscaleModelLoader' };
+
+    let nextId = Number(loaderId) + 1;
+    const upscaleIdBySource = new Map();
+    for (const t of terminals) {
+        const key = t.source.join('\u0000');
+        if (!upscaleIdBySource.has(key)) {
+            const upId = String(nextId++);
+            parsed[upId] = { inputs: { upscale_model: [loaderId, 0], image: t.source }, class_type: 'ImageUpscaleWithModel' };
+            upscaleIdBySource.set(key, upId);
+        }
+        parsed[t.id].inputs.images = [upscaleIdBySource.get(key), 0];
+    }
+    return JSON.stringify(parsed);
+}
+
+/**
  * 直接调远程 ComfyUI 生成媒体。返回 { url, format, character }。
  * url 是 ST 后端落盘后的文件路径(/user/images/...),避免 data URI 撑爆 DOM 和聊天存档。
  * @param {string} overrideCharacter 可选,覆盖 character(默认走 context.name2 / groupId / 'media')。测试 tab 传 preset.name。
@@ -399,7 +519,8 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const sep = prefix && !prefix.endsWith(',') ? ',' : '';
     const finalPrompt = prefix + sep + modifiedPrompt;
     const negativePrompt = preset.negativePromptPrefix || '';
-    const workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
+    let workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
+    if (preset.upscaleModel) workflow = injectUpscaleIntoWorkflowJson(workflow, preset.upscaleModel);
 
     const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
@@ -420,14 +541,49 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
 
 // --- 配置档(Preset)UI 渲染 ---
 
-// 缓存最近一次拉到的 model/sampler/scheduler/lora 列表(避免每次切换 preset 都重新拉)
-const comfyCache = { models: [], samplers: [], schedulers: [], loras: [], url: '' };
+// 内存缓存当前地址的 model/sampler/scheduler/lora/upscale 列表(url 字段=缓存所属地址,失配即过期)。
+// 持久化版本在 extension_settings[extensionName].comfyListCache(按地址分档),点『连接』成功时写入,
+// 刷新页面/切配置档后由 hydrateComfyCacheFromSettings 灌回,免重新连接。
+const comfyCache = { models: [], samplers: [], schedulers: [], loras: [], upscaleModels: [], url: '' };
 function resetComfyCache() {
     comfyCache.models = [];
     comfyCache.samplers = [];
     comfyCache.schedulers = [];
     comfyCache.loras = [];
+    comfyCache.upscaleModels = [];
     comfyCache.url = '';
+}
+
+/** comfyListCache 持久化 key:URL 去尾部斜杠(避免带/不带斜杠的同一地址写成两档) */
+function comfyListCacheKey(url) {
+    return String(url || '').trim().replace(/\/+$/, '');
+}
+
+/**
+ * 把本轮成功拉到的列表组持久化(按 ComfyUI 地址分档)。
+ * fresh 只含成功拉到的组——部分失败不清掉旧存档,下次点『连接』成功才覆盖为最新。
+ */
+function persistComfyListCache(comfyUrl, fresh) {
+    const s = extension_settings[extensionName];
+    if (!s.comfyListCache || typeof s.comfyListCache !== 'object' || Array.isArray(s.comfyListCache)) s.comfyListCache = {};
+    const key = comfyListCacheKey(comfyUrl);
+    s.comfyListCache[key] = { ...(s.comfyListCache[key] || {}), ...fresh, savedAt: Date.now() };
+    saveSettingsDebounced();
+}
+
+/** 从持久化存档灌回 comfyCache(当前地址有存档时);没有则清空等待首次『连接』 */
+function hydrateComfyCacheFromSettings() {
+    const entry = extension_settings[extensionName]?.comfyListCache?.[comfyListCacheKey(getActiveComfyUrl())];
+    if (entry && typeof entry === 'object') {
+        comfyCache.models = Array.isArray(entry.models) ? entry.models : [];
+        comfyCache.samplers = Array.isArray(entry.samplers) ? entry.samplers : [];
+        comfyCache.schedulers = Array.isArray(entry.schedulers) ? entry.schedulers : [];
+        comfyCache.loras = Array.isArray(entry.loras) ? entry.loras : [];
+        comfyCache.upscaleModels = Array.isArray(entry.upscaleModels) ? entry.upscaleModels : [];
+        comfyCache.url = getActiveComfyUrl();
+    } else {
+        resetComfyCache();
+    }
 }
 
 /** 重建配置档 dropdown options,选中 active */
@@ -605,12 +761,14 @@ function pushComfyImportUrl(url) {
 
 /** 把 active preset 字段灌进各 input/select/textarea;active 为 null 时显示空状态 */
 function renderPresetFields() {
+    // 内存缓存与当前地址失配(刷新页面/首次打开/换了地址)→ 从持久化存档灌回,免重新点『连接』
+    if (comfyCache.url !== getActiveComfyUrl()) hydrateComfyCacheFromSettings();
     const preset = getActivePreset();
     const hasPreset = !!preset;
     $('#comfy_empty_hint').css('display', hasPreset ? 'none' : 'block');
 
     // 临时解绑所有字段事件,灌值后再绑回(避免连锁写)
-    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow').off('.preset');
+    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow').off('.preset');
 
     $('#comfy_url').val(getActiveComfyUrl());
     $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
@@ -629,8 +787,11 @@ function renderPresetFields() {
     renderComfySelect('#comfy_sampler', comfyCache.samplers, preset?.sampler || '');
     renderComfySelect('#comfy_scheduler', comfyCache.schedulers, preset?.scheduler || '');
 
+    // 放大模型:首项恒为『不使用』,列表来自 comfyCache.upscaleModels
+    renderUpscaleSelect(preset?.upscaleModel || '');
+
     // 字段使能状态(无 preset 时 disabled;comfy_url 系全局字段不依赖 preset)
-    $('#comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
+    $('#comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
 
     bindPresetFieldEvents();
     renderPresetPreview();
@@ -660,12 +821,26 @@ function renderComfySelect(selector, options, currentValue) {
     $sel.val(currentValue);
 }
 
+/** 渲染放大模型 select:首项恒为『不使用』(空值=不注入),选项来自 comfyCache.upscaleModels;无列表时保留已存值便于回显 */
+function renderUpscaleSelect(currentValue) {
+    const $sel = $('#comfy_upscale');
+    if (!$sel.length) return;
+    $sel.empty();
+    $sel.append(`<option value="" data-i18n="mag_upscale_none">不使用</option>`);
+    const opts = (comfyCache.upscaleModels || []).map(o => typeof o === 'string' ? o : String(o?.value ?? o));
+    // 已存值不在列表里(列表还没拉/后端没补丁)→ 追加为独立选项,保证回显不丢
+    if (currentValue && !opts.includes(currentValue)) opts.push(currentValue);
+    for (const v of opts) {
+        $sel.append(`<option value="${escapeHtmlAttribute(v)}">${escapeHtmlAttribute(v)}</option>`);
+    }
+    $sel.val(currentValue || '');
+}
+
 function onPresetSelectChange() {
     const newName = $(this).val();
     extension_settings[extensionName].activePresetName = newName || null;
     saveSettingsDebounced();
-    // 切换 preset 时清空已缓存的 model/sampler/scheduler 列表(可能对应不同 URL)
-    resetComfyCache();
+    // 不清列表缓存:地址是全局的,切档后 renderPresetFields 按地址守卫自动处理失配
     renderPresetFields();
 }
 
@@ -688,11 +863,8 @@ function bindPresetFieldEvents() {
     $('#comfy_url').on('change.preset', (e) => {
         extension_settings[extensionName].activeComfyUrl = $(e.target).val().trim();
         saveSettingsDebounced();
-        // URL 改变 → 清缓存 + 清空 select options(强制刷新)
-        resetComfyCache();
-        renderComfySelect('#comfy_model', [], getActivePreset()?.model || '');
-        renderComfySelect('#comfy_sampler', [], getActivePreset()?.sampler || '');
-        renderComfySelect('#comfy_scheduler', [], getActivePreset()?.scheduler || '');
+        // URL 改变 → renderPresetFields 按新地址从持久化存档灌列表(有存档直接用,没有则显示 refresh first)
+        renderPresetFields();
     });
     $('#comfy_pos_prefix').on('change.preset', (e) => writeField('positivePromptPrefix', $(e.target).val()));
     $('#comfy_neg_prefix').on('change.preset', (e) => writeField('negativePromptPrefix', $(e.target).val()));
@@ -701,6 +873,7 @@ function bindPresetFieldEvents() {
     $('#comfy_model').on('change.preset', (e) => writeField('model', $(e.target).val()));
     $('#comfy_sampler').on('change.preset', (e) => writeField('sampler', $(e.target).val()));
     $('#comfy_scheduler').on('change.preset', (e) => writeField('scheduler', $(e.target).val()));
+    $('#comfy_upscale').on('change.preset', (e) => writeField('upscaleModel', $(e.target).val()));
 
     $('#comfy_width').on('input.preset', writeNumber('width', parseInt));
     $('#comfy_height').on('input.preset', writeNumber('height', parseInt));
@@ -720,7 +893,7 @@ function createPreset() {
         name,
         comfyAuth: '',
         workflowJson: '',
-        model: '', sampler: '', scheduler: '',
+        model: '', sampler: '', scheduler: '', upscaleModel: '',
         width: 640, height: 960, steps: 20, scale: 7, denoise: 1, seed: -1,
         positivePromptPrefix: '',
         negativePromptPrefix: '',
@@ -827,12 +1000,31 @@ async function refreshComfyOptions() {
             toastr.warning(`部分失败(${okCount}/${results.length}):${failed}`);
         }
     }
-    // LoRA 列表单独拉:/loras 是本地补丁端点,旧后端 404 也不影响主流程(下拉降级为手动输入)
-    const lorasR = await comfyProxy('loras', body, 10_000).catch(err => {
-        console.debug('[media-auto-generation] loras list unavailable:', err?.message || err);
+    // LoRA 列表:浏览器直连 ComfyUI(--enable-cors-header);失败降级为手动输入文件名,null=本轮未拉到
+    const lorasR = await fetchLorasDirect(comfyUrl).catch(err => {
+        console.debug('[media-auto-generation] loras list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', err?.message || err);
         return null;
     });
-    comfyCache.loras = Array.isArray(lorasR) ? lorasR : [];
+    comfyCache.loras = lorasR || [];
+    // 放大模型列表:浏览器直连 ComfyUI(--enable-cors-header);失败降级为下拉仅显示已存值
+    const upscaleR = await fetchUpscaleModelsDirect(comfyUrl).catch(err => {
+        console.debug('[media-auto-generation] upscale model list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', err?.message || err);
+        return null;
+    });
+    comfyCache.upscaleModels = upscaleR || [];
+    // 部分失败也标记地址:renderPresetFields 的失配守卫才不会拿旧存档覆盖本轮已拉到的结果
+    comfyCache.url = comfyUrl;
+
+    // 持久化到 comfyListCache(按地址分档):只写本轮成功拉到的组,部分失败保留旧存档;下次免重新连接
+    const fresh = {};
+    if (okCount === results.length) {
+        fresh.models = comfyCache.models;
+        fresh.samplers = comfyCache.samplers;
+        fresh.schedulers = comfyCache.schedulers;
+    }
+    if (lorasR) fresh.loras = comfyCache.loras;
+    if (upscaleR) fresh.upscaleModels = comfyCache.upscaleModels;
+    if (Object.keys(fresh).length) persistComfyListCache(comfyUrl, fresh);
     renderPresetFields();
 }
 
@@ -1472,7 +1664,6 @@ function bindPresetEvents() {
         if (!name || name === extension_settings[extensionName].activePresetName) return;
         extension_settings[extensionName].activePresetName = name;
         saveSettingsDebounced();
-        resetComfyCache();
         renderPresetDropdown();
         renderPresetFields();
     });
@@ -1895,6 +2086,63 @@ function moveSettingsTo($target) {
     $root.detach().appendTo($target);
 }
 
+/** 浮标默认位置的尺寸/边距参数(手机端:按钮缩小、bottom 抬高避开 ST 底部 nav) */
+function floatBtnMetrics() {
+    const mobile = isMobile();
+    return {
+        mobile,
+        size: mobile ? 40 : 48,
+        fontSize: mobile ? 18 : 20,
+        rightGap: mobile ? 16 : 20,
+        bottomGap: mobile ? 90 : 20,
+    };
+}
+
+/**
+ * 把浮标当前位置钳制回视口内(完整可见)。
+ * 只改视觉不落盘:手机浏览器地址栏收展/旋屏/桌面改窗口都会变视口,
+ * 落盘位置可能把按钮整颗挤出屏幕(看不见也摸不着),这里拉回可拖范围。
+ */
+function clampFloatBtnIntoView() {
+    const $btn = $('#media_auto_gen_float_btn');
+    if (!$btn.length) return;
+    const elW = $btn.outerWidth();
+    const elH = $btn.outerHeight();
+    if (!elW || !elH) return;
+    const left = parseInt($btn.css('left'), 10) || 0;
+    const top = parseInt($btn.css('top'), 10) || 0;
+    const clampedLeft = clamp(left, 0, Math.max(0, window.innerWidth - elW));
+    const clampedTop = clamp(top, 0, Math.max(0, window.innerHeight - elH));
+    if (clampedLeft !== left || clampedTop !== top) {
+        $btn.css({ left: clampedLeft + 'px', top: clampedTop + 'px' });
+    }
+}
+
+/** 把浮标重置回默认位置(右下角,手机端抬高避开底栏)并落盘 */
+function resetFloatBtnPosition() {
+    const $btn = $('#media_auto_gen_float_btn');
+    if (!$btn.length) return;
+    const m = floatBtnMetrics();
+    const size = $btn.outerWidth() || m.size;
+    const left = Math.max(0, window.innerWidth - size - m.rightGap);
+    const top = Math.max(0, window.innerHeight - size - m.bottomGap);
+    $btn.css({ left: left + 'px', top: top + 'px' });
+    setFloatBtnDocked(null); // 同步清吸附运行态,否则闭包外还认为吸附着,下一次点浮标会被当"仅解除吸附"吞掉
+    extension_settings[extensionName].floatBtnPosition = { left, top };
+    saveSettingsDebounced();
+}
+
+// 浮标吸附态(运行时,不持久化,刷新即解除)。模块级而非 initFloatBtnDrag 闭包:
+// wand 入口的 resetFloatBtnPosition 也要清它,闭包变量外面够不着。
+let floatBtnDockedEdge = null;
+
+function setFloatBtnDocked(edge) {
+    floatBtnDockedEdge = edge;
+    const $btn = $('#media_auto_gen_float_btn');
+    $btn.removeClass('mag-docked-left mag-docked-right');
+    if (edge) $btn.addClass('mag-docked-' + edge);
+}
+
 function createFloatingUI(settingsHtml) {
     const mobile = isMobile();
 
@@ -1906,11 +2154,10 @@ function createFloatingUI(settingsHtml) {
         `);
     }
     const $btn = $('#media_auto_gen_float_btn');
+    // 手机端样式钩子:吸附时少藏一点(settings.html 的 .mag-mobile 覆盖)
+    $btn.toggleClass('mag-mobile', mobile);
     // 手机端:按钮缩小(原 56 偏大);bottom 抬高避开 ST 底部 nav
-    const btnSize = mobile ? 40 : 48;
-    const btnFontSize = mobile ? 18 : 20;
-    const btnRightGap = mobile ? 16 : 20;
-    const btnBottomGap = mobile ? 90 : 20;
+    const { size: btnSize, fontSize: btnFontSize, rightGap: btnRightGap, bottomGap: btnBottomGap } = floatBtnMetrics();
     $btn.attr('style', [
         'position:fixed',
         'z-index:2147483640',
@@ -1940,6 +2187,8 @@ function createFloatingUI(settingsHtml) {
     const pos = extension_settings[extensionName].floatBtnPosition;
     if (pos && typeof pos.left === 'number' && typeof pos.top === 'number') {
         $btn.css({ left: pos.left + 'px', top: pos.top + 'px' });
+        // 落盘后视口可能已变(手机地址栏收展/旋屏/桌面改窗口),历史位置可能整颗出屏 → 拉回可见
+        clampFloatBtnIntoView();
     }
 
     if (!$('#media_auto_gen_panel').length) {
@@ -2003,7 +2252,10 @@ function createFloatingUI(settingsHtml) {
         `);
     }
     // 点击 wand 入口 → 打开浮窗(DOM 寄居:settings 自动从隐藏寄居容器迁到 panel body)
+    // 手机救援通道:浮标吸附在屏幕边缘/被视口变化挤出屏摸不到时,wand 菜单(手机端从左下角
+    // 弹出)是兜底入口——每次从这里打开都顺手把浮标重置回默认右下角(抬高避开底栏),下次一定看得见
     $('#mag_wand_entry').off('click.mag').on('click.mag', function () {
+        if (mobile) resetFloatBtnPosition();
         toggleFloatingPanel(true);
     });
 
@@ -2135,28 +2387,19 @@ function initPanelDrag() {
 
         function onUp() {
             $(document).off('mousemove touchmove', onMove);
-            $(document).off('mouseup touchend', onUp);
+            $(document).off('mouseup touchend touchcancel', onUp);
             $handle.css('cursor', 'grab');
             if (dragging) $panel.css('cursor', '');
         }
 
         $(document).on('mousemove touchmove', onMove);
-        $(document).on('mouseup touchend', onUp);
+        $(document).on('mouseup touchend touchcancel', onUp);
     });
 }
 
 function initFloatBtnDrag() {
     const btn = $('#media_auto_gen_float_btn');
     const EDGE_THRESHOLD = 20;  // 距屏幕左右边 ≤20px 松手 → 吸附
-
-    // 运行时吸附态(不持久化,刷新即解除)
-    let dockedEdge = null;
-
-    function setDocked(edge) {
-        dockedEdge = edge;
-        btn.removeClass('mag-docked-left mag-docked-right');
-        if (edge) btn.addClass('mag-docked-' + edge);
-    }
 
     let startX = 0, startY = 0;
     let originLeft = 0, originTop = 0;
@@ -2169,6 +2412,10 @@ function initFloatBtnDrag() {
         return (e.touches && e.touches[0]) ? e.touches[0] : e;
     }
 
+    // 视口变化(手机地址栏收展/旋屏/桌面改窗口)时把浮标拉回可见范围,防止挤出屏幕后摸不着
+    $(window).off('resize.magFloatBtn orientationchange.magFloatBtn')
+        .on('resize.magFloatBtn orientationchange.magFloatBtn', clampFloatBtnIntoView);
+
     btn.on('mousedown touchstart', function (e) {
         // 手机端:touchend 后浏览器会自动合成 mousedown/mouseup/click,
         // 不去重会导致 toggleFloatingPanel 被调 2 次(先开后关,用户看到"闪一下又消失")
@@ -2180,9 +2427,9 @@ function initFloatBtnDrag() {
 
         // 若吸附态:先解除 + 立即关 transition,避免拖动首帧被 .18s 过渡抢跑导致位置跳变;
         // 记 wasDocked 供 onUp 区分"残影 click"与"普通 click"
-        wasDocked = dockedEdge !== null;
-        if (dockedEdge) {
-            setDocked(null);
+        wasDocked = floatBtnDockedEdge !== null;
+        if (floatBtnDockedEdge) {
+            setFloatBtnDocked(null);
             btn.addClass('mag-dragging');
         }
 
@@ -2214,7 +2461,7 @@ function initFloatBtnDrag() {
 
         function onUp() {
             $(document).off('mousemove touchmove', onMove);
-            $(document).off('mouseup touchend', onUp);
+            $(document).off('mouseup touchend touchcancel', onUp);
             btn.removeClass('mag-dragging').css('cursor', 'grab');
 
             if (!isDragging) {
@@ -2230,9 +2477,9 @@ function initFloatBtnDrag() {
             const distRight = vw - left - elW;
 
             if (distRight <= EDGE_THRESHOLD && distRight <= distLeft) {
-                setDocked('right');
+                setFloatBtnDocked('right');
             } else if (distLeft <= EDGE_THRESHOLD) {
-                setDocked('left');
+                setFloatBtnDocked('left');
             }
 
             // 位置无论吸附与否都落盘(left/top 是吸附前的真实位置,刷新后从此处可见态开始)
@@ -2244,7 +2491,7 @@ function initFloatBtnDrag() {
         }
 
         $(document).on('mousemove touchmove', onMove);
-        $(document).on('mouseup touchend', onUp);
+        $(document).on('mouseup touchend touchcancel', onUp);
     });
 }
 
@@ -3290,9 +3537,10 @@ function ensureMediaPreviewModal() {
             closeMediaPreviewModal();
         }
     });
-    // 点媒体行 → 放大(复用 gallery lightbox,entry 字段与 openGalleryLightbox 一致)
-    $m.find('.preview-modal-body').on('click', '.preview-media-row', function () {
-        const $row = $(this);
+    // 点媒体本体(img/video)→ 放大;declare/时间文字区域不放大
+    // (复用 gallery lightbox,entry 字段与 openGalleryLightbox 一致)
+    $m.find('.preview-modal-body').on('click', '.preview-media-row img, .preview-media-row video', function () {
+        const $row = $(this).closest('.preview-media-row');
         openGalleryLightbox({
             url: $row.attr('data-url'),
             mediaType: $row.attr('data-media-type'),

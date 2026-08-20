@@ -57,3 +57,13 @@ Replace With:  [video]$1[/video]
 - <img width="415" height="235" alt="image" src="https://github.com/user-attachments/assets/c9d408d1-b9d8-4579-ba92-1ac0c64fa661" />
 
 
+**放大模型（可选）**
+
+- ComfyUI 配置 tab 里 Sampler/Scheduler 下方有「放大模型」下拉，列出 ComfyUI `models/upscale_models` 目录下的模型（点『连接』刷新列表）。
+- 默认「不使用」。选中后**每次生成时**自动在工作流的输出节点（预览图像/保存图像等）前插入 `UpscaleModelLoader` + `ImageUpscaleWithModel` 放大链——配置档里存的工作流 JSON 不会被改动；工作流本身已带放大链时只替换其中的模型名。
+- 模型放大是像素级放大（图片会变大变清晰，耗时也增加）；视频工作流同样适用（逐帧放大，明显变慢）。
+- 下拉列表由浏览器直连 ComfyUI 获取，**要求 ComfyUI 启动时带 `--enable-cors-header` 参数**（否则跨域被拒，拉不到列表，但仍会回显已保存的选择）。LoRA 新增下拉的模型列表获取方式相同，同样依赖该参数。
+
+**列表缓存**
+
+- 点『连接』拉到的模型 / 采样器 / 调度器 / LoRA / 放大模型列表会按 ComfyUI 地址自动保存。之后刷新页面、重开酒馆、切换配置档、地址簿切走再切回，都直接用保存的列表，**不需要再点『连接』**；再次点『连接』则刷新为最新列表。
