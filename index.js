@@ -12,6 +12,8 @@ import {
 } from '../../../../script.js';
 import { regexFromString, clamp, getUniqueName, saveBase64AsFile, copyText } from '../../../utils.js';
 import { isMobile } from '../../../RossAscends-mods.js';
+import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
+import { translate } from '../../../i18n.js';
 
 const extensionName = 'media-auto-generation';
 const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
@@ -100,7 +102,108 @@ function pruneOldPrompts() {
 
 function escapeHtmlAttribute(value) {
     if (typeof value !== 'string') return '';
-    return value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // 换行一并实体化:占位符/wrapper 的属性值(data-original-tag 存标签原文)若含裸换行,
+    // mes 会被撕成多行 → ST 渲染管线按行处理(fixMarkdown 给奇数引号行行尾补 "、showdown
+    // 按行切块)把 HTML 撕碎 → 整段占位符被当纯文本渲染成源码(2026-08 video 多行 prompt
+    // 事故:image 测试 prompt 单行所以"看起来正常",video 的多行分镜稿必炸)。
+    // 属性值里的 &#10;/&#13; 浏览器解析时还原为换行,DOM attr() 读回原文,无副作用。
+    return value
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+        .replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\r/g, '&#13;').replace(/\n/g, '&#10;');
+}
+
+/**
+ * 字面量替换:replacement 不解释 $ 语义。
+ * String.prototype.replace 的字符串 replacement 里 $&/$`/$'/$$ 有特殊含义——
+ * 占位符/wrapper HTML 内嵌用户 prompt,prompt 含 `$` 序列时会被展开成正文片段,破坏 HTML。
+ */
+function replaceLiteral(str, search, repl) {
+    return str.replace(search, () => repl);
+}
+
+/**
+ * 判断 text 中 index 位置是否落在 HTML 标签内部(< 之后、> 之前的标签/属性区)。
+ * 占位符的 data-original-tag、wrapper 的 data-prompt 属性里存着裸标签原文/用户 prompt,
+ * 正则扫描的是整个 mes 文本,分不清"正文里的裸标签"和"属性里存的标签文本"——
+ * 重扫(进聊天全量扫 / 编辑消息 / 流式结束扫最后一楼)会把属性里的 [image]...[/image]
+ * 再当正文标签匹配,把新占位符的完整 HTML 未转义塞进旧占位符的属性值 → 嵌套损坏,
+ * 渲染成源码文本(2026-08 实测:image/video 均中招,首次落地正常、重进聊天后损坏)。
+ * 判定:index 前最近的 '<' 比最近的 '>' 更近 = 位于标签内部。
+ */
+function isInsideHtmlTag(text, index) {
+    const lt = text.lastIndexOf('<', index - 1);
+    const gt = text.lastIndexOf('>', index - 1);
+    return lt > gt;
+}
+
+/**
+ * 修复嵌套损坏的占位符(存量自愈):占位符 data-original-tag 属性值被塞进了另一份
+ * 完整占位符 HTML(见 isInsideHtmlTag 注释的成因)时,把属性值剥回内层记录的裸标签原文。
+ * 外层占位符的其余部分(子元素/属性)保持不变,每轮剥一层,循环到无嵌套或 10 轮上限。
+ * 注:三层以上嵌套(连续多次重扫累积,守卫上线后不会再发生)只能保证不再嵌套,
+ * 可能残留属性尾巴文本碎片——极端存量建议直接删楼/编辑该消息。
+ */
+const NESTED_ORIG_TAG_RE = /data-original-tag="(<span\b[\s\S]*?data-original-tag="(\[[^"]*\])"[\s\S]*?<\/span>)"/g;
+function healNestedPlaceholders(mes) {
+    if (typeof mes !== 'string' || !mes.includes('data-original-tag="<span')) return mes;
+    let out = mes;
+    for (let round = 0; round < 10; round++) {
+        const next = out.replace(NESTED_ORIG_TAG_RE, (_m, _inner, bareTag) => `data-original-tag="${bareTag}"`);
+        if (next === out) break;
+        out = next;
+    }
+    return out;
+}
+
+/**
+ * 修复 mag 属性值里的裸换行(存量自愈):旧版 escapeHtmlAttribute 不转义换行,
+ * 多行 prompt 的 data-original-tag/data-prompt 属性值跨 N 行,被 ST 渲染管线
+ * (fixMarkdown 奇数引号行行尾补 " / showdown 按行切块)撕碎 → 占位符渲染成源码。
+ * 新落地已由 escapeHtmlAttribute 治本,此函数只修历史楼。
+ */
+const MULTILINE_MAG_ATTR_RE = /(data-(?:original-tag|prompt|error)=")([^"]*)"/g;
+function healMultilineMagAttrs(mes) {
+    if (typeof mes !== 'string' || !mes.includes('data-mag-id=')) return mes;
+    return mes.replace(MULTILINE_MAG_ATTR_RE, (m, attr, val) =>
+        (/[\r\n]/.test(val) ? attr + val.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;') + '"' : m));
+}
+
+/**
+ * 占位符存量损伤统一自愈入口:先修嵌套(嵌套楼属性值里含未转义引号,多行正则会
+ * 在内层引号截断,必须先修净),再把属性值里的裸换行实体化。
+ */
+function healPlaceholderDamage(mes) {
+    return healMultilineMagAttrs(healNestedPlaceholders(mes));
+}
+
+/**
+ * 全楼扫一遍存量自愈(自动模式专用入口;手动模式的 heal 走
+ * processAllMessagesForPlaceholders 内联)。修复过的楼层重渲 + 落盘。
+ * @returns {Promise<number>} 修复的楼层数
+ */
+async function healAllFloorsNestedPlaceholders() {
+    const context = getContext();
+    const chat = context.chat || [];
+    const healed = [];
+    for (let i = 0; i < chat.length; i++) {
+        const message = chat[i];
+        if (!message || message.is_user || typeof message.mes !== 'string') continue;
+        const fixed = healPlaceholderDamage(message.mes);
+        if (fixed !== message.mes) {
+            message.mes = fixed;
+            updateMessageBlock(i, message);
+            healed.push(i);
+        }
+    }
+    if (healed.length > 0) {
+        for (const i of healed) {
+            await eventSource.emit(event_types.MESSAGE_UPDATED, i);
+        }
+        try { await context.saveChat(); } catch (e) { console.error(`[${extensionName}] saveChat failed:`, e); }
+        console.warn(`[${extensionName}] 已修复占位符存量损伤(嵌套/多行属性): 楼层 ${healed.join(', ')}`);
+    }
+    return healed.length;
 }
 
 // mag-media wrapper 匹配(collectFloorMedia 楼层扫描用)。
@@ -109,10 +212,11 @@ function escapeHtmlAttribute(value) {
 const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
 
 // declare 描述块(collectFloorMedia 楼层扫描 / processMessageContent 捕获流式 in-flight 媒体的 declare 共用)。
-// 兼容两种格式:① [img_Declare]...[/img_Declare](2026-08 起用户角色卡的 BBCode 新格式)② <pic_Declare>...</pic_Declare>(旧卡,存量聊天兼容)。
+// 兼容三种格式:① [img_Declare]...[/img_Declare] ② [video_Declare]...[/video_Declare](图片/视频各自带 declare 时用,
+// 2026-08 起用户角色卡的 BBCode 格式)③ <pic_Declare>...</pic_Declare>(旧卡,存量聊天兼容)。
 // 开/闭标签用交替而非两组捕获 → 单捕获组,declareForPosition 的 d[1] 取值不用分支。
 // matchAll 内部克隆正则,共享 const 无 lastIndex 残留问题。
-const PIC_DECLARE_RE = /(?:\[img_Declare\]|<pic_Declare>)([\s\S]*?)(?:\[\/img_Declare\]|<\/pic_Declare>)/gi;
+const PIC_DECLARE_RE = /(?:\[(?:img|video)_Declare\]|<pic_Declare>)([\s\S]*?)(?:\[\/(?:img|video)_Declare\]|<\/pic_Declare>)/gi;
 
 // 游离 data-mag-role 元素(LLM 伪造尾巴的构成部分):
 // ① 紧闭合的完整元素(内容里不许再出现 small/i 标签,防止未闭合的开标签跨元素误吞正文)连同内容一起删;
@@ -186,7 +290,7 @@ async function sanitizeFreshLlmMessage() {
 function replacePlaceholderInMes(mes, magId, newTag) {
     const escaped = escapeRegExp(magId);
     const re = new RegExp(`<span[^>]*data-mag-id="${escaped}"[^>]*>[\\s\\S]*?</span>`, '');
-    return mes.replace(re, newTag);
+    return replaceLiteral(mes, re, newTag);
 }
 
 /**
@@ -304,10 +408,17 @@ function enqueueComfyJob(task) {
  * @param {string} path ping/samplers/models/schedulers/vaes/generate(LoRA/放大模型列表不走代理,见 fetchLorasDirect / fetchUpscaleModelsDirect)
  * @param {object} body
  * @param {number} [timeoutMs=60000] 超时,超时后 abort 并抛"超时"错误
+ * @param {AbortSignal} [externalSignal] 外部中断信号(手动模式"终止生成"):abort 时联动取消本请求,
+ *   与超时 abort 的区分靠 err 消息("已被中断" vs "超时")。排队期间已 abort 的,fetch 发出前就会被取消。
  */
-async function comfyProxy(path, body, timeoutMs = 60_000) {
+async function comfyProxy(path, body, timeoutMs = 60_000, externalSignal = null) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+        if (externalSignal.aborted) controller.abort();
+        else externalSignal.addEventListener('abort', onExternalAbort);
+    }
     try {
         const res = await fetch(`/api/sd/comfy/${path}`, {
             method: 'POST',
@@ -322,11 +433,14 @@ async function comfyProxy(path, body, timeoutMs = 60_000) {
         return await res.json();
     } catch (err) {
         if (err.name === 'AbortError') {
-            throw new Error(`ComfyUI ${path} 超时(${Math.round(timeoutMs / 1000)}s)`);
+            throw new Error(externalSignal?.aborted
+                ? `ComfyUI ${path} 请求已被中断`
+                : `ComfyUI ${path} 超时(${Math.round(timeoutMs / 1000)}s)`);
         }
         throw err;
     } finally {
         clearTimeout(timer);
+        if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
     }
 }
 
@@ -498,8 +612,8 @@ function injectUpscaleIntoWorkflowJson(workflowJson, modelName) {
  * 外壳:入串行队列,真正执行交给 generateViaComfyInner。
  * 这样改 URL/工作流/前缀等配置后点重试,等到 job 真跑时会重新读 active preset,新配置立即生效。
  */
-async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false) {
-    return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed));
+async function generateViaComfy(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
+    return enqueueComfyJob(() => generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed, signal));
 }
 
 /** 全局激活的 ComfyUI 服务地址(跨 preset 共享) */
@@ -507,7 +621,7 @@ function getActiveComfyUrl() {
     return String(extension_settings[extensionName].activeComfyUrl || '').trim();
 }
 
-async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false) {
+async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
     const comfyUrl = getActiveComfyUrl();
@@ -525,8 +639,9 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
 
-    const timeoutMs = mediaType === 'video' ? 120_000 : 20_000;
-    const result = await comfyProxy('generate', body, timeoutMs);
+    // 视频生成耗时可达数分钟(大模型+多帧采样),超时 5min;图片 30s
+    const timeoutMs = mediaType === 'video' ? 300_000 : 30_000;
+    const result = await comfyProxy('generate', body, timeoutMs, signal);
     const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
 
     const context = getContext();
@@ -2563,20 +2678,22 @@ async function landInFlightMedia() {
 
         let replaced = false;
         if (entry.originalTag && msg.mes.includes(entry.originalTag)) {
-            msg.mes = msg.mes.replace(entry.originalTag, entry.mediaTag);
+            msg.mes = replaceLiteral(msg.mes, entry.originalTag, entry.mediaTag);
             replaced = true;
         } else if (entry.regexStr) {
             // hash 兜底重扫:prompt 提取 / 特征注入 / occ 计数与 processMessageContent 逻辑 B 一致
             const tagRegex = regexFromString(entry.regexStr);
             const seen = new Map();
             for (const m of msg.mes.matchAll(tagRegex)) {
+                // 守卫:跳过占位符/wrapper 属性里携带的标签文本(同 processMessageContent)
+                if (isInsideHtmlTag(msg.mes, m.index)) continue;
                 let rawPrompt = extractTagPrompt(m);
                 if (!rawPrompt) continue;
                 const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
                 const occ = seen.get(base) || 0;
                 seen.set(base, occ + 1);
                 if ((occ > 0 ? `${base}#${occ}` : base) === promptHash) {
-                    msg.mes = msg.mes.replace(m[0], entry.mediaTag);
+                    msg.mes = replaceLiteral(msg.mes, m[0], entry.mediaTag);
                     replaced = true;
                     break;
                 }
@@ -2646,6 +2763,14 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
     // 使用 entries() 获取当前是第几个匹配项 (index)
     for (const [index, match] of matches.entries()) {
+        // 守卫:跳过位于 HTML 标签内部的匹配——占位符 data-original-tag 属性里存着裸标签
+        // 原文,不拦的话重扫会把属性里的标签再当正文标签,嵌套出新占位符把消息渲染搞成源码
+        // (见 isInsideHtmlTag 注释)。wrapper 的 data-prompt(prompt 含标签文本)同样被拦。
+        if (isInsideHtmlTag(mesText, match.index)) {
+            if (isFinal) console.log(`[${extensionName}] 跳过标签内部的匹配(占位符/wrapper 属性携带): ${match[0].slice(0, 50)}`);
+            continue;
+        }
+
         const originalTag = match[0];
 
         let rawPrompt = extractTagPrompt(match);
@@ -2687,7 +2812,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // --- 逻辑 A-1：失败降级(自动模式 ComfyUI 失败,流式结束后渲染 error 占位符让用户手动重试)---
         if (!onlyTrigger && failedPrompts.has(promptHash)) {
             const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag, state: 'error', error: failedPrompts.get(promptHash) });
-            currentMessageText = currentMessageText.replace(originalTag, placeholder);
+            currentMessageText = replaceLiteral(currentMessageText, originalTag, placeholder);
             contentModified = true;
             continue;
         }
@@ -2697,7 +2822,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // 用户点击占位符 → onPlaceholderClick → 触发生成 → 用 magId 字符串替换为最终 <img>/<video>。
         if (!autoReplace) {
             const placeholder = buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag, state: 'idle' });
-            currentMessageText = currentMessageText.replace(originalTag, placeholder);
+            currentMessageText = replaceLiteral(currentMessageText, originalTag, placeholder);
             contentModified = true;
             continue;
         }
@@ -2867,12 +2992,27 @@ async function processAllMessagesForPlaceholders() {
         const message = chat[i];
         if (!message || message.is_user || !message.mes) continue;
 
-        const matches = [...message.mes.matchAll(mediaTagRegex)];
-        if (matches.length === 0) continue;
-
         let mes = message.mes;
         let modified = false;
+
+        // 存量自愈:修嵌套占位符 + 属性值裸换行(见 healPlaceholderDamage 注释)
+        const healed = healPlaceholderDamage(mes);
+        if (healed !== mes) {
+            console.warn(`[${extensionName}] 修复占位符存量损伤: 楼${i}`);
+            mes = healed;
+            modified = true;
+        }
+
+        const matches = [...mes.matchAll(mediaTagRegex)];
+        if (matches.length === 0) {
+            if (modified) { message.mes = mes; updateMessageBlock(i, message); changedFloors.push(i); }
+            continue;
+        }
+
         for (const [index, match] of matches.entries()) {
+            // 守卫同 processMessageContent:跳过占位符/wrapper 属性里携带的标签文本
+            if (isInsideHtmlTag(mes, match.index)) continue;
+
             const originalTag = match[0];
 
             let rawPrompt = extractTagPrompt(match);
@@ -2889,7 +3029,7 @@ async function processAllMessagesForPlaceholders() {
                 originalTag,
                 state: 'idle',
             });
-            mes = mes.replace(originalTag, placeholder);
+            mes = replaceLiteral(mes, originalTag, placeholder);
             modified = true;
         }
         if (modified) {
@@ -2971,13 +3111,61 @@ async function onMagClick(e) {
 
     if (isPlaceholder) {
         e.preventDefault();
-        if ($el.attr('data-state') === 'loading') return; // loading 中拒重入(idle/error 都允许触发)
+        // loading 态点击 = 请求中断(视频生成耗时数分钟,见 requestAbortManualGeneration);idle/error 走触发生成
+        if ($el.attr('data-state') === 'loading') {
+            if ($el.attr('data-view') !== 'default') return;
+            await requestAbortManualGeneration($el);
+            return;
+        }
         if ($el.attr('data-view') !== 'default') return; // prompt 视图下点主体不触发生成
         await startManualGeneration($el);
     } else if (isMedia) {
         e.preventDefault();
         const cur = $el.attr('data-revealed');
         $el.attr('data-revealed', cur === 'true' ? 'false' : 'true');
+    }
+}
+
+// 手动模式进行中的生成登记(key: magId):视频生成耗时数分钟,允许用户点击 loading 态
+// 占位符 → 确认弹窗 → 中断。value: { controller: AbortController, comfyUrl }
+const manualGenerations = new Map();
+
+/**
+ * 中断指定 magId 的手动生成:abort 前端请求(排队中的 job 轮到时也会被取消)
+ * + 直连 ComfyUI /interrupt 打断后端正在执行的任务(同 LoRA/放大列表直连,要求
+ * --enable-cors-header;失败静默降级——最坏情况只是后端把任务跑完丢弃)。
+ * 串行队列里排在其后的其他 job 不受影响,继续正常执行。
+ */
+function abortManualGeneration(magId) {
+    const entry = manualGenerations.get(magId);
+    if (!entry) return false;
+    entry.controller.abort();
+    const base = String(entry.comfyUrl || '').trim().replace(/\/+$/, '');
+    if (base) {
+        fetch(`${base}/interrupt`, { method: 'POST' }).catch(() => { });
+    }
+    return true;
+}
+
+/** loading 态占位符点击 → 确认弹窗 → 确认后中断生成 */
+async function requestAbortManualGeneration($ph) {
+    const magId = $ph.attr('data-mag-id');
+    if (!manualGenerations.has(magId)) {
+        // 登记不存在:生成刚好结束(成功落地/已完成 catch),或非本插件发起的 loading 态
+        toastr.info('该生成任务已结束或不可中断');
+        return;
+    }
+    const mediaTypeText = $ph.attr('data-media-type') === 'video' ? '视频' : '图片';
+    const result = await callGenericPopup(
+        `确认终止本次${mediaTypeText}生成?已进行的进度将丢弃。`,
+        POPUP_TYPE.CONFIRM,
+        '',
+        { okButton: '终止生成', cancelButton: '继续等待' },
+    );
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    if (!abortManualGeneration(magId)) {
+        // 弹窗期间生成恰好自然结束:无事发生,占位符已被正常落地/置错
+        toastr.info('生成已完成,无需终止');
     }
 }
 
@@ -2992,6 +3180,10 @@ async function startManualGeneration($ph) {
 
     $ph.attr('data-state', 'loading');
     $ph.find('[data-mag-role="icon"]').attr('class', 'fa-solid fa-circle-notch fa-spin');
+
+    // 登记可中断句柄:loading 态点击占位符 → 确认弹窗 → abort(见 requestAbortManualGeneration)
+    const abortController = new AbortController();
+    manualGenerations.set(magId, { controller: abortController, comfyUrl: getActiveComfyUrl() });
 
     // 注入角色特征 → 与自动模式一致地计算 hash
     const injectionResult = injectCharacterTags(rawPrompt, extension_settings[extensionName].characterTags);
@@ -3013,7 +3205,7 @@ async function startManualGeneration($ph) {
             }
         }, 1000);
 
-        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
+        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType, null, false, abortController.signal);
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
@@ -3026,9 +3218,22 @@ async function startManualGeneration($ph) {
         const committed = await commitMediaToMessage(magId, mediaWrap, 'startManualGeneration');
         if (committed) toastr.success(`替换完成: 1 张${mediaTypeText}`);
     } catch (err) {
-        console.error(`[${extensionName}] Manual generation failed:`, err);
         if (timer) clearInterval(timer);
         if (toast) toastr.clear(toast);
+
+        // 用户主动中断 ≠ 失败:占位符恢复 idle 态,可再次点击重新生成
+        if (abortController.signal.aborted) {
+            toastr.info(`已终止${mediaType === 'image' ? '图片' : '视频'}生成`);
+            $ph.attr('data-state', 'idle');
+            $ph.attr('data-error', '');
+            $ph.find('[data-mag-role="icon"]').attr('class', `fa-solid ${mediaType === 'video' ? 'fa-video' : 'fa-image'}`);
+            $ph.find('[data-mag-role="label"]').text(mediaType === 'video' ? '生成视频' : '生成图片');
+            const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
+            $ph.find('[data-mag-role="prompt-text"]').text(promptText);
+            return;
+        }
+
+        console.error(`[${extensionName}] Manual generation failed:`, err);
         toastr.error(`Media generation error: ${err.message || err}`);
         const errMsg = err.message || String(err);
         $ph.attr('data-state', 'error');
@@ -3037,6 +3242,8 @@ async function startManualGeneration($ph) {
         $ph.find('[data-mag-role="icon"]').attr('class', 'fa-solid fa-triangle-exclamation');
         $ph.find('[data-mag-role="label"]').text('点击重试');
         $ph.find('[data-mag-role="prompt-text"]').text('⚠️ ' + errMsg.slice(0, 200));
+    } finally {
+        manualGenerations.delete(magId);
     }
 }
 
@@ -3404,7 +3611,7 @@ let mediaPreviewRenderPending = false;
 
 /** escapeHtmlAttribute 的逆变换:解码从 mes 扫出来的属性值 */
 function unescapeHtmlAttr(v) {
-    return v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    return v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#13;/g, '\r').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
 }
 
 /** 从 HTML 片段里取 name="..." 属性值(返回原始转义值;容忍属性名与 = 间的空白,与 MAG_MEDIA_WRAP_RE 同风格) */
@@ -3757,22 +3964,31 @@ let testGenTimer = null;
 let testGenLastEntry = null;
 let testGenBusy = false;
 
-/** 把预览框切到指定状态:empty / generating(text) / image(url) / error(text) */
+/** 把预览框切到指定状态:empty / generating(text) / image(url) / video(url) / error(text) */
 function setTestPreview(state, payload) {
     const $empty = $('#test_preview_empty');
     const $img = $('#test_preview_img');
+    const $video = $('#test_preview_video');
     const $status = $('#test_preview_status');
     if (!$empty.length) return;
 
     $empty.css('display', state === 'empty' ? 'block' : 'none');
     $img.css('display', state === 'image' ? 'block' : 'none');
+    $video.css('display', state === 'video' ? 'block' : 'none');
     $status.css('display', state === 'generating' || state === 'error' ? 'block' : 'none');
 
     if (state === 'image') {
+        releaseVideoEl($video); // 切走时释放上一轮视频持有的资源
         $img.attr('src', payload);
-    } else if (state === 'generating' || state === 'error') {
-        $status.text(payload || '');
-        $status.css('color', state === 'error' ? 'var(--dangerColor, #c66)' : '');
+    } else if (state === 'video') {
+        $img.attr('src', '');
+        $video.attr('src', payload);
+    } else {
+        releaseVideoEl($video);
+        if (state === 'generating' || state === 'error') {
+            $status.text(payload || '');
+            $status.css('color', state === 'error' ? 'var(--dangerColor, #c66)' : '');
+        }
     }
 }
 
@@ -3783,6 +3999,8 @@ async function runTestGenerate() {
     if (!rawPrompt) { toastr.warning('提示词不能为空'); return; }
     const preset = getActivePreset();
     if (!preset) { toastr.warning('请先在「ComfyUI 配置」tab 选一个配置档'); return; }
+
+    const mediaType = ($('#test_media_type').val() === 'video') ? 'video' : 'image';
 
     testGenBusy = true;
     $('#test_generate_btn').css('opacity', '0.5').css('pointer-events', 'none');
@@ -3796,14 +4014,15 @@ async function runTestGenerate() {
     }, 1000);
 
     try {
-        const { url, format, character, finalPrompt } = await generateViaComfy(rawPrompt, 'image', preset.name);
+        // 视频时 generateViaComfyInner 内部超时自动放宽到 5min(多帧采样耗时数分钟),图片 30s
+        const { url, format, character, finalPrompt } = await generateViaComfy(rawPrompt, mediaType, preset.name);
 
         // 用 preset.name 作为 character → 图库 tab 自动按 preset 分组。prompt 用 finalPrompt 快照(含前缀)
-        const entry = { url, character, prompt: finalPrompt, mediaType: 'image', format, timestamp: Date.now() };
+        const entry = { url, character, prompt: finalPrompt, mediaType, format, timestamp: Date.now() };
         pushGalleryEntry(entry);
         testGenLastEntry = entry;
 
-        setTestPreview('image', url);
+        setTestPreview(mediaType, url);
     } catch (e) {
         console.error(`[${extensionName}] Test generate failed:`, e);
         setTestPreview('error', `生成失败: ${e.message || e}`);
@@ -3824,6 +4043,13 @@ function bindTestTabEvents() {
     });
     $('#test_preview_img').off('click.test').on('click.test', function () {
         if (testGenLastEntry) openGalleryLightbox(testGenLastEntry);
+    });
+    $('#test_media_type').off('change.test').on('change.test', function () {
+        // 按钮文案跟媒体类型走(生成测试图 / 生成测试视频);生成中只改文案不干扰流程
+        const isVideo = $(this).val() === 'video';
+        $('#test_generate_btn').find('span').text(isVideo
+            ? translate('生成测试视频', 'mag_test_generate_video_btn')
+            : translate('生成测试图', 'mag_test_generate_btn'));
     });
     $('#test_paste_btn').off('click.test').on('click.test', async function () {
         try {
@@ -3920,12 +4146,16 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
 });
 
 // 切聊天:清残留 in-flight(同 GENERATION_STARTED 的防泄漏理由,旧聊天的暂存媒体不该算进新聊天)
-// + 关预览浮窗 + 旧楼层裸 [image]/[video] 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders)
+// + 关预览浮窗 + 旧楼层裸 [image]/[video] 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders,
+//   内含嵌套占位符存量自愈) + 自动模式下单独跑一遍自愈(error 占位符也会被嵌套损坏)
 eventSource.on(event_types.CHAT_CHANGED, async () => {
     if (inFlightMedia.size > 0) console.warn(`[${extensionName}] CHAT_CHANGED: 清空 ${inFlightMedia.size} 条滞留 in-flight 媒体`);
     inFlightMedia.clear();
     closeMediaPreviewModal();
     await processAllMessagesForPlaceholders();
+    if (extension_settings[extensionName] && extension_settings[extensionName].autoReplace !== 'manual') {
+        await healAllFloorsNestedPlaceholders();
+    }
 });
 
 // 编辑消息保存后(ST emit MESSAGE_EDITED),让占位符 / 缓存媒体在编辑后的消息里重新渲染

@@ -85,11 +85,13 @@
     "mag_media_preview_empty": "当前聊天暂无生成媒体",
 
     "mag_tab_test": "测试生成",
+    "mag_test_media_type": "媒体类型",
     "mag_test_prompt_ph": "提示词,例如:1girl, outdoors...",
     "mag_test_generate_btn": "生成测试图",
+    "mag_test_generate_video_btn": "生成测试视频",
     "mag_test_paste_btn": "从粘贴板替换",
     "mag_test_clear_btn": "清空提示词",
-    "mag_test_preview_empty": "点上方「生成测试图」用当前 ComfyUI 配置档生成一张",
+    "mag_test_preview_empty": "点上方「生成」用当前 ComfyUI 配置档测试图片/视频生成",
 
     "mag_char_new_role": "+ 新角色",
     "mag_char_toggle_mode": "切换输入方式(下拉 ↔ 输入)",

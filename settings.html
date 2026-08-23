@@ -1228,6 +1228,13 @@
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="test" style="display:none;">
+    <div class="flex-container flexnowrap margin-top-5">
+        <label for="test_media_type" class="flex1" data-i18n="mag_test_media_type">Media Type</label>
+        <select id="test_media_type" class="text_pole widthNatural margin0">
+            <option value="image" data-i18n="Image" selected>Image</option>
+            <option value="video" data-i18n="Video">Video</option>
+        </select>
+    </div>
     <div class="margin-top-5">
         <label for="test_prompt_input" data-i18n="Prompt">Prompt</label>
         <div id="test_paste_btn" class="menu_button" title="从粘贴板替换" data-i18n="[title]mag_test_paste_btn" style="display:inline-flex; padding:3px 8px; margin-left:5px;">
@@ -1252,6 +1259,7 @@
             <div style="margin-top:6px;" data-i18n="mag_test_preview_empty">点上方「生成」测试当前 ComfyUI 配置</div>
         </div>
         <img id="test_preview_img" alt="preview" style="display:none; width:100%; height:auto; max-height:280px; object-fit:contain; border-radius:5px; cursor:pointer;" />
+        <video id="test_preview_video" controls loop muted style="display:none; width:100%; height:auto; max-height:280px; object-fit:contain; border-radius:5px;"></video>
         <div id="test_preview_status" style="display:none; text-align:center; padding: 20px 10px; opacity:0.8;"></div>
     </div>
 </div>

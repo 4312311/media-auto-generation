@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 功能概览
 
-入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 4 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 5 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
@@ -16,12 +16,13 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | ComfyUI 配置 | `comfy` | tab 顶部是**全局 ComfyUI 地址**(`activeComfyUrl` + 地址簿下拉 `comfyUrls`,跨配置档共享,hr 分隔线隔开);下方是多配置档系统:model/sampler/scheduler/width/height/steps/scale/denoise/seed + 正负面前缀 + 自定义工作流 JSON(API 格式)+ 预览图。配置档存 `extension_settings[extensionName].comfyPresets`,当前激活档 `activePresetName`。Sampler/Scheduler 行下方**放大模型下拉**(`preset.upscaleModel`,首项『不使用』=空值不注入;选中后**生成时**由 `injectUpscaleIntoWorkflowJson` 动态图手术注入 `UpscaleModelLoader` + `ImageUpscaleWithModel`——插在终端图像输出节点(输出未被任何节点消费、且 `images` 输入为节点引用的节点,PreviewImage/SaveImage/VideoCombine 通吃)之前,同源终端共享一个放大节点,异源各插一个;工作流已带接线好的放大链时只覆盖 loader 的 `model_name`;**不改动 preset.workflowJson**,JSON 无效/找不到终端时打 warn 原样放行)。列表由 `refreshComfyOptions` 调 `fetchUpscaleModelsDirect` **浏览器直连** ComfyUI `/object_info/UpscaleModelLoader`(兼容新版 `["COMBO",{options}]` 与旧版 `[0]` 数组两种返回)——**要求 ComfyUI 启动带 `--enable-cors-header`**(Windows 机的 `F:\romote confyUI\start_comfyui_directly.bat` 已加;不带该参数时浏览器直连被新版 ComfyUI 的 Origin 校验 403,拉不到列表只降级为下拉回显已存值,生成注入不受影响)。工作流 JSON 下方 LoRA 编辑列表:行内改 `strength_model` 自动写回;行尾 × 删除节点;『新增 LoRA』下拉按 `comfyCache.loras` 过滤选择(列表由 `refreshComfyOptions` 调 `fetchLorasDirect` **浏览器直连** ComfyUI `/object_info/LoraLoader`(节点缺失时退 `LoraLoaderModelOnly`),同样要求 `--enable-cors-header`;失败降级为手动输入文件名回车)。点『连接』拉到的五类列表(models/samplers/schedulers/loras/upscaleModels)按 ComfyUI 地址分档持久化到 `comfyListCache`(key 去尾斜杠;只覆盖本轮成功拉到的组,部分失败保留旧档);`renderPresetFields` 开头有失配守卫——内存 `comfyCache.url` ≠ 当前地址时 `hydrateComfyCacheFromSettings()` 自动灌回存档,刷新页面/切配置档/地址簿切走再切回都不需要重新连接,点『连接』才刷新为最新。增删是图手术(`addLoraToWorkflow` 链尾插入 / `removeLoraFromWorkflow` 旁路重接),写回会整体重排 JSON 排版。ComfyUI 走通后可替代默认的 ST SD 命令路径 |
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,`<details>` 折叠 + 缩略图网格,点击放大(modal lightbox)。数据在 `galleryManifest` |
+| 测试生成 | `test` | 聊天外直接用当前 ComfyUI 配置档试生成:媒体类型下拉(`#test_media_type`,image/video)+ prompt + 『生成』按钮(Ctrl+Enter 快捷键)。走 `generateViaComfy` 同一条管线(含串行队列/前缀/占位符/放大注入),超时同样按媒体类型分档(video 5min / image 30s);成品预览在 tab 内(`<img>`/`<video>` 按类型切换,切换时 `releaseVideoEl` 释放旧视频资源)并 push 进图库(character 用 preset.name → 图库按配置档分组)。按钮文案随媒体类型联动(生成测试图/生成测试视频,`translate` 动态取词) |
 
 核心触发机制:消息中出现 `[image]提示词[/image]` / `[video]提示词[/video]` 标签(BBCode 式,prompt 在标签体内,正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 mag-media wrapper(内嵌 `<img>`/`<video>`)。同 prompt 有 3 分钟冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED`/`STOPPED` 后统一落地。prompt 提取统一走 `extractTagPrompt(match)`(组1=成对分支、组2=漏闭合兜底分支,换行折叠为空格)。**流式期间(isFinal=false)只认成对分支(组1),兜底分支被守卫跳过**——否则半截流式输出每轮匹配到不同长度的行内前缀,hash 每轮不同导致冷却/并发锁全失效、疯狂重复触发生成,且落地时半截 originalTag 是完整标签前缀,前缀替换会留下 `[/image]` 残尾(2026-08 实测事故)。旧 `<pic prompt="...">` 属性式格式已废弃不做兼容——属性内引号/换行是结构性字符,AI 输出易坏;loadSettings 里检测存值含 `<pic`/`<video` 自动迁移到新默认正则(注意:历史默认正则的源码字符串用单反斜杠,经 JS 字面量解析 `\s`→`s`、`\b`→退格,从未生效过,用户实际用的是 UI 手配正则)。
 
 **in-flight 媒体落地**(`landInFlightMedia()`,自动模式):生成完成的媒体先进 `inFlightMedia`(Map<promptHash, {mediaTag, declare, floor, originalTag, regexStr}>),非流式时每张完成立即落地,流式时等 `GENERATION_ENDED` 后的 `requestDebouncedUpdate` 落地(生成完成回调另有 10s 延迟重试兜底流式结束事件丢失)。落地按 `floor`+`originalTag` 精确定位**触发时的楼层**——生成耗时 40s+,完成时该楼常已被用户新消息挤到非最后一楼,若只扫最后一楼会媒体丢失+标签永久卡死(裸标签留下,撞 3 分钟冷却不重生成,只能刷新);originalTag 失配(楼层被 swipe/删除/regex 脚本改写)时按 hash 重扫兜底,再失配则丢弃防泄漏。**流式期间只滞留"流式目标楼(最后一楼)"**(它的 mes 被 ST 流式持续重写,中途写会被冲掉),非流式楼照常落地——不能顶层 `isStreamActive` 一票否决,否则流式结束事件丢失/时序异常时媒体永久滞留(2026-08 实测:生成成功入图库但零落地)。`GENERATION_STARTED` **不**清 inFlightMedia(清了会丢上一轮慢生成的媒体),切聊天才清(CHAT_CHANGED)。
 
-**媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 declare 描述(`PIC_DECLARE_RE` 兼容 `[img_Declare]...[/img_Declare]`(2026-08 起用户卡的 BBCode 新格式)与 `<pic_Declare>...</pic_Declare>`(旧卡)两种;**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 [image]/[video] 标签,中间只隔空白/换行;隔着其他内容则不关联;declare 是用户卡的约定,插件只读不约束格式),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
+**媒体预览浮窗**(流式看图用):发送栏图标 `#mag_preview_btn`(`#rightSendForm` 内,fa-images)打开居中 modal `#mag_media_preview_modal`,按楼层(新→旧)列出当前聊天全部生成媒体(含流式未落地 in-flight),层内按创建时间正序,一行一个可滚动;层间分隔线 + 『最新 / 第 N 楼的图片』标签;媒体上方显示紧邻其前的 declare 描述(`PIC_DECLARE_RE` 兼容 `[img_Declare]...[/img_Declare]` / `[video_Declare]...[/video_Declare]`(2026-08 起用户卡的 BBCode 新格式,图片/视频各自带 declare)与 `<pic_Declare>...</pic_Declare>`(旧卡)三种,开/闭标签交替保持单捕获组;**用户角色卡的 AI 输出惯例**:declare 块包着图片描述、紧贴 [image]/[video] 标签,中间只隔空白/换行;隔着其他内容则不关联;declare 是用户卡的约定,插件只读不约束格式),下方显示创建时间(优先 `galleryManifest.timestamp`=生成完成时刻,回退 magId 内嵌 base36 时间戳)。数据源独立于消息 DOM:`collectFloorMedia()` 扫各楼层 `message.mes` 的 mag-media wrapper(`MAG_MEDIA_WRAP_RE`)+ 旧格式裸 `<img|video prompt=...>`(先剥 wrapper 再扫,避免空扫 MB 级 base64)+ 流式 `inFlightMedia`。自动刷新:`scheduleMediaPreviewRender()` 挂在 pushGalleryEntry / commitMediaToMessage / processMessageContent 落地 / GENERATION_STARTED / MESSAGE_EDITED / CHAT_CHANGED。
 
 **旧楼层占位符补扫**:`processMessageContent` 只处理最后一楼(`chat.length - 1`),切进聊天(CHAT_CHANGED)时由 `processAllMessagesForPlaceholders()` 全量扫旧楼层裸 `[image]/[video]` 标签转成占位符——**仅手动模式**生效(自动模式不动旧楼层,避免每次进聊天连环触发生成),prompt 提取/特征注入/hash 与逻辑 B-0 一致。
 
@@ -136,9 +137,11 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地
 - `MAG_MEDIA_WRAP_RE` — mag-media wrapper 正则(collectFloorMedia 楼层扫描用)
 - `extractTagPrompt(match)` — 从触发正则 match 提取 prompt(三处扫描点共用:processMessageContent / landInFlightMedia hash 重扫 / processAllMessagesForPlaceholders),组1=成对分支、组2=漏闭合兜底,换行折叠为空格
+- `isInsideHtmlTag` / `healNestedPlaceholders` / `healMultilineMagAttrs` / `healPlaceholderDamage` / `healAllFloorsNestedPlaceholders` / `replaceLiteral` — 占位符防御组件:标签内匹配守卫 / 嵌套与多行属性自愈 / $ 免疫替换(见"二次匹配陷阱"与"属性值单行化"两节)
 - `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览;出口还原已移交 ST Regex 扩展)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
-- `applyWorkflowPlaceholders` / `injectUpscaleIntoWorkflowJson` / `generateViaComfy` — ComfyUI 生成管线:占位符替换 → 放大模型注入(preset.upscaleModel 非空时)→ 串行队列发 `/api/sd/comfy/generate`(见功能概览 ComfyUI 配置 tab 行)
+- `applyWorkflowPlaceholders` / `injectUpscaleIntoWorkflowJson` / `generateViaComfy` — ComfyUI 生成管线:占位符替换 → 放大模型注入(preset.upscaleModel 非空时)→ 串行队列发 `/api/sd/comfy/generate`(见功能概览 ComfyUI 配置 tab 行)。生成超时 video 5min / image 1min(视频多帧采样耗时数分钟);`comfyProxy` 支持外部 AbortSignal(手动模式中断用),abort 与超时靠错误消息区分
+- `manualGenerations` / `requestAbortManualGeneration` / `abortManualGeneration` — 手动模式生成中断:loading 态占位符点击 → `callGenericPopup` 确认(终止生成/继续等待)→ abort 前端 fetch + 浏览器直连 ComfyUI `POST /interrupt` 打断后端正在执行的任务(同 LoRA 直连要求 `--enable-cors-header`,失败静默降级)。中断 ≠ 失败:占位符恢复 idle 态(图标/文案还原),可再次点击重新生成;串行队列里后续 job 不受影响继续执行;排队期间被中断的 job 轮到时 fetch 发出前即取消。自动模式与 regenerateMedia 不支持中断(无占位符转圈入口)
 - `requestDebouncedUpdate(isFinal)` — 200ms 防抖更新消息 DOM
 - `loadSettings` / `bindSettingsEvents` / `updateUI` — 设置加载与事件绑定
 - `createFloatingUI` / `initPanelDrag` / `initFloatBtnDrag` / `toggleFloatingPanel` — 浮动按钮 + 可拖动浮窗(自写 mousedown,不依赖 ST `dragElement`,见"ST 前端踩坑笔记")。浮标另有:`floatBtnMetrics`(默认位尺寸/边距参数)/ `clampFloatBtnIntoView`(恢复落盘位置 & resize/orientationchange 时把浮标拉回屏内,只改视觉不落盘)/ `resetFloatBtnPosition`(手机端从 wand 菜单打开面板时把浮标重置回默认右下角并落盘——浮标被吸附/挤出屏后的救援通道)+ 模块级 `floatBtnDockedEdge` 吸附运行态(手机端吸附少藏:settings.html 的 `.mag-mobile` 覆盖为 translateX ±45%/opacity .8,桌面 ±65%/.5)
@@ -196,7 +199,18 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 
 辅助证据源:图库 `galleryManifest.timestamp` = 生成成功的独立产物记录(在 inFlightMedia.set 之后一行 push,**有图库条目 = 生成成功且已暂存**,断点必在落地段);ComfyUI `/queue` `/history` = 后端实际调用;`data/<user>/settings.json` 直读 extension_settings(绕过 window 不可达)。
 
-### 正则的两种存在形态与转义边界
+### 正则扫描 HTML 混排文本的二次匹配陷阱(2026-08 占位符嵌套事故沉淀)
+
+占位符的 `data-original-tag` 属性里存着裸标签原文(`[image]1girl[/image]`),wrapper 的 `data-prompt` 里存着用户 prompt(可能含标签文本)。**正则扫描是对整个 mes 字符串做的,分不清"正文里的裸标签"和"HTML 属性里存的标签文本"**——任何重扫(进聊天 CHAT_CHANGED 全量扫 / 编辑消息 MESSAGE_EDITED / 流式结束扫最后一楼)都会把属性里的标签再当正文标签匹配,把新占位符的完整 HTML 未转义塞进旧占位符的 `data-original-tag` 属性值 → 属性值里的裸引号截断 HTML 结构 → 渲染成源码文本。实测形态:首次落地正常、"切出去再进聊天"后损坏,image/video 均中招(时好时坏的观感取决于看的时候有没有触发过重扫)。三层防御:
+- **守卫拦增量** `isInsideHtmlTag(text, index)`(match.index 前最近的 `<` 比最近的 `>` 更近 = 在标签内部):processMessageContent / processAllMessagesForPlaceholders / landInFlightMedia hash 重扫三处扫描点统一跳过。
+- **heal 修存量** `healNestedPlaceholders(mes)`:`data-original-tag` 值被塞进完整占位符 HTML 时,剥回内层记录的裸标签原文(每轮剥一层,≤10 轮;三层以上嵌套只保证不再嵌套、可能残留属性尾巴碎片)。手动模式在 processAllMessagesForPlaceholders 每楼开头跑,自动模式 CHAT_CHANGED 单独跑 `healAllFloorsNestedPlaceholders()`。
+- **`replaceLiteral(str, search, repl)`**:所有"用生成的 HTML 替换 mes 片段"的 String.replace 改走函数替换,免疫 replacement 里 `$&`/`` $` ``/`$'` 被 prompt 内容触发的展开。
+
+设计会被重复执行的正则扫描逻辑时,先问:**匹配结果的来源文本,会不会包含"上一次执行写入的 HTML 的属性值"?** 是则必须做位置守卫(HTML 标签内部检测),幂等防御(hash/冷却/锁)挡不住这类自指输入。
+
+### mes 里的 HTML 属性值必须单行化(2026-08 video"显示源码"第二根因)
+
+占位符 `data-original-tag` 存标签原文,而 AI 的 video prompt 是**多行分镜稿**(`\n\n` 分段)——属性值里出现裸换行后,mes 被 ST 渲染管线按行处理:`fixMarkdown`(power-user.js:455,forDisplay)对**奇数引号的行在行尾补一个 `"`**、showdown 按行切块内联 HTML——跨行属性把整个占位符 HTML 撕碎 → 渲染成纯文本源码。**image "正常"纯属测试 prompt 单行(`1girl`),与媒体类型无关**。修复:`escapeHtmlAttribute` 把 `\r`/`\n` 一并实体化为 `&#13;`/`&#10;`(浏览器解析还原为换行,DOM attr() 读回原文,无副作用);`unescapeHtmlAttr` 同步补解码;存量楼由 `healMultilineMagAttrs`(并入 `healPlaceholderDamage` 统一入口,先进 `healNestedPlaceholders` 修净嵌套引号再修多行)在 CHAT_CHANGED 时自愈。教训:**写入 ST 消息体的 HTML,其属性值是"要过 markdown 管线的文本",不是"只给浏览器解析的 HTML"——一切对浏览器无害的裸字符(换行)都可能被按行处理的管线撕碎**。
 
 - **正则字面量**(`/...\/gi` 直接 const,如 MAG_MEDIA_WRAP_RE)无转义问题;**配置字符串**(存 settings、走 `regexFromString` 解析,如 imageRegex)在源码字符串字面量里必须**双反斜杠**——单反斜杠经 JS 解析 `\s`→`s`、`\b`→退格符,正则沉默失效(历史默认正则坏在这里从未生效,用户实际一直在用 UI 手配值)。
 - 验证方法:node 一行 `eval` 该字符串字面量打印解析值,再拿真实数据 matchAll——不要信肉眼。
