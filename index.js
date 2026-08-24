@@ -3760,6 +3760,24 @@ function ensureMediaPreviewModal() {
         e.stopPropagation();
         await regenerateFloorMedia(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
     });
+    // 点行尾复制按钮 → 复制该媒体的 prompt(与 onMagClick 的 copy 角色同款:copyText 优先,降级原生剪贴板)
+    $m.find('.preview-modal-body').on('click', '.preview-media-copy-btn', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const prompt = String($(this).closest('.preview-media-row').attr('data-prompt') || '');
+        if (!prompt) { toastr.warning('该媒体没有可复制的 prompt'); return; }
+        try {
+            if (typeof copyText === 'function') {
+                await copyText(prompt);
+            } else {
+                await navigator.clipboard.writeText(prompt);
+            }
+            toastr.success('已复制 prompt');
+        } catch (err) {
+            console.error(`[${extensionName}] copy prompt failed:`, err);
+            toastr.error('复制失败');
+        }
+    });
 }
 
 /** 渲染浮窗内容(仅 open 状态执行;重建时保留滚动位置) */
@@ -3805,7 +3823,7 @@ function renderMediaPreviewModal() {
         const escapedUrl = escapeHtmlAttribute(r.url);
         const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
-        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''}</div>`;
+        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制 prompt"></i></div>`;
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls muted playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;

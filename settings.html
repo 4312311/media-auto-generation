@@ -418,6 +418,20 @@
     #mag_media_preview_modal .preview-media-timestamp {
         opacity: 0.55;
     }
+    /* 复制 prompt 按钮:时间行行尾,padding 加大点击热区(手机端友好) */
+    #mag_media_preview_modal .preview-media-copy-btn {
+        cursor: pointer;
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 1.15em; /* 时间行整体 0.72em,按钮放大回可点尺寸 */
+        opacity: 0.55;
+        padding: 3px 4px;
+        margin-left: 10px;
+        vertical-align: middle;
+    }
+    #mag_media_preview_modal .preview-media-copy-btn:hover {
+        opacity: 1;
+        color: var(--SmartThemeQuoteColor, rgba(120,160,255,0.9));
+    }
     #mag_media_preview_modal .preview-media-row img,
     #mag_media_preview_modal .preview-media-row video {
         display: block;
