@@ -137,7 +137,7 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `commitMediaToMessage(magId, mediaWrap, caller)` — 手动/重生成按 magId 反查任意楼层落地
 - `MAG_MEDIA_WRAP_RE` — mag-media wrapper 正则(collectFloorMedia 楼层扫描用)
 - `extractTagPrompt(match)` — 从触发正则 match 提取 prompt(三处扫描点共用:processMessageContent / landInFlightMedia hash 重扫 / processAllMessagesForPlaceholders),组1=成对分支、组2=漏闭合兜底,换行折叠为空格
-- `isInsideHtmlTag` / `healNestedPlaceholders` / `healMultilineMagAttrs` / `healPlaceholderDamage` / `healAllFloorsNestedPlaceholders` / `replaceLiteral` — 占位符防御组件:标签内匹配守卫 / 嵌套与多行属性自愈 / $ 免疫替换(见"二次匹配陷阱"与"属性值单行化"两节)
+- `isInsideHtmlTag` / `healNestedPlaceholders` / `healMagAttrDamage` / `healPlaceholderDamage` / `healAllFloorsNestedPlaceholders` / `replaceLiteral` — 占位符防御组件:标签内匹配守卫 / 嵌套·多行属性·撇号实体自愈 / $ 免疫替换(见"二次匹配陷阱"与"属性值单行化"两节)
 - `sanitizeLlmMagHtml` / `sanitizeFreshLlmMessage` / `preGenerationMesSnapshot` — LLM 伪造 mag-* HTML 入口防御(见功能概览;出口还原已移交 ST Regex 扩展)
 - `injectCharacterTags(rawPrompt, tagsDict)` — 角色固定特征注入。把角色名替换为 `角色名, 特征tag`
 - `applyWorkflowPlaceholders` / `injectUpscaleIntoWorkflowJson` / `generateViaComfy` — ComfyUI 生成管线:占位符替换 → 放大模型注入(preset.upscaleModel 非空时)→ 串行队列发 `/api/sd/comfy/generate`(见功能概览 ComfyUI 配置 tab 行)。生成超时 video 5min / image 1min(视频多帧采样耗时数分钟);`comfyProxy` 支持外部 AbortSignal(手动模式中断用),abort 与超时靠错误消息区分
@@ -210,11 +210,11 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 
 ### mes 里的 HTML 属性值必须单行化(2026-08 video"显示源码"第二根因)
 
-占位符 `data-original-tag` 存标签原文,而 AI 的 video prompt 是**多行分镜稿**(`\n\n` 分段)——属性值里出现裸换行后,mes 被 ST 渲染管线按行处理:`fixMarkdown`(power-user.js:455,forDisplay)对**奇数引号的行在行尾补一个 `"`**、showdown 按行切块内联 HTML——跨行属性把整个占位符 HTML 撕碎 → 渲染成纯文本源码。**image "正常"纯属测试 prompt 单行(`1girl`),与媒体类型无关**。修复:`escapeHtmlAttribute` 把 `\r`/`\n` 一并实体化为 `&#13;`/`&#10;`(浏览器解析还原为换行,DOM attr() 读回原文,无副作用);`unescapeHtmlAttr` 同步补解码;存量楼由 `healMultilineMagAttrs`(并入 `healPlaceholderDamage` 统一入口,先进 `healNestedPlaceholders` 修净嵌套引号再修多行)在 CHAT_CHANGED 时自愈。教训:**写入 ST 消息体的 HTML,其属性值是"要过 markdown 管线的文本",不是"只给浏览器解析的 HTML"——一切对浏览器无害的裸字符(换行)都可能被按行处理的管线撕碎**。
+占位符 `data-original-tag` 存标签原文,而 AI 的 video prompt 是**多行分镜稿**(`\n\n` 分段)——属性值里出现裸换行后,mes 被 ST 渲染管线按行处理:`fixMarkdown`(power-user.js:455,forDisplay)对**奇数引号的行在行尾补一个 `"`**、showdown 按行切块内联 HTML——跨行属性把整个占位符 HTML 撕碎 → 渲染成纯文本源码。**image "正常"纯属测试 prompt 单行(`1girl`),与媒体类型无关**。修复:`escapeHtmlAttribute` 把 `\r`/`\n` 一并实体化为 `&#13;`/`&#10;`(浏览器解析还原为换行,DOM attr() 读回原文,无副作用);`unescapeHtmlAttr` 同步补解码;存量楼由 `healMagAttrDamage`(并入 `healPlaceholderDamage` 统一入口,先进 `healNestedPlaceholders` 修净嵌套引号再修属性)在 CHAT_CHANGED 时自愈。教训:**写入 ST 消息体的 HTML,其属性值是"要过 markdown 管线的文本",不是"只给浏览器解析的 HTML"——一切对浏览器无害的裸字符(换行)都可能被按行处理的管线撕碎**。
 
 - **正则字面量**(`/...\/gi` 直接 const,如 MAG_MEDIA_WRAP_RE)无转义问题;**配置字符串**(存 settings、走 `regexFromString` 解析,如 imageRegex)在源码字符串字面量里必须**双反斜杠**——单反斜杠经 JS 解析 `\s`→`s`、`\b`→退格符,正则沉默失效(历史默认正则坏在这里从未生效,用户实际一直在用 UI 手配值)。
 - 验证方法:node 一行 `eval` 该字符串字面量打印解析值,再拿真实数据 matchAll——不要信肉眼。
-- **HTML 属性值是转义过的**(`data-prompt` 里 `"` → `&quot;`):插件内回读用 `unescapeHtmlAttr`;但 ST Regex 只做字符串替换**不会 unescape**,还原给 LLM 的 prompt 里实体会原样出现(SD tag 场景概率低,已知边界)。
+- **HTML 属性值是转义过的**(`data-prompt` 里 `"` → `&quot;`):插件内回读用 `unescapeHtmlAttr`;但 ST Regex 只做字符串替换**不会 unescape**,还原给 LLM 的 prompt 里实体会原样出现。**撇号(`'`)是特例,escapeHtmlAttribute 刻意不转义它**——双引号属性里裸 `'` 结构合法,若转义成 `&#39;` 会经还原规则原样回传 LLM,LLM 模仿着在新标签里输出字面量实体 → 被当 prompt 正文再转义一层(`&amp;#39;`)→ 渲染/复制全显示 `&#39;`(2026-08 手机端长期污染事故,Windows 无撇号 prompt 故未现)。三层修复:① escape 不转 `'`(fixMarkdown 只数 `*` 和 `"`,裸 `'` 安全,见 power-user.js:457);② `extractTagPrompt` 入口 `unescapeHtmlAttr` 解码(治 LLM 已感染的输出);③ `healMagAttrDamage`(原 healMultilineMagAttrs 扩展)把存量属性与 prompt-text 里的 `&#39;`/`&amp;#39;` 压回裸撇号,`&quot;` 等结构实体不动(解码会截断属性)。`"`/`&`/`<`/`>` 在属性里必须转义,这些字符的实体回传 LLM 仍属已知边界(频率远低于撇号)。
 
 ### ST Regex 扩展(出口还原的承接方)
 

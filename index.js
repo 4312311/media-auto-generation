@@ -88,7 +88,11 @@ function normalizePrompt(str) {
  * 保证存进 wrapper data-prompt / 展示 / ST Regex 还原出去的都是单行干净文本。
  */
 function extractTagPrompt(m) {
-    return ((m[1] ?? m[2]) || '').trim().replace(/\s+/g, ' ');
+    const raw = ((m[1] ?? m[2]) || '').trim().replace(/\s+/g, ' ');
+    // 标签体可能带 HTML 实体:历史 wrapper 经 ST Regex 还原规则把 &#39; 等原样回传 LLM(纯字符串
+    // 替换不解码),LLM 模仿输出字面量实体;或模型自作主张转义。按语义解码,生成/存储/展示/复制
+    // 全链路拿到干净文本(unescapeHtmlAttr 是函数声明,有提升,此处可调用)。
+    return unescapeHtmlAttr(raw);
 }
 
 function pruneOldPrompts() {
@@ -107,8 +111,14 @@ function escapeHtmlAttribute(value) {
     // 按行切块)把 HTML 撕碎 → 整段占位符被当纯文本渲染成源码(2026-08 video 多行 prompt
     // 事故:image 测试 prompt 单行所以"看起来正常",video 的多行分镜稿必炸)。
     // 属性值里的 &#10;/&#13; 浏览器解析时还原为换行,DOM attr() 读回原文,无副作用。
+    //
+    // 撇号(')刻意**不**转义:本函数产物全部落在双引号属性值里,裸 ' 结构合法;
+    // 若转义成 &#39;,ST Regex 还原规则(promptOnly,纯字符串替换不解码)会把实体原样
+    // 回传给 LLM → LLM 模仿着在新标签里输出字面量 &#39; → 被当 prompt 正文再转义一层,
+    // 渲染/复制全是实体(2026-08 手机端长期污染事故)。fixMarkdown 只数 * 和 ",
+    // 裸 ' 不触发补引号,安全。&quot;/&lt;/&gt;/&amp; 是结构性字符,必须保留转义。
     return value
-        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
         .replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/\r/g, '&#13;').replace(/\n/g, '&#10;');
 }
@@ -157,24 +167,39 @@ function healNestedPlaceholders(mes) {
 }
 
 /**
- * 修复 mag 属性值里的裸换行(存量自愈):旧版 escapeHtmlAttribute 不转义换行,
- * 多行 prompt 的 data-original-tag/data-prompt 属性值跨 N 行,被 ST 渲染管线
- * (fixMarkdown 奇数引号行行尾补 " / showdown 按行切块)撕碎 → 占位符渲染成源码。
- * 新落地已由 escapeHtmlAttribute 治本,此函数只修历史楼。
+ * 修复 mag 属性值的历史损伤(存量自愈):
+ * ① 裸换行:旧版 escapeHtmlAttribute 不转义换行,多行 prompt 的 data-original-tag/data-prompt
+ *   属性值跨 N 行,被 ST 渲染管线(fixMarkdown 奇数引号行行尾补 " / showdown 按行切块)撕碎
+ *   → 占位符渲染成源码。新落地已由 escapeHtmlAttribute 治本。
+ * ② 撇号实体:旧版把 ' 转义成 &#39;,经 ST Regex 还原规则原样回传 LLM 造成实体感染(见
+ *   escapeHtmlAttribute 注释);双转义 &amp;#39; 是感染期 LLM 输出的字面量实体。一并压回
+ *   裸 '(双引号属性里结构合法),旧 wrapper 还原回传时不再带实体,LLM 上下文逐轮自净。
+ *   &quot; 等其他实体不动——在双引号属性值里解码会截断属性结构。
+ * 匹配 data-(original-tag|prompt|error) 与裸 prompt(旧格式 img/video 标签 + wrapper 内层媒体标签)。
  */
-const MULTILINE_MAG_ATTR_RE = /(data-(?:original-tag|prompt|error)=")([^"]*)"/g;
-function healMultilineMagAttrs(mes) {
+const MAG_ATTR_HEAL_RE = /((?:data-(?:original-tag|prompt|error)|prompt)=")([^"]*)"/g;
+// wrapper 的 prompt 展示文本(<small data-mag-role="prompt-text">...</small>)同样可能带撇号实体,
+// 文本节点里解码无结构风险,一并自愈
+const MAG_PROMPT_TEXT_HEAL_RE = /(<small data-mag-role="prompt-text">)([\s\S]*?)(<\/small>)/g;
+function healMagAttrDamage(mes) {
     if (typeof mes !== 'string' || !mes.includes('data-mag-id=')) return mes;
-    return mes.replace(MULTILINE_MAG_ATTR_RE, (m, attr, val) =>
-        (/[\r\n]/.test(val) ? attr + val.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;') + '"' : m));
+    let out = mes.replace(MAG_ATTR_HEAL_RE, (m, attr, val) => {
+        let v = val;
+        if (/[\r\n]/.test(v)) v = v.replace(/\r/g, '&#13;').replace(/\n/g, '&#10;');
+        if (v.includes('#39;')) v = v.replace(/&amp;#39;/g, "'").replace(/&#39;/g, "'");
+        return v === val ? m : attr + v + '"';
+    });
+    out = out.replace(MAG_PROMPT_TEXT_HEAL_RE, (m, open, text, close) =>
+        (text.includes('#39;') ? open + text.replace(/&amp;#39;/g, "'").replace(/&#39;/g, "'") + close : m));
+    return out;
 }
 
 /**
- * 占位符存量损伤统一自愈入口:先修嵌套(嵌套楼属性值里含未转义引号,多行正则会
- * 在内层引号截断,必须先修净),再把属性值里的裸换行实体化。
+ * 占位符存量损伤统一自愈入口:先修嵌套(嵌套楼属性值里含未转义引号,后续正则会
+ * 在内层引号截断,必须先修净),再修属性值(裸换行实体化 + 撇号实体压回裸撇号)。
  */
 function healPlaceholderDamage(mes) {
-    return healMultilineMagAttrs(healNestedPlaceholders(mes));
+    return healMagAttrDamage(healNestedPlaceholders(mes));
 }
 
 /**
