@@ -194,6 +194,84 @@
         white-space: nowrap;
     }
 
+    /* --- 图库批量选择(长按进入选择模式,按住拖动滑选;一级角色方块与二级缩略图通用)--- */
+    /* 可选目标:禁文字选择/长按呼出,勾选圈定位锚 */
+    #media_auto_gen_panel_body .gallery-tile,
+    #mag_gallery_group_modal .group-modal-thumb-wrap {
+        position: relative;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+    }
+    /* 选择模式下所有项显示空心圈 */
+    #media_auto_gen_panel_body #gallery_container.mag-selecting .gallery-tile::after,
+    #mag_gallery_group_modal .group-modal-grid.mag-selecting .group-modal-thumb-wrap::after {
+        content: '';
+        position: absolute;
+        top: 5px;
+        left: 5px;
+        width: 20px;
+        height: 20px;
+        box-sizing: border-box;
+        border-radius: 50%;
+        border: 2px solid rgba(255,255,255,0.9);
+        background: rgba(0,0,0,0.35);
+        z-index: 4;
+        pointer-events: none;
+    }
+    /* 选中项:实心圈 + 对勾 + 描边 */
+    #media_auto_gen_panel_body .mag-selected::after,
+    #mag_gallery_group_modal .mag-selected::after {
+        content: '\2713';
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--SmartThemeQuoteColor, #4a8cff);
+        border-color: transparent;
+        color: #fff;
+        font-weight: bold;
+    }
+    #media_auto_gen_panel_body .mag-selected,
+    #mag_gallery_group_modal .mag-selected {
+        outline: 2px solid var(--SmartThemeQuoteColor, #4a8cff);
+        outline-offset: -2px;
+    }
+    /* 选择操作栏:一级在 panel_body 内,二级挂在 group modal(body 下) */
+    #media_auto_gen_panel_body .mag-select-bar,
+    #mag_gallery_group_modal .mag-select-bar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 8px;
+        margin: 0 0 8px;
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        background: var(--SmartThemeBlurTintColor);
+        font-size: 0.85em;
+        flex-wrap: wrap;
+    }
+    #mag_gallery_group_modal .mag-select-bar {
+        margin: 8px 10px 0;
+        background: rgba(255,255,255,0.08);
+    }
+    #media_auto_gen_panel_body .mag-select-bar .mag-select-count,
+    #mag_gallery_group_modal .mag-select-bar .mag-select-count {
+        flex: 1;
+        min-width: 90px;
+        opacity: 0.85;
+        white-space: nowrap;
+    }
+    #media_auto_gen_panel_body .mag-select-bar .menu_button,
+    #mag_gallery_group_modal .mag-select-bar .menu_button {
+        padding: 2px 10px;
+        font-size: 0.95em;
+        white-space: nowrap;
+    }
+    #media_auto_gen_panel_body .mag-select-bar .mag-select-delete,
+    #mag_gallery_group_modal .mag-select-bar .mag-select-delete {
+        color: var(--dangerColor, #c66);
+    }
+
     /* --- 角色图集 modal(挂在 body 下,点击角色方块弹出,显示该角色所有图)---
        z-index 比 lightbox(2147483650)低 10,lightbox 在其之上 */
     #mag_gallery_group_modal {
@@ -531,6 +609,20 @@
         max-height: 80dvh;
         object-fit: contain;
         border-radius: 6px;
+    }
+    #mag_gallery_lightbox .lightbox-declare {
+        max-width: 80vw;
+        max-height: 10dvh;
+        overflow-y: auto;
+        background: rgba(255,255,255,0.07);
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: #ddd;
+        font-size: 0.85em;
+        line-height: 1.4;
+        white-space: pre-wrap;
+        word-break: break-word;
+        text-align: left;
     }
     #mag_gallery_lightbox .lightbox-prompt {
         display: flex;
@@ -1234,6 +1326,12 @@
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="gallery" style="display:none;">
+    <div id="gallery_select_bar" class="mag-select-bar" style="display:none;">
+        <span class="mag-select-count" id="gallery_select_count">已选 0 个角色</span>
+        <div class="menu_button" id="gallery_select_done" data-i18n="mag_select_done">完成</div>
+        <div class="menu_button" id="gallery_select_all" data-i18n="mag_select_all">全选</div>
+        <div class="menu_button mag-select-delete" id="gallery_select_delete"><i class="fa-solid fa-trash-can"></i> <span data-i18n="mag_select_delete">删除</span></div>
+    </div>
     <div id="gallery_container"></div>
     <div id="gallery_empty" style="display:none;">
         <i class="fa-solid fa-images"></i>
