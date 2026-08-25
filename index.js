@@ -86,9 +86,12 @@ function normalizePrompt(str) {
  * 新正则两分支各一组捕获:组1=[image]...[/image] 成对分支,组2=漏闭合行内兜底分支。
  * 体内是自然语言,引号/换行都不是结构性字符;此处把换行折叠成空格,
  * 保证存进 wrapper data-prompt / 展示 / ST Regex 还原出去的都是单行干净文本。
+ * 实体解码(2026-08-25):wrapper 的 data-prompt 经 ST Regex 还原规则以转义值进 LLM 上下文,
+ * LLM 见过会回声输出 &lt;/&gt;/&#39; 等实体字面量;不解码则毒 prompt 永久进入生成/图库/复制。
+ * unescapeHtmlAttr 单次解码(&amp; 最后解),&amp;lt; 只还原成 &lt;,不会二次穿透。
  */
 function extractTagPrompt(m) {
-    return ((m[1] ?? m[2]) || '').trim().replace(/\s+/g, ' ');
+    return unescapeHtmlAttr(((m[1] ?? m[2]) || '').trim()).replace(/\s+/g, ' ');
 }
 
 function pruneOldPrompts() {
@@ -107,8 +110,12 @@ function escapeHtmlAttribute(value) {
     // 按行切块)把 HTML 撕碎 → 整段占位符被当纯文本渲染成源码(2026-08 video 多行 prompt
     // 事故:image 测试 prompt 单行所以"看起来正常",video 的多行分镜稿必炸)。
     // 属性值里的 &#10;/&#13; 浏览器解析时还原为换行,DOM attr() 读回原文,无副作用。
+    // ' 不转义(2026-08-25 去除):所有属性都用双引号定界,裸 ' 对 HTML 解析/DOMPurify/jQuery
+    // attr 均合法;ST fixMarkdown(power-user.js)按行补引号只查 * 和 " 不碰 '。转了反而让英文
+    // 撇号(lisa's)以 &#39; 形态进 LLM 还原上下文——比 <>& 的噪音更常见。unescapeHtmlAttr
+    // 保留 &#39; 解码,存量楼层兼容。
     return value
-        .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+        .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
         .replace(/</g, '&lt;').replace(/>/g, '&gt;')
         .replace(/\r/g, '&#13;').replace(/\n/g, '&#10;');
 }
