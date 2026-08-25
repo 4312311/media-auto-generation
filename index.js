@@ -86,13 +86,16 @@ function normalizePrompt(str) {
  * 新正则两分支各一组捕获:组1=[image]...[/image] 成对分支,组2=漏闭合行内兜底分支。
  * 体内是自然语言,引号/换行都不是结构性字符;此处把换行折叠成空格,
  * 保证存进 wrapper data-prompt / 展示 / ST Regex 还原出去的都是单行干净文本。
+ * 实体解码(2026-08-25):wrapper 的 data-prompt 经 ST Regex 还原规则以转义值进 LLM 上下文,
+ * LLM 见过会回声输出 &lt;/&gt;/&#39; 等实体字面量;不解码则毒 prompt 永久进入生成/图库/复制。
+ * unescapeHtmlAttr 单次解码(&amp; 最后解),&amp;lt; 只还原成 &lt;,不会二次穿透。
  */
 function extractTagPrompt(m) {
-    const raw = ((m[1] ?? m[2]) || '').trim().replace(/\s+/g, ' ');
     // 标签体可能带 HTML 实体:历史 wrapper 经 ST Regex 还原规则把 &#39; 等原样回传 LLM(纯字符串
     // 替换不解码),LLM 模仿输出字面量实体;或模型自作主张转义。按语义解码,生成/存储/展示/复制
     // 全链路拿到干净文本(unescapeHtmlAttr 是函数声明,有提升,此处可调用)。
-    return unescapeHtmlAttr(raw);
+    // 顺序:先解码再折叠空白——解码还原出的换行(&#10;)也要一并折叠,保证产物单行干净。
+    return unescapeHtmlAttr(((m[1] ?? m[2]) || '').trim()).replace(/\s+/g, ' ');
 }
 
 function pruneOldPrompts() {
@@ -2925,8 +2928,9 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 console.log(`[${extensionName}] 生成成功: hash=${String(promptHash).slice(0, 12)} floor=${messageIndex} isStreamActive=${isStreamActive}`);
                 failedPrompts.delete(promptHash); // 兜底:同一 prompt 先失败后(在另一消息)自动成功,清残留失败记录
 
-                // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入)
-                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
+                // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入),
+                // declare 同步带上(图库 lightbox 显示用,与媒体预览浮窗一致)
+                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: inFlightMedia.get(promptHash)?.declare ?? null });
 
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
@@ -3237,7 +3241,7 @@ async function startManualGeneration($ph) {
         const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
 
         failedPrompts.delete(promptHash);
-        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
+        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
 
         // 按 magId 反查真实消息并替换(占位符可能在旧楼层,非最后一条),成功才提示
         const committed = await commitMediaToMessage(magId, mediaWrap, 'startManualGeneration');
@@ -3315,7 +3319,7 @@ async function regenerateMedia($media) {
         const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
 
         failedPrompts.delete(promptHash);
-        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format });
+        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
 
         // 按 magId 反查真实消息并替换(wrapper 可能在旧楼层),成功才提示
         const committed = await commitMediaToMessage(magId, mediaWrap, 'regenerateMedia');
@@ -3381,6 +3385,231 @@ $(document).on('click.magph', '[data-mag-id]', onMagClick);
 
 let galleryRenderPending = false;
 let galleryRenderSig = null;
+// 批量选择引擎实例(一级角色方块 / 二级组内缩略图),bindGalleryEvents 创建
+let galleryTileSelect = null;
+let groupThumbSelect = null;
+
+// --- 长按 + 滑选批量选择引擎(手机相册式交互)---
+
+const SLIDE_SELECT_LONG_PRESS_MS = 500; // 长按进入选择模式的阈值
+const SLIDE_SELECT_SLOPE_PX = 10;       // 判定"开始拖动"的位移阈值(小于它视为手指微抖)
+
+const slideSelectInstances = []; // 活跃实例表;document 级 pointer handler 只绑一次,按 session 派发
+let slideSelectDocBound = false;
+
+/**
+ * 创建滑选引擎实例(图库一级角色方块与二级缩略图共用)。
+ * 交互:
+ * - 非选择模式:长按 500ms 进入选择模式并选中起点项;不松手继续拖动 = 滑选(经过即选中)
+ * - 选择模式:单击切换选中;按住拖动超阈值 = 批量设为"起点项切换后"的状态
+ * - click 统一由引擎接管(非选择模式转发给 onActivate,替代原有 jQuery click 委托)
+ * 容器绑 pointerdown/click/contextmenu/dragstart + non-passive touchmove(滑选中阻止滚动,
+ * 平时放行——网格本身要能滚,所以不能用 touch-action:none);document 级绑 move/up/cancel。
+ */
+function createSlideSelect({ itemSelector, getContainer, keyOf, onActivate, onModeChange, onSelectionChange }) {
+    // 浮窗/组 modal 重建会重调 bindGalleryEvents:淘汰同选择器的旧实例(旧容器元素连同监听一起废弃)
+    for (let i = slideSelectInstances.length - 1; i >= 0; i--) {
+        if (slideSelectInstances[i].opts.itemSelector === itemSelector) slideSelectInstances.splice(i, 1);
+    }
+    const inst = {
+        mode: false,          // 选择模式开关
+        selected: new Set(),  // 选中的 key(data-char / data-index 字符串)
+        session: null,        // 活跃指针会话(见 slideSelectOnPointerDown)
+        _suppressClick: false, // 长按/滑选抬起后的 click 吞掉标记(click 在 pointerup 之后派发)
+        opts: { itemSelector, getContainer, keyOf, onActivate, onModeChange, onSelectionChange },
+    };
+    slideSelectInstances.push(inst);
+    bindSlideSelectDocHandlers();
+    bindSlideSelectContainer(inst);
+    return inst;
+}
+
+/** document 级 pointermove/up/cancel:只绑一次,派发给有活跃会话的实例 */
+function bindSlideSelectDocHandlers() {
+    if (slideSelectDocBound) return;
+    slideSelectDocBound = true;
+    document.addEventListener('pointermove', (e) => {
+        for (const inst of slideSelectInstances) {
+            if (inst.session) slideSelectOnPointerMove(inst, e);
+        }
+    });
+    const finish = (e) => {
+        for (const inst of slideSelectInstances) {
+            if (inst.session) slideSelectOnPointerUp(inst, e);
+        }
+    };
+    document.addEventListener('pointerup', finish);
+    document.addEventListener('pointercancel', finish);
+}
+
+/** 容器级监听(原生绑,便于 touchmove 传 non-passive —— jQuery $.on 不支持 passive 选项) */
+function bindSlideSelectContainer(inst) {
+    const el = inst.opts.getContainer()[0];
+    if (!el) return;
+    el.addEventListener('pointerdown', (e) => slideSelectOnPointerDown(inst, e));
+    el.addEventListener('click', (e) => slideSelectOnClick(inst, e));
+    // 触摸长按会触发系统上下文菜单(Android),选择模式/长按进行中吞掉,避免与长按选中打架
+    el.addEventListener('contextmenu', (e) => {
+        if (inst.session || inst.mode) e.preventDefault();
+    });
+    // 滑选/长按期间禁止 img 原生拖拽(否则 pointermove 流被 dragstart 打断)
+    el.addEventListener('dragstart', (e) => {
+        if (inst.session) e.preventDefault();
+    });
+    // 滑选生效期间阻止页面滚动。不能给 tile 设 touch-action:none —— 网格要靠触摸滚动,
+    // 只在"选择拖动激活"的 touchmove 上 preventDefault,平时放行。
+    el.addEventListener('touchmove', (e) => {
+        if (inst.session?.dragging) e.preventDefault();
+    }, { passive: false });
+}
+
+/** pointerdown:建立会话。非选择模式起长按计时;选择模式预备滑选(toggle 仍交给 click) */
+function slideSelectOnPointerDown(inst, e) {
+    if (e.button !== undefined && e.button !== 0) return; // 只认主键/触摸/笔
+    const item = e.target?.closest?.(inst.opts.itemSelector);
+    const container = inst.opts.getContainer()[0];
+    if (!item || !container || !container.contains(item)) return;
+    if (inst.session) return; // 第二根手指不另开会话
+
+    const key = inst.opts.keyOf(item);
+    const session = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        key,
+        timer: null,
+        moved: false,
+        dragging: false,  // 滑选生效中(长按触发 / 选择模式下拖动超阈值)
+        dragState: true,  // 滑选统一设置的状态
+        suppressClick: false,
+    };
+    inst.session = session;
+
+    if (!inst.mode) {
+        session.timer = setTimeout(() => {
+            session.timer = null;
+            if (inst.session !== session) return;
+            // 长按触发:进入选择模式,选中起点项,马上进入滑选(不松手拖动即可加选)
+            slideSelectEnterMode(inst);
+            slideSelectSet(inst, key, true);
+            session.dragging = true;
+            session.suppressClick = true;
+            if (navigator.vibrate) { try { navigator.vibrate(15); } catch (_) { /* 无振动设备 */ } }
+        }, SLIDE_SELECT_LONG_PRESS_MS);
+    } else {
+        // 预判滑选方向:起点项"将要被切换到"的状态;超阈值才真正生效(未超阈值由 click 正常 toggle)
+        session.dragState = !inst.selected.has(key);
+    }
+}
+
+/** pointermove:超阈值取消长按;滑选生效后 elementFromPoint 命中即选 */
+function slideSelectOnPointerMove(inst, e) {
+    const s = inst.session;
+    if (!s || e.pointerId !== s.pointerId) return;
+    if (!s.moved && Math.hypot(e.clientX - s.startX, e.clientY - s.startY) > SLIDE_SELECT_SLOPE_PX) {
+        s.moved = true;
+        if (!inst.mode && s.timer) {
+            clearTimeout(s.timer); // 还没进选择模式就动了:这次按下是普通点击/滚动,取消长按
+            s.timer = null;
+        }
+    }
+    if (s.moved && inst.mode && !s.dragging) {
+        // 选择模式下拖动超阈值:进入滑选。起点项按预判状态设定(等效一次 toggle),并吞掉后续 click
+        s.dragging = true;
+        s.suppressClick = true;
+        slideSelectSet(inst, s.key, s.dragState);
+    }
+    if (s.dragging) {
+        const hit = document.elementFromPoint(e.clientX, e.clientY);
+        const item = hit?.closest?.(inst.opts.itemSelector);
+        const container = inst.opts.getContainer()[0];
+        if (item && container && container.contains(item)) {
+            slideSelectSet(inst, inst.opts.keyOf(item), s.dragState);
+        }
+    }
+}
+
+/** pointerup/pointercancel:收尾会话;长按/滑选过的抬起要吞掉随后的 click */
+function slideSelectOnPointerUp(inst, e) {
+    const s = inst.session;
+    if (!s || e.pointerId !== s.pointerId) return;
+    inst.session = null;
+    if (s.timer) { clearTimeout(s.timer); s.timer = null; }
+    if (s.suppressClick) {
+        inst._suppressClick = true;
+        // 兜底:拖出容器外抬起时 click 不落在容器上,委托 handler 读不到标记,定时自动清
+        setTimeout(() => { inst._suppressClick = false; }, 200);
+    }
+}
+
+/** click(引擎接管):选择模式 = 切换选中;非选择模式 = 原激活行为(开 modal/lightbox) */
+function slideSelectOnClick(inst, e) {
+    const item = e.target?.closest?.(inst.opts.itemSelector);
+    const container = inst.opts.getContainer()[0];
+    if (!item || !container || !container.contains(item)) return;
+    if (inst._suppressClick) { inst._suppressClick = false; return; }
+    const key = inst.opts.keyOf(item);
+    if (inst.mode) {
+        slideSelectSet(inst, key, !inst.selected.has(key));
+    } else {
+        inst.opts.onActivate(item);
+    }
+}
+
+/** 进入选择模式 */
+function slideSelectEnterMode(inst) {
+    if (inst.mode) return;
+    inst.mode = true;
+    inst.opts.getContainer().addClass('mag-selecting');
+    inst.opts.onModeChange?.(true);
+}
+
+/** 退出选择模式并清空选中(重进干净;bar 隐藏由 onModeChange 驱动) */
+function slideSelectExitMode(inst) {
+    if (!inst) return;
+    inst.session = null;
+    if (!inst.mode) { inst.selected.clear(); return; }
+    inst.mode = false;
+    inst.selected.clear();
+    inst._suppressClick = false;
+    const $c = inst.opts.getContainer();
+    $c.removeClass('mag-selecting');
+    $c.find(inst.opts.itemSelector + '.mag-selected').removeClass('mag-selected');
+    inst.opts.onModeChange?.(false);
+}
+
+/** 设置单项选中态(同步 DOM class + 回调) */
+function slideSelectSet(inst, key, value) {
+    if (!key) return;
+    const had = inst.selected.has(key);
+    if (value === had) return;
+    if (value) inst.selected.add(key);
+    else inst.selected.delete(key);
+    inst.opts.getContainer().find(inst.opts.itemSelector).each(function () {
+        if (inst.opts.keyOf(this) === key) $(this).toggleClass('mag-selected', value);
+    });
+    inst.opts.onSelectionChange?.(inst.selected.size);
+}
+
+/** 容器重渲后恢复选中态 class(renderGallery/openGroupModal 会 rebuild DOM) */
+function slideSelectReapply(inst) {
+    if (!inst || !inst.mode) return;
+    const $c = inst.opts.getContainer();
+    $c.addClass('mag-selecting');
+    $c.find(inst.opts.itemSelector).each(function () {
+        $(this).toggleClass('mag-selected', inst.selected.has(inst.opts.keyOf(this)));
+    });
+    inst.opts.onSelectionChange?.(inst.selected.size);
+}
+
+/** 全选/清空切换(已全选则清空) */
+function slideSelectToggleAll(inst) {
+    if (!inst) return;
+    const keys = inst.opts.getContainer().find(inst.opts.itemSelector)
+        .map(function () { return inst.opts.keyOf(this); }).get().filter(Boolean);
+    const allSelected = keys.length > 0 && keys.every(k => inst.selected.has(k));
+    for (const k of keys) slideSelectSet(inst, k, !allSelected);
+}
 
 /** 把一次生成成功的结果追加到 manifest 并刷新 UI */
 function pushGalleryEntry(entry) {
@@ -3422,6 +3651,7 @@ function ensureGalleryLightbox() {
             <div class="lightbox-stage">
                 <img class="lightbox-media" alt="" />
                 <video class="lightbox-media" controls loop autoplay muted style="display:none;"></video>
+                <div class="lightbox-declare" style="display:none;"></div>
                 <div class="lightbox-prompt">
                     <div class="lightbox-prompt-text"></div>
                     <button class="lightbox-copy-btn" title="复制提示词" data-i18n="[title]mag_gallery_copy">
@@ -3467,10 +3697,46 @@ function openGalleryLightbox(entry) {
         releaseVideoEl($video.css('display', 'none'));
         $img.css('display', 'block').attr('src', entry.url);
     }
+    // declare 描述([img_Declare]/[video_Declare] 内容)显示在媒体上方,与媒体预览浮窗一致
+    const declareText = lookupDeclareForEntry(entry);
+    $lb.find('.lightbox-declare').css('display', declareText ? 'block' : 'none').text(declareText);
     const promptText = entry.prompt || '';
     $lb.find('.lightbox-prompt-text').text(promptText);
     $lb.find('.lightbox-copy-btn').data('prompt', promptText);
     $lb.addClass('open');
+}
+
+/**
+ * entry 的 declare:优先取 manifest 里存的(生成时快照);
+ * 存量条目(本功能上线前生成)没存,从当前聊天按 url 匹配兜底(仅显示用,不写回)。
+ */
+function lookupDeclareForEntry(entry) {
+    if (entry.declare) return entry.declare;
+    try {
+        for (const r of collectFloorMedia()) {
+            if (r.declare && r.url === entry.url) return r.declare;
+        }
+    } catch (e) { /* declare 是锦上添花,匹配失败静默 */ }
+    return '';
+}
+
+/**
+ * 按 magId 反查消息里的 declare(手动模式/重生成 pushGalleryEntry 用)。
+ * 手动/重生成的 push 发生在 commitMediaToMessage 之前,mes 里还是占位符/旧 wrapper,
+ * 但两者都带 data-mag-id,anchor 能命中;declare 在其紧邻之前。
+ */
+function findDeclareForMagId(magId) {
+    try {
+        const chat = getContext().chat || [];
+        const anchor = `data-mag-id="${escapeHtmlAttribute(magId)}"`;
+        for (let i = 0; i < chat.length; i++) {
+            const mes = chat[i]?.mes;
+            if (typeof mes !== 'string' || !mes.includes(anchor)) continue;
+            const d = declareForPosition([...mes.matchAll(PIC_DECLARE_RE)], mes, mes.indexOf(anchor));
+            if (d) return d;
+        }
+    } catch (e) { /* 找不到就算了,declare 是锦上添花 */ }
+    return null;
 }
 
 /** 关闭 lightbox,释放 video 资源 */
@@ -3497,6 +3763,7 @@ function renderGallery() {
     if (manifest.length === 0) {
         $container.empty();
         $empty.css('display', 'flex');
+        slideSelectExitMode(galleryTileSelect); // 记录删空时收起选择操作栏
         return;
     }
     $empty.css('display', 'none');
@@ -3536,32 +3803,144 @@ function renderGallery() {
             </div>
         `);
     });
+
+    // 选择模式开着时(生成完成触发重渲),rebuild 后恢复勾选态
+    slideSelectReapply(galleryTileSelect);
 }
 
-/** 绑定 gallery 事件:角色方块点击 → 弹该角色图集 modal;modal 内缩略图点击 → 单图 lightbox */
+/** 收集指定角色的图库条目(manifest 下标 + entry),组内按 timestamp 倒序 */
+function collectGroupItems(charName) {
+    const manifest = extension_settings[extensionName].galleryManifest || [];
+    const items = [];
+    manifest.forEach((entry, index) => {
+        const key = entry.character || 'media';
+        if (key === charName) items.push({ entry, index });
+    });
+    items.sort((a, b) => (b.entry.timestamp || 0) - (a.entry.timestamp || 0));
+    return items;
+}
+
+/** 打开指定角色的图集 modal(一级方块的非选择模式激活行为) */
+function openGroupModalForChar(charName) {
+    const items = collectGroupItems(charName);
+    if (items.length === 0) return;
+    openGroupModal(charName, items);
+}
+
+/** 一级选择操作栏文案刷新 */
+function updateGallerySelectBar() {
+    const n = galleryTileSelect ? galleryTileSelect.selected.size : 0;
+    $('#gallery_select_count').text(`已选 ${n} 个角色`);
+    $('#gallery_select_delete').css('opacity', n > 0 ? '' : '0.5');
+}
+
+/** 二级选择操作栏文案刷新 */
+function updateGroupSelectBar() {
+    const n = groupThumbSelect ? groupThumbSelect.selected.size : 0;
+    const total = $('#mag_gallery_group_modal .group-modal-thumb-wrap').length;
+    $('#group_select_count').text(`已选 ${n} / ${total} 张`);
+    $('#group_select_delete').css('opacity', n > 0 ? '' : '0.5');
+}
+
+/** 一级批量删除:删掉选中角色分组的全部图库记录(不动聊天内已落地的媒体) */
+async function deleteSelectedGalleryGroups() {
+    if (!galleryTileSelect || galleryTileSelect.selected.size === 0) {
+        toastr.info('未选中任何角色,长按角色方块可进入选择模式');
+        return;
+    }
+    const s = extension_settings[extensionName];
+    const manifest = Array.isArray(s.galleryManifest) ? s.galleryManifest : [];
+    const chars = new Set(galleryTileSelect.selected);
+    const count = manifest.filter(e => chars.has(e.character || 'media')).length;
+    const result = await callGenericPopup(
+        `确认删除 ${chars.size} 个角色的全部 ${count} 条图库记录?\n(只删图库记录,不影响聊天内已生成的媒体)`,
+        POPUP_TYPE.CONFIRM,
+        '',
+        { okButton: '删除', cancelButton: '取消' },
+    );
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    s.galleryManifest = manifest.filter(e => !chars.has(e.character || 'media'));
+    saveSettingsDebounced();
+    slideSelectExitMode(galleryTileSelect);
+    galleryRenderSig = null; // 强制重渲(sig 只是优化,删除后必变,保险起见显式失效)
+    renderGallery();
+    toastr.success(`已删除 ${count} 条图库记录`);
+}
+
+/** 二级批量删除:删掉组 modal 内选中的图库条目 */
+async function deleteSelectedGroupEntries() {
+    if (!groupThumbSelect || groupThumbSelect.selected.size === 0) {
+        toastr.info('未选中任何媒体,长按缩略图可进入选择模式');
+        return;
+    }
+    const s = extension_settings[extensionName];
+    const manifest = Array.isArray(s.galleryManifest) ? s.galleryManifest : [];
+    const indexes = new Set([...groupThumbSelect.selected].map(v => parseInt(v, 10)));
+    const count = [...indexes].filter(i => Number.isInteger(i) && i >= 0 && i < manifest.length).length;
+    const result = await callGenericPopup(
+        `确认删除选中的 ${count} 条图库记录?\n(只删图库记录,不影响聊天内已生成的媒体)`,
+        POPUP_TYPE.CONFIRM,
+        '',
+        { okButton: '删除', cancelButton: '取消' },
+    );
+    if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    s.galleryManifest = manifest.filter((_, i) => !indexes.has(i));
+    saveSettingsDebounced();
+
+    // manifest 删了中间条目,剩余条目下标全变:退出选择模式并按当前角色重收集重渲(保留滚动位置)
+    const charName = $('#mag_gallery_group_modal .group-modal-title').data('mag-char');
+    slideSelectExitMode(groupThumbSelect);
+    galleryRenderSig = null;
+    renderGallery();
+    const items = charName ? collectGroupItems(charName) : [];
+    if (items.length === 0) {
+        closeGroupModal();
+    } else {
+        openGroupModal(charName, items, { keepScroll: true });
+    }
+    toastr.success(`已删除 ${count} 条图库记录`);
+}
+
+/** 绑定 gallery 事件:点击走滑选引擎(非选择模式 = 开组 modal / 开 lightbox);操作栏按钮 */
 function bindGalleryEvents() {
     ensureGalleryLightbox();
     ensureGroupModal();
-    // 点角色方块 → 打开该角色的图集 modal
-    $('#gallery_container').off('click.galleryTile').on('click.galleryTile', '.gallery-tile', function () {
-        const charName = $(this).attr('data-char');
-        const manifest = extension_settings[extensionName].galleryManifest || [];
-        const items = [];
-        manifest.forEach((entry, index) => {
-            const key = entry.character || 'media';
-            if (key === charName) items.push({ entry, index });
-        });
-        if (items.length === 0) return;
-        items.sort((a, b) => (b.entry.timestamp || 0) - (a.entry.timestamp || 0));
-        openGroupModal(charName, items);
+    // 一级:角色方块(长按进入选择模式批量删分组;单击开组 modal)
+    galleryTileSelect = createSlideSelect({
+        itemSelector: '.gallery-tile',
+        getContainer: () => $('#gallery_container'),
+        keyOf: (el) => $(el).attr('data-char') || '',
+        onActivate: (el) => openGroupModalForChar($(el).attr('data-char')),
+        onModeChange: (active) => {
+            $('#gallery_select_bar').css('display', active ? 'flex' : 'none');
+            if (active) updateGallerySelectBar();
+        },
+        onSelectionChange: () => updateGallerySelectBar(),
     });
-    // modal 内缩略图点击 → 单图 lightbox
-    $('#mag_gallery_group_modal').off('click.groupThumb').on('click.groupThumb', '.group-modal-thumb-wrap', function () {
-        const idx = parseInt($(this).attr('data-index'), 10);
-        const manifest = extension_settings[extensionName].galleryManifest || [];
-        const entry = manifest[idx];
-        if (entry) openGalleryLightbox(entry);
+    // 二级:组 modal 内缩略图(长按进入选择模式批量删单条;单击开 lightbox)
+    groupThumbSelect = createSlideSelect({
+        itemSelector: '.group-modal-thumb-wrap',
+        getContainer: () => $('#mag_gallery_group_modal .group-modal-grid'),
+        keyOf: (el) => $(el).attr('data-index') || '',
+        onActivate: (el) => {
+            const idx = parseInt($(el).attr('data-index'), 10);
+            const manifest = extension_settings[extensionName].galleryManifest || [];
+            const entry = manifest[idx];
+            if (entry) openGalleryLightbox(entry);
+        },
+        onModeChange: (active) => {
+            $('#group_select_bar').css('display', active ? 'flex' : 'none');
+            if (active) updateGroupSelectBar();
+        },
+        onSelectionChange: () => updateGroupSelectBar(),
     });
+    // 选择操作栏按钮(off().on() 防浮窗重建重复绑)
+    $('#gallery_select_done').off('click').on('click', () => slideSelectExitMode(galleryTileSelect));
+    $('#gallery_select_all').off('click').on('click', () => slideSelectToggleAll(galleryTileSelect));
+    $('#gallery_select_delete').off('click').on('click', deleteSelectedGalleryGroups);
+    $('#group_select_done').off('click').on('click', () => slideSelectExitMode(groupThumbSelect));
+    $('#group_select_all').off('click').on('click', () => slideSelectToggleAll(groupThumbSelect));
+    $('#group_select_delete').off('click').on('click', deleteSelectedGroupEntries);
 }
 
 /** 懒加载角色图集 modal(挂在 body 下) */
@@ -3575,6 +3954,12 @@ function ensureGroupModal() {
                     <i class="fa-solid fa-xmark"></i>
                 </div>
             </div>
+            <div id="group_select_bar" class="mag-select-bar" style="display:none;">
+                <span class="mag-select-count" id="group_select_count">已选 0 张</span>
+                <div class="menu_button" id="group_select_done" data-i18n="mag_select_done">完成</div>
+                <div class="menu_button" id="group_select_all" data-i18n="mag_select_all">全选</div>
+                <div class="menu_button mag-select-delete" id="group_select_delete"><i class="fa-solid fa-trash-can"></i> <span data-i18n="mag_select_delete">删除</span></div>
+            </div>
             <div class="group-modal-body">
                 <div class="group-modal-grid"></div>
             </div>
@@ -3584,9 +3969,10 @@ function ensureGroupModal() {
     $m.find('.group-modal-close').on('click', closeGroupModal);
     // 点 header/body 之外的暗色背景区也关闭
     $m.on('click', (e) => {
-        // 点缩略图(有自己的 handler 打开 lightbox)和关闭按钮不处理
+        // 点缩略图(有自己的 handler 打开 lightbox)、关闭按钮、选择操作栏(批量删除按钮)不处理
         if ($(e.target).closest('.group-modal-thumb-wrap').length) return;
         if ($(e.target).closest('.group-modal-close').length) return;
+        if ($(e.target).closest('.mag-select-bar').length) return;
         closeGroupModal();
     });
     $(document).on('keydown.groupModal', (e) => {
@@ -3597,12 +3983,15 @@ function ensureGroupModal() {
     });
 }
 
-/** 打开角色图集 modal:渲染该角色所有图到网格 */
-function openGroupModal(charName, items) {
+/** 打开角色图集 modal:渲染该角色所有图到网格(keepScroll:删除后重渲保留滚动位置) */
+function openGroupModal(charName, items, { keepScroll = false } = {}) {
     ensureGroupModal();
     const $m = $('#mag_gallery_group_modal');
-    $m.find('.group-modal-title').text(`${charName} · ${items.length} 张`);
+    // data-mag-char:批量删除后按当前角色重收集重渲用
+    $m.find('.group-modal-title').text(`${charName} · ${items.length} 张`).data('mag-char', charName);
     const $grid = $m.find('.group-modal-grid');
+    const prevScroll = keepScroll ? $m.scrollTop() : 0;
+    releaseVideoEl($grid.find('video')); // 重渲前释放上一轮视频资源
     $grid.empty();
     for (const { entry, index } of items) {
         const escapedUrl = escapeHtmlAttribute(entry.url);
@@ -3617,12 +4006,15 @@ function openGroupModal(charName, items) {
         `);
     }
     $m.addClass('open');
-    $m.scrollTop(0);
+    $m.scrollTop(prevScroll);
+    // 选择模式开着时(理论上只在删除后重渲前已退出),rebuild 后恢复勾选态
+    slideSelectReapply(groupThumbSelect);
 }
 
-/** 关闭角色图集 modal(释放视频资源) */
+/** 关闭角色图集 modal(退出选择模式 + 释放视频资源) */
 function closeGroupModal() {
     const $m = $('#mag_gallery_group_modal');
+    slideSelectExitMode(groupThumbSelect);
     $m.removeClass('open');
     $m.find('video').each(function () { releaseVideoEl($(this)); });
     $m.find('.group-modal-grid').empty();
@@ -3981,7 +4373,7 @@ async function regenerateFloorMedia(floor) {
                     fail++;
                     continue;
                 }
-                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType: r.mediaType, format });
+                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType: r.mediaType, format, declare: r.declare ?? null });
                 ok++;
             } catch (err) {
                 console.error(`[${extensionName}] Floor regenerate failed (floor=${floor}, prompt=${String(r.prompt).slice(0, 80)}):`, err);
