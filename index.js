@@ -9,8 +9,10 @@ import {
     event_types,
     updateMessageBlock,
     getRequestHeaders,
+    sendTextareaMessage,
+    isGenerating,
 } from '../../../../script.js';
-import { regexFromString, clamp, getUniqueName, saveBase64AsFile, copyText } from '../../../utils.js';
+import { regexFromString, clamp, getUniqueName, saveBase64AsFile, copyText, delay, stringFormat } from '../../../utils.js';
 import { isMobile } from '../../../RossAscends-mods.js';
 import { callGenericPopup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { translate } from '../../../i18n.js';
@@ -66,6 +68,7 @@ const defaultSettings = {
     comfyListCache: {}, // 点『连接』拉到的列表持久化(按地址分档):{ [url]: { models, samplers, schedulers, loras, upscaleModels, savedAt } }
     comfyImportUrls: [], // detail 接口 URL 历史(拉取成功后自动入簿):[string]
     galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
+    autoReply: { enabled: false, content: '', maxCount: 10, remaining: 0, delaySec: 2 }, // 自动回复(挂机):remaining 持久化防刷新重置满额无限挂机
 };
 
 function simpleHash(str) {
@@ -2088,6 +2091,9 @@ function updateUI() {
 
         // --- 新增: 渲染图库 ---
         renderGallery();
+
+        // --- 新增: 回显自动回复 tab 状态 ---
+        updateAutoReplyUI();
     }
 }
 
@@ -2158,6 +2164,19 @@ async function loadSettings() {
         extension_settings[extensionName].comfyImportUrls = extension_settings[extensionName].comfyImportUrls
             .filter(s => typeof s === 'string' && s.trim());
     }
+    // 自动回复设置规范化:缺字段补默认、数值钳制;enabled 但 remaining=0 的脏态自动置关
+    // (耗尽即自动关,正常路径不该出现这种组合)
+    {
+        const d = defaultSettings.autoReply;
+        const src = extension_settings[extensionName].autoReply;
+        const ar = { ...d, ...(src && typeof src === 'object' ? src : {}) };
+        ar.content = String(ar.content ?? '');
+        ar.maxCount = clamp(Math.floor(Number(ar.maxCount) || 0) || d.maxCount, 1, 999);
+        ar.remaining = clamp(Math.floor(Number(ar.remaining) || 0), 0, ar.maxCount);
+        ar.delaySec = clamp(Number(ar.delaySec) || 0, 0, 60);
+        ar.enabled = !!ar.enabled && ar.remaining > 0;
+        extension_settings[extensionName].autoReply = ar;
+    }
     updateUI();
 }
 
@@ -2214,6 +2233,9 @@ function bindSettingsEvents() {
 
     // --- 新增: 绑定测试生成 tab 事件 ---
     bindTestTabEvents();
+
+    // --- 新增: 绑定自动回复 tab 事件 ---
+    bindAutoReplyEvents();
 }
 
 // 设置面板的统一迁移单元:挂在 #mag_settings_root 下,在隐藏 host 与浮窗 body 间 detach 切换。
@@ -4503,6 +4525,168 @@ function bindTestTabEvents() {
     });
 }
 
+// --- 自动回复(挂机连续对话) ---
+// 每轮 AI 回复结束后,延迟 N 秒把设置里的固定内容作为用户消息发出,发满 maxCount 次自动关。
+// 时序要点(2026-08 对照 ST 源码考证):
+// - GENERATION_ENDED 是流式/非流式共同的收尾事件(唯一 emit 点 hideStopButton,带 NOOP 保护)。
+// - 用户点停止时 stopGeneration() 先经 hideStopButton emit ENDED、再 emit STOPPED
+//   (script.js:5548-5559);异步 stop 路径(流式 processor 收尾)里 ENDED 还可能**晚于**
+//   STOPPED 出现。所以"停止的那轮不触发自动回复"要双保险:
+//   ① STOPPED → cancelAutoReplyTimer(ENDED 先到:延迟定时器还没触发就被掐);
+//   ② STOPPED → autoReplySuppressed=true 直到新 STARTED 才清(ENDED 后到:suppress 挡住 tick)。
+// - 发送走 ST 原生路径:填 #send_textarea + trigger input → sendTextareaMessage(与手点
+//   #send_but 同一入口,自带 swipe 编辑态/生成中守卫)。它内部 await 整个 Generate,不能
+//   等它——用 MESSAGE_SENT(sendMessageAsUser 落库用户楼后立刻 emit)确认真的发出去了,
+//   确认后才消耗计数,拦截态(swipe 编辑等)不消耗并还原输入框。
+// - 计数持久化在 autoReply.remaining;CHAT_CHANGED(含启动首载聊天)自动暂停开关,
+//   防刷新/切聊天后在别的聊天里意外继续挂机。
+let autoReplyTimer = null;
+let autoReplySuppressed = false;
+
+function cancelAutoReplyTimer() {
+    if (autoReplyTimer) { clearTimeout(autoReplyTimer); autoReplyTimer = null; }
+}
+
+/** 布防状态读取:启用+有余额+内容非空三者齐备才返回设置对象,否则 null。
+ *  schedule 与 fire 两处守卫必须同步(延迟窗口内状态可能变),收敛到一处定义防漂移 */
+function armedAutoReply() {
+    const ar = extension_settings[extensionName]?.autoReply;
+    return (ar && ar.enabled && ar.remaining > 0 && String(ar.content).trim()) ? ar : null;
+}
+
+/** 关闭自动回复的统一出口(手动关/内容空拦截/耗尽自动关/切聊天暂停共用):
+ *  掐定时器 + 落 enabled + 反勾 UI + 存盘;toast 文案由调用方给 */
+function disableAutoReply() {
+    cancelAutoReplyTimer();
+    const ar = extension_settings[extensionName]?.autoReply;
+    if (ar) ar.enabled = false;
+    $('#auto_reply_enabled').prop('checked', false);
+    saveSettingsDebounced();
+}
+
+/** GENERATION_ENDED 收尾钩子:条件满足则延迟 N 秒发下一条自动回复 */
+function scheduleAutoReply() {
+    const ar = armedAutoReply();
+    if (!ar || autoReplySuppressed) return; // 刚被用户停止,这轮收尾不触发
+    cancelAutoReplyTimer(); // 新一轮 ENDED 重排延迟,旧 timer 作废
+    const delayMs = ar.delaySec * 1000; // 写入路径(loadSettings 规范化/输入钳制)已保证 [0,60]
+    autoReplyTimer = setTimeout(fireAutoReply, delayMs);
+    console.log(`[${extensionName}] auto reply scheduled in ${delayMs}ms (remaining=${ar.remaining})`);
+}
+
+/** 定时器到期:实际发送。发送成功才消耗计数 */
+async function fireAutoReply() {
+    autoReplyTimer = null;
+    const ar = armedAutoReply();
+    if (!ar) return;
+    // 延迟窗口里用户抢先触发了生成 → 本轮作废不消耗(新 ENDED 会重新 tick)
+    if (isGenerating()) {
+        console.log(`[${extensionName}] auto reply skipped: generation in progress`);
+        return;
+    }
+    const $ta = $('#send_textarea');
+    const prevVal = String($ta.val() ?? '');
+    let sent = false;
+    const onSent = () => { sent = true; };
+    eventSource.on(event_types.MESSAGE_SENT, onSent);
+    $ta.val(ar.content).trigger('input');
+    sendTextareaMessage().catch(e => console.error(`[${extensionName}] auto reply send failed:`, e));
+    // 轮询等 MESSAGE_SENT(用户楼落库即到,通常 <1s;留 5s 余量给 token 计数等前置步骤)
+    const deadline = Date.now() + 5000;
+    while (!sent && Date.now() < deadline) {
+        await delay(100);
+    }
+    eventSource.removeListener(event_types.MESSAGE_SENT, onSent);
+    if (!sent) {
+        // swipe 编辑态等守卫拦截:还原输入框,不消耗次数
+        $ta.val(prevVal).trigger('input');
+        toastr.info('自动回复未发出(编辑/生成状态拦截),本轮不消耗次数');
+        console.warn(`[${extensionName}] auto reply not confirmed within 5s`);
+        return;
+    }
+    ar.remaining--;
+    renderAutoReplyRemaining();
+    saveSettingsDebounced();
+    if (ar.remaining <= 0) {
+        disableAutoReply();
+        toastr.warning(`自动回复已达上限(${ar.maxCount} 次),已自动关闭`);
+    } else {
+        toastr.success(`已自动回复,还剩 ${ar.remaining} 次`);
+    }
+}
+
+/** 剩余次数显示(tab 内实时刷新) */
+function renderAutoReplyRemaining() {
+    const ar = extension_settings[extensionName]?.autoReply;
+    if (!ar || !$('#auto_reply_remaining').length) return;
+    $('#auto_reply_remaining').text(stringFormat(translate('剩余 {0} / {1} 次', 'mag_ar_remaining_fmt'), ar.remaining, ar.maxCount));
+}
+
+/** 设置 → 自动回复 tab 控件回显 */
+function updateAutoReplyUI() {
+    const ar = extension_settings[extensionName]?.autoReply;
+    if (!ar || !$('#auto_reply_enabled').length) return;
+    $('#auto_reply_enabled').prop('checked', !!ar.enabled);
+    $('#auto_reply_content').val(ar.content);
+    $('#auto_reply_max').val(ar.maxCount);
+    $('#auto_reply_delay').val(ar.delaySec);
+    renderAutoReplyRemaining();
+}
+
+/** 自动回复 tab 事件绑定 */
+function bindAutoReplyEvents() {
+    $('#auto_reply_enabled').off('change.autoReply').on('change.autoReply', function () {
+        const ar = extension_settings[extensionName].autoReply;
+        if (!$(this).prop('checked')) {
+            disableAutoReply();
+            toastr.info('自动回复已禁用');
+            return;
+        }
+        if (!String(ar.content).trim()) {
+            disableAutoReply();
+            toastr.warning('回复内容为空,请先填写回复内容');
+            return;
+        }
+        // 启用即重置满额 + 解除停止抑制(见 scheduleAutoReply 注释)
+        ar.enabled = true;
+        ar.remaining = ar.maxCount;
+        autoReplySuppressed = false;
+        renderAutoReplyRemaining();
+        saveSettingsDebounced();
+        toastr.success(`自动回复已启用,本轮最多 ${ar.maxCount} 次`);
+        // 当前空闲且最后一楼是 AI 消息 → 立即开始第一轮(开启即挂机,不用再手动发一条)
+        const chat = getContext().chat || [];
+        const last = chat[chat.length - 1];
+        if (!isGenerating() && last && !last.is_user && !last.is_system) {
+            scheduleAutoReply();
+        }
+    });
+    $('#auto_reply_content').off('input.autoReply').on('input.autoReply', function () {
+        extension_settings[extensionName].autoReply.content = $(this).val();
+        saveSettingsDebounced();
+    });
+    $('#auto_reply_max').off('input.autoReply').on('input.autoReply', function () {
+        const ar = extension_settings[extensionName].autoReply;
+        // 与 loadSettings 规范化同一套钳制写法,防两条路径漂移
+        ar.maxCount = clamp(Math.floor(Number($(this).val()) || 0) || defaultSettings.autoReply.maxCount, 1, 999);
+        if (ar.remaining > ar.maxCount) ar.remaining = ar.maxCount; // 调小上限时钳住剩余
+        renderAutoReplyRemaining();
+        saveSettingsDebounced();
+    });
+    $('#auto_reply_delay').off('input.autoReply').on('input.autoReply', function () {
+        const n = Number($(this).val());
+        extension_settings[extensionName].autoReply.delaySec = Number.isFinite(n) ? clamp(n, 0, 60) : defaultSettings.autoReply.delaySec;
+        saveSettingsDebounced();
+    });
+    $('#auto_reply_reset_btn').off('click.autoReply').on('click.autoReply', function () {
+        const ar = extension_settings[extensionName].autoReply;
+        ar.remaining = ar.maxCount;
+        renderAutoReplyRemaining();
+        saveSettingsDebounced();
+        toastr.success(`剩余次数已重置为 ${ar.maxCount}`);
+    });
+}
+
 // --- 事件监听 ---
 
 eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
@@ -4517,6 +4701,10 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
         return;
     }
     console.log(`[${extensionName}] GENERATION_STARTED(type=${type}): inFlight=${inFlightMedia.size} processing=${processingHashes.size}`);
+    // 自动回复:新一轮真实生成开始——上一轮延迟中的自动回复作废(用户抢先手动发了,这轮
+    // 不消耗次数,新 ENDED 会重新 tick);停止抑制解除(后续 ENDED 属于正常收尾)
+    autoReplySuppressed = false;
+    cancelAutoReplyTimer();
     processingHashes.clear();
     // 注意:这里**不再**盲清 inFlightMedia——上一轮生成慢、完成时楼层已非最后一楼的媒体
     // 还等着本轮结束后的 landInFlightMedia() 落地,清了就变回"标签永不替换"的老 bug。
@@ -4549,6 +4737,7 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
         } else if (sawUiLocked) {
             console.warn(`[${extensionName}] GENERATION_ENDED 丢失(UI 已解锁),轮询自愈按流式结束收尾`);
             onGenerationFinished();
+            scheduleAutoReply(); // ENDED 事件丢了但生成确已结束,自动回复照常 tick(停止场景由 suppress 标志挡住)
             return;
         }
         processMessageContent(false, true);
@@ -4573,6 +4762,13 @@ const onGenerationFinished = async () => {
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
+// 自动回复:AI 回复结束 → 延迟后发下一条;手动停止 → 双保险掐断(见 scheduleAutoReply 注释)
+eventSource.on(event_types.GENERATION_ENDED, scheduleAutoReply);
+eventSource.on(event_types.GENERATION_STOPPED, () => {
+    autoReplySuppressed = true;
+    cancelAutoReplyTimer();
+});
+
 // 非流式/加载时
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
     await sanitizeFreshLlmMessage(); // 新 AI 楼,mes 里的 mag-* HTML 必为 LLM 伪造
@@ -4584,6 +4780,11 @@ eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
 // + 关预览浮窗 + 旧楼层裸 [image]/[video] 标签转占位符(仅手动模式,见 processAllMessagesForPlaceholders,
 //   内含嵌套占位符存量自愈) + 自动模式下单独跑一遍自愈(error 占位符也会被嵌套损坏)
 eventSource.on(event_types.CHAT_CHANGED, async () => {
+    // 自动回复:切聊天(含启动首载)自动暂停——防在新聊天里意外继续挂机
+    if (extension_settings[extensionName]?.autoReply?.enabled) {
+        disableAutoReply();
+        toastr.info('已切换聊天,自动回复已暂停');
+    }
     if (inFlightMedia.size > 0) console.warn(`[${extensionName}] CHAT_CHANGED: 清空 ${inFlightMedia.size} 条滞留 in-flight 媒体`);
     inFlightMedia.clear();
     closeMediaPreviewModal();

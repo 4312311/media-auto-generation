@@ -124,5 +124,15 @@
 
     "mag_upscale_model": "放大模型(可选)",
     "mag_upscale_none": "不使用",
-    "mag_upscale_hint": "选择后生成时自动在输出节点前插入放大链(不改动工作流 JSON);列表来自 ComfyUI 的 models/upscale_models"
+    "mag_upscale_hint": "选择后生成时自动在输出节点前插入放大链(不改动工作流 JSON);列表来自 ComfyUI 的 models/upscale_models",
+
+    "mag_tab_autoreply": "自动回复",
+    "mag_ar_enable": "启用自动回复",
+    "mag_ar_content": "回复内容",
+    "mag_ar_content_ph": "继续",
+    "mag_ar_max": "最多自动回复次数",
+    "mag_ar_delay": "发送延迟(秒)",
+    "mag_ar_reset_btn": "重置次数",
+    "mag_ar_hint": "每轮 AI 回复结束后,延迟指定秒数自动把上方内容作为用户消息发送;发满次数自动关闭;手动停止或切换聊天会暂停",
+    "mag_ar_remaining_fmt": "剩余 {0} / {1} 次"
 }
