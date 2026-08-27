@@ -2647,6 +2647,7 @@ $(function () {
         updateUI();
         initPanelDrag();
         initFloatBtnDrag();
+        initFloorVideoPlaybackControl();
     })();
 });
 
@@ -3371,15 +3372,64 @@ function buildMediaWrap({ magId, mediaType, url, rawPrompt }) {
     const escapedPromptText = escapeHtmlAttribute(promptText);
 
     const mediaInner = mediaType === 'video'
-        ? `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls autoplay muted/>`
+        ? `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls muted playsinline/>`
         : `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
 
     return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
-// 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能用 class 选择器)
+// 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能 class 选择器)
 $(document).on('click.magph', '[data-mag-id]', onMagClick);
+
+// --- 楼层视频播放控制:禁自动播放 + 离屏自动暂停 ---
+// buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停。
+// 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);回屏不自动恢复,由用户点播。
+const floorVideoControlled = new WeakSet();
+let floorVideoIO = null;
+
+function attachFloorVideoControl(video) {
+    if (floorVideoControlled.has(video)) return;
+    floorVideoControlled.add(video);
+    if (video.hasAttribute('autoplay')) {
+        video.removeAttribute('autoplay');
+        video.pause();
+    }
+    floorVideoIO.observe(video);
+}
+
+function scanFloorVideos() {
+    document.querySelectorAll('#chat [data-mag-id] video').forEach(attachFloorVideoControl);
+}
+
+function initFloorVideoPlaybackControl() {
+    floorVideoIO = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            const video = entry.target;
+            if (!video.isConnected) {
+                floorVideoIO.unobserve(video); // ST 重渲会整块替换消息 DOM,断链的视频及时放手防泄漏
+                continue;
+            }
+            if (!entry.isIntersecting && !video.paused) video.pause();
+        }
+    });
+
+    // ST 重渲 / 媒体落地 / 切聊天都会整块重插消息 DOM,MutationObserver 一处兜住所有插入来源
+    new MutationObserver((mutations) => {
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                if (node.matches('[data-mag-id]')) {
+                    node.querySelectorAll('video').forEach(attachFloorVideoControl);
+                } else {
+                    node.querySelectorAll('[data-mag-id] video').forEach(attachFloorVideoControl);
+                }
+            }
+        }
+    }).observe(document.getElementById('chat'), { childList: true, subtree: true });
+
+    scanFloorVideos(); // 插件加载前已渲染在 DOM 里的楼层视频
+}
 
 // --- Gallery 图库 ---
 
