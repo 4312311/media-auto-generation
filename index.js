@@ -11,6 +11,7 @@ import {
     getRequestHeaders,
     sendTextareaMessage,
     isGenerating,
+    stopGeneration,
 } from '../../../../script.js';
 import { regexFromString, clamp, getUniqueName, saveBase64AsFile, copyText, delay, stringFormat } from '../../../utils.js';
 import { isMobile } from '../../../RossAscends-mods.js';
@@ -68,7 +69,7 @@ const defaultSettings = {
     comfyListCache: {}, // 点『连接』拉到的列表持久化(按地址分档):{ [url]: { models, samplers, schedulers, loras, upscaleModels, savedAt } }
     comfyImportUrls: [], // detail 接口 URL 历史(拉取成功后自动入簿):[string]
     galleryManifest: [], // 图库:本插件生成过的图片/视频记录,按角色卡分组展示
-    autoReply: { enabled: false, content: '', maxCount: 10, remaining: 0, delaySec: 2 }, // 自动回复(挂机):remaining 持久化防刷新重置满额无限挂机
+    autoReply: { enabled: false, content: '', maxCount: 10, remaining: 0, delaySec: 2, stallTimeoutSec: 60, maxRetries: 3 }, // 自动回复(挂机):remaining 持久化防刷新重置满额无限挂机;卡住看门狗参数见 startStreamWatchdog
 };
 
 function simpleHash(str) {
@@ -2174,6 +2175,9 @@ async function loadSettings() {
         ar.maxCount = clamp(Math.floor(Number(ar.maxCount) || 0) || d.maxCount, 1, 999);
         ar.remaining = clamp(Math.floor(Number(ar.remaining) || 0), 0, ar.maxCount);
         ar.delaySec = clamp(Number(ar.delaySec) || 0, 0, 60);
+        ar.stallTimeoutSec = clamp(Math.floor(Number(ar.stallTimeoutSec) || 0) || d.stallTimeoutSec, 10, 600);
+        // maxRetries=0 是合法值(不重试),不能用 || 兜底
+        ar.maxRetries = Number.isFinite(Number(ar.maxRetries)) ? clamp(Math.floor(Number(ar.maxRetries)), 0, 10) : d.maxRetries;
         ar.enabled = !!ar.enabled && ar.remaining > 0;
         extension_settings[extensionName].autoReply = ar;
     }
@@ -4605,13 +4609,100 @@ function armedAutoReply() {
 }
 
 /** 关闭自动回复的统一出口(手动关/内容空拦截/耗尽自动关/切聊天暂停共用):
- *  掐定时器 + 落 enabled + 反勾 UI + 存盘;toast 文案由调用方给 */
+ *  掐定时器 + 停看门狗 + 落 enabled + 反勾 UI + 存盘;toast 文案由调用方给 */
 function disableAutoReply() {
     cancelAutoReplyTimer();
+    stopStreamWatchdog();
+    if (stallRegenTimer) { clearTimeout(stallRegenTimer); stallRegenTimer = null; }
+    autoReplyRegenPending = false;
     const ar = extension_settings[extensionName]?.autoReply;
     if (ar) ar.enabled = false;
     $('#auto_reply_enabled').prop('checked', false);
     saveSettingsDebounced();
+}
+
+// --- 流式卡住看门狗(自动回复挂机期间) ---
+// 挂机时无人值守,流式断流/卡死会让"这轮永远不结束"→自动回复链断在原地。看门狗在
+// 自动回复启用期间的每次真实生成启动:每 5s 看一眼流式目标楼(最后一楼)的 mes 长度,
+// 超阈值无增长 → stopGeneration 掐断 → 等 ST 收尾(ENDED→STOPPED)后触发
+// #option_regenerate(与手点同一入口,自带编辑态/生成中守卫)重新生成。连续卡住重试
+// 耗尽则停用自动回复交还用户。重试链里的 STARTED 不清计数(autoReplyRegenPending
+// 区分看门狗重试与全新生成),成功走完一轮(非重试链的 ENDED)才清零。
+// 看门狗生命周期严格跟随 enabled:耗尽自动关后的最后一轮在途生成不再看护(功能已停)。
+let streamWatchdog = null;
+let autoReplyStallRetries = 0;   // 当前这轮生成的卡住重试计数
+let autoReplyRegenPending = false; // 看门狗触发的 regenerate 在途(其 STARTED 接续计数)
+let stallRegenTimer = null;
+
+function stopStreamWatchdog() {
+    if (streamWatchdog) { clearInterval(streamWatchdog.interval); streamWatchdog = null; }
+}
+
+function startStreamWatchdog() {
+    stopStreamWatchdog();
+    const ar = extension_settings[extensionName]?.autoReply;
+    if (!ar?.enabled) return;
+    const stallMs = clamp(Math.floor(Number(ar.stallTimeoutSec) || 0) || 60, 10, 600) * 1000;
+    const wd = { interval: null, lastLen: -1, lastChangeTs: Date.now(), stallMs };
+    wd.interval = setInterval(() => {
+        if (!isGenerating()) { // 生成已结束(ENDED 路径会显式停,这里是兜底退役)
+            stopStreamWatchdog();
+            return;
+        }
+        const chat = getContext().chat || [];
+        const last = chat[chat.length - 1];
+        const len = last ? String(last.mes || '').length : -1;
+        if (len !== wd.lastLen) { // 有新内容流进来,刷新计时基准
+            wd.lastLen = len;
+            wd.lastChangeTs = Date.now();
+            return;
+        }
+        if (Date.now() - wd.lastChangeTs >= wd.stallMs) handleStreamStall(wd);
+    }, 5000);
+    streamWatchdog = wd;
+}
+
+/** 卡住处理:掐断本次生成,收尾后重新生成;重试耗尽停用自动回复 */
+function handleStreamStall(wd) {
+    stopStreamWatchdog();
+    if (stallRegenTimer) { clearTimeout(stallRegenTimer); stallRegenTimer = null; }
+    autoReplyStallRetries++;
+    const ar = extension_settings[extensionName]?.autoReply;
+    const maxRetry = Number.isFinite(Number(ar?.maxRetries)) ? Math.floor(Number(ar.maxRetries)) : 3;
+    console.warn(`[${extensionName}] 流式卡住 ${Math.round(wd.stallMs / 1000)}s 无新内容(本回合第 ${autoReplyStallRetries} 次卡住)`);
+    if (!ar || !ar.enabled || autoReplyStallRetries > maxRetry) {
+        disableAutoReply();
+        toastr.warning(`流式反复卡住,重试已达上限(${maxRetry} 次),自动回复已停止`);
+        return;
+    }
+    toastr.warning(`流式卡住 ${Math.round(wd.stallMs / 1000)}s,终止本次回复并重新生成(重试 ${autoReplyStallRetries}/${maxRetry})`);
+    autoReplyRegenPending = true; // 其 ENDED 不清计数、其 STARTED 接续看门狗
+    try {
+        stopGeneration(); // 同步走 ENDED→STOPPED;自动回复被 STOPPED 的 suppress 兜住不会误发
+    } catch (e) {
+        console.error(`[${extensionName}] stopGeneration failed:`, e);
+        autoReplyRegenPending = false;
+        return;
+    }
+    // ST 停止收尾是异步的(abort/流式 processor),等收尾完再 regenerate;若停止迟迟未生效
+    // 再等最多 3×1s,仍卡则放弃本次重试(需人工接管)
+    const tryRegen = (attempt) => {
+        stallRegenTimer = setTimeout(() => {
+            stallRegenTimer = null;
+            if (!autoReplyRegenPending) return; // 期间被禁用/切聊天接管
+            if (isGenerating()) {
+                if (attempt < 3) { tryRegen(attempt + 1); return; }
+                console.warn(`[${extensionName}] 停止未生效,放弃本次卡住重试`);
+                autoReplyRegenPending = false;
+                return;
+            }
+            if (!extension_settings[extensionName]?.autoReply?.enabled) return;
+            $('#option_regenerate').trigger('click');
+            // pending 留给随后到来的 STARTED 清(不清 retries);trigger 万一没生效,
+            // 残留 pending 只会让下一次 STARTED 跳过一次计数重置,无害
+        }, attempt === 0 ? 1500 : 1000);
+    };
+    tryRegen(0);
 }
 
 /** GENERATION_ENDED 收尾钩子:条件满足则延迟 N 秒发下一条自动回复 */
@@ -4639,7 +4730,10 @@ async function fireAutoReply() {
     let sent = false;
     const onSent = () => { sent = true; };
     eventSource.on(event_types.MESSAGE_SENT, onSent);
-    $ta.val(ar.content).trigger('input');
+    // {n}/{} 占位符 → 当前第几次自动回复(1 起;此刻 remaining 还含本次,发出后才 -1)
+    const roundNo = ar.maxCount - ar.remaining + 1;
+    const payload = String(ar.content).replace(/\{n\}|\{\}/gi, String(roundNo));
+    $ta.val(payload).trigger('input');
     sendTextareaMessage().catch(e => console.error(`[${extensionName}] auto reply send failed:`, e));
     // 轮询等 MESSAGE_SENT(用户楼落库即到,通常 <1s;留 5s 余量给 token 计数等前置步骤)
     const deadline = Date.now() + 5000;
@@ -4680,6 +4774,8 @@ function updateAutoReplyUI() {
     $('#auto_reply_content').val(ar.content);
     $('#auto_reply_max').val(ar.maxCount);
     $('#auto_reply_delay').val(ar.delaySec);
+    $('#auto_reply_stall').val(ar.stallTimeoutSec);
+    $('#auto_reply_retry').val(ar.maxRetries);
     renderAutoReplyRemaining();
 }
 
@@ -4728,6 +4824,17 @@ function bindAutoReplyEvents() {
         extension_settings[extensionName].autoReply.delaySec = Number.isFinite(n) ? clamp(n, 0, 60) : defaultSettings.autoReply.delaySec;
         saveSettingsDebounced();
     });
+    $('#auto_reply_stall').off('input.autoReply').on('input.autoReply', function () {
+        const n = Math.floor(Number($(this).val()));
+        extension_settings[extensionName].autoReply.stallTimeoutSec = Number.isFinite(n) && n >= 10 ? Math.min(n, 600) : defaultSettings.autoReply.stallTimeoutSec;
+        saveSettingsDebounced();
+    });
+    $('#auto_reply_retry').off('input.autoReply').on('input.autoReply', function () {
+        const n = Math.floor(Number($(this).val()));
+        // 0 是合法值(不重试),单独兜底 NaN/越界
+        extension_settings[extensionName].autoReply.maxRetries = Number.isFinite(n) ? clamp(n, 0, 10) : defaultSettings.autoReply.maxRetries;
+        saveSettingsDebounced();
+    });
     $('#auto_reply_reset_btn').off('click.autoReply').on('click.autoReply', function () {
         const ar = extension_settings[extensionName].autoReply;
         ar.remaining = ar.maxCount;
@@ -4755,6 +4862,12 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
     // 不消耗次数,新 ENDED 会重新 tick);停止抑制解除(后续 ENDED 属于正常收尾)
     autoReplySuppressed = false;
     cancelAutoReplyTimer();
+    // 看门狗:挂机期间的每次生成都看护流式卡住;看门狗重试链的 STARTED 接续计数不清零
+    if (extension_settings[extensionName]?.autoReply?.enabled) {
+        if (autoReplyRegenPending) autoReplyRegenPending = false;
+        else autoReplyStallRetries = 0;
+        startStreamWatchdog();
+    }
     processingHashes.clear();
     // 注意:这里**不再**盲清 inFlightMedia——上一轮生成慢、完成时楼层已非最后一楼的媒体
     // 还等着本轮结束后的 landInFlightMedia() 落地,清了就变回"标签永不替换"的老 bug。
@@ -4813,10 +4926,16 @@ eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
 eventSource.on(event_types.GENERATION_STOPPED, onGenerationFinished);
 
 // 自动回复:AI 回复结束 → 延迟后发下一条;手动停止 → 双保险掐断(见 scheduleAutoReply 注释)
+// 看门狗:任何一路生成结束都停看门狗;非重试链的 ENDED(正常走完)清零卡住计数
 eventSource.on(event_types.GENERATION_ENDED, scheduleAutoReply);
+eventSource.on(event_types.GENERATION_ENDED, () => {
+    stopStreamWatchdog();
+    if (!autoReplyRegenPending) autoReplyStallRetries = 0;
+});
 eventSource.on(event_types.GENERATION_STOPPED, () => {
     autoReplySuppressed = true;
     cancelAutoReplyTimer();
+    stopStreamWatchdog();
 });
 
 // 非流式/加载时
