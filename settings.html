@@ -525,6 +525,80 @@
     #mag_media_preview_modal .preview-media-row video:hover {
         box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, rgba(120,160,255,0.8));
     }
+    /* 「只看未生成/失败」过滤checkbox:header 中部,推到右侧与关闭按钮作伴 */
+    #mag_media_preview_modal .preview-modal-pending-filter {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+        margin-right: 14px;
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 0.85em;
+        opacity: 0.85;
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+    }
+    #mag_media_preview_modal .preview-modal-pending-filter input { cursor: pointer; }
+    #mag_media_preview_modal #mag_preview_pending_count { opacity: 0.7; }
+    /* 未生成/失败条目卡片(过滤态的行) */
+    #mag_media_preview_modal .preview-pending-row { margin-bottom: 10px; }
+    #mag_media_preview_modal .preview-pending-card {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px dashed var(--SmartThemeBorderColor, rgba(255,255,255,0.25));
+        border-radius: 8px;
+        background: rgba(0,0,0,0.25);
+    }
+    /* 失败态实线红边,一眼区分 */
+    #mag_media_preview_modal .preview-pending-row.failed .preview-pending-card {
+        border-style: solid;
+        border-color: var(--dangerColor, #c66);
+    }
+    #mag_media_preview_modal .preview-pending-type-icon {
+        color: var(--SmartThemeQuoteColor, rgba(120,160,255,0.9));
+        font-size: 1.1em;
+        padding-top: 2px;
+    }
+    #mag_media_preview_modal .preview-pending-info { flex: 1; min-width: 0; }
+    #mag_media_preview_modal .preview-pending-status {
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 0.8em;
+        font-weight: bold;
+    }
+    #mag_media_preview_modal .preview-pending-row.failed .preview-pending-kind { color: var(--dangerColor, #c66); }
+    #mag_media_preview_modal .preview-pending-prompt {
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 0.75em;
+        opacity: 0.75;
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: 4px;
+    }
+    #mag_media_preview_modal .preview-pending-error {
+        color: var(--dangerColor, #c66);
+        font-size: 0.72em;
+        margin-top: 4px;
+        word-break: break-word;
+    }
+    /* 重试按钮:padding 加大点击热区(手机端友好),busy 转圈禁点 */
+    #mag_media_preview_modal .preview-pending-retry-btn {
+        cursor: pointer;
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 1.1em;
+        opacity: 0.7;
+        padding: 4px 6px;
+    }
+    #mag_media_preview_modal .preview-pending-retry-btn:hover {
+        opacity: 1;
+        color: var(--SmartThemeQuoteColor, rgba(120,160,255,0.9));
+    }
+    #mag_media_preview_modal .preview-pending-retry-btn.busy {
+        pointer-events: none;
+        opacity: 0.5;
+    }
     /* 手机端整体再缩一档,避免占屏过大 */
     @media (max-width: 500px) {
         #mag_media_preview_modal .preview-modal-dialog {

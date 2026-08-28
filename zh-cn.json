@@ -87,6 +87,9 @@
     "mag_media_preview_title": "媒体预览",
     "mag_media_preview_close": "关闭",
     "mag_media_preview_empty": "当前聊天暂无生成媒体",
+    "mag_media_preview_pending_filter": "只看未生成/失败",
+    "mag_media_preview_pending_filter_title": "显示生成失败或尚未生成的媒体标签,可点击重试",
+    "mag_media_preview_pending_empty": "没有未生成或失败的媒体",
 
     "mag_tab_test": "测试生成",
     "mag_test_media_type": "媒体类型",

@@ -243,6 +243,11 @@ async function healAllFloorsNestedPlaceholders() {
 // wrapper 外层是单 <span> 无嵌套 <span>,所以 [\s\S]*?</span> 必然匹配到正确闭合。
 const MAG_MEDIA_WRAP_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-media\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
 
+// mag-placeholder 占位符匹配(collectUnfulfilledMedia 楼层扫描用,与 MAG_MEDIA_WRAP_RE 同风格:
+// mes 里 class 是原始 `mag-placeholder`(DOMPurify 前缀只发生在渲染层),防御性同时匹配)。
+// 占位符外层单 <span> 无嵌套 span,子元素是 <i>/<small>,[\s\S]*?</span> 必然匹配到正确闭合。
+const MAG_PLACEHOLDER_RE = /<span\b[^>]*\bclass\s*=\s*"[^"]*\b(?:custom-)?mag-placeholder\b[^"]*"[^>]*>[\s\S]*?<\/span>/gi;
+
 // declare 描述块(collectFloorMedia 楼层扫描 / processMessageContent 捕获流式 in-flight 媒体的 declare 共用)。
 // 兼容三种格式:① [img_Declare]...[/img_Declare] ② [video_Declare]...[/video_Declare](图片/视频各自带 declare 时用,
 // 2026-08 起用户角色卡的 BBCode 格式)③ <pic_Declare>...</pic_Declare>(旧卡,存量聊天兼容)。
@@ -4102,6 +4107,9 @@ function closeGroupModal() {
 
 let mediaPreviewRenderPending = false;
 
+// 媒体预览浮窗「只看未生成/失败」过滤态(会话级,不持久化——过滤视图是临时查看)
+let mediaPreviewPendingFilter = false;
+
 /** escapeHtmlAttribute 的逆变换:解码从 mes 扫出来的属性值 */
 function unescapeHtmlAttr(v) {
     return v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#13;/g, '\r').replace(/&#10;/g, '\n').replace(/&amp;/g, '&');
@@ -4208,6 +4216,92 @@ function collectFloorMedia() {
     return records;
 }
 
+/**
+ * 收集当前聊天里"未落地"的媒体标签记录(媒体预览浮窗「只看未生成/失败」过滤的数据源)。
+ * 字段:{ floor, pos, kind, mediaType, prompt, promptHash, declare, magId?, originalTag?, error? }
+ * 来源:
+ * ① mag-placeholder 占位符(自动模式失败降级 error / 手动模式未点击 idle / 手动生成中 loading):
+ *   按 magId 走 commitMediaToMessage 替换重试,与聊天内点击占位符等效(不依赖该楼 DOM 是否渲染)。
+ * ② 裸 [image]/[video] 标签(自动模式漏触发的休眠标签:processMessageContent 只扫最后一楼,
+ *   新楼层开始后旧楼的标签永远不会被自动触发——正是本功能要救的场景)。image/video 两套正则
+ *   都扫(与 mediaType 设置无关,切了模式后的漏网标签一样能重试);剥掉 wrapper/占位符再扫,
+ *   data-original-tag/data-prompt 属性里存的标签文本不算(isInsideHtmlTag 守卫双保险)。
+ *   hash 分类与 processMessageContent 逻辑 B 同款算法(特征注入+occ 后缀):
+ *   processingHashes/inFlightMedia 命中=生成中,failedPrompts 命中=失败,其余=未生成。
+ * 流式目标楼(最后一楼)跳过裸标签扫描:半截输出的标签还在长大判定不稳定,写回也会被流式
+ * 冲掉(landInFlightMedia 同款守卫);占位符不受影响(只会出现在流式结束后的 mes 里)。
+ */
+function collectUnfulfilledMedia() {
+    const chat = getContext().chat || [];
+    const s = extension_settings[extensionName];
+    const records = [];
+    if (!s) return records;
+    const regexEntries = [];
+    if (s.imageRegex) regexEntries.push({ type: 'image', regexStr: s.imageRegex });
+    if (s.videoRegex) regexEntries.push({ type: 'video', regexStr: s.videoRegex });
+
+    for (let i = 0; i < chat.length; i++) {
+        const message = chat[i];
+        if (!message || message.is_user || typeof message.mes !== 'string') continue;
+        const mes = message.mes;
+
+        // ① 占位符(state 是唯一事实来源;magId 首段即触发时的 promptHash,供并发锁/失败记录对账)
+        for (const pm of mes.matchAll(MAG_PLACEHOLDER_RE)) {
+            const block = pm[0];
+            const state = extractAttr(block, 'data-state');
+            if (!state) continue;
+            const magId = unescapeHtmlAttr(extractAttr(block, 'data-mag-id'));
+            records.push({
+                floor: i,
+                pos: pm.index,
+                magId,
+                mediaType: extractAttr(block, 'data-media-type') === 'video' ? 'video' : 'image',
+                prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
+                originalTag: unescapeHtmlAttr(extractAttr(block, 'data-original-tag')),
+                promptHash: magId.split('-')[0] || '',
+                kind: state === 'error' ? 'failed' : (state === 'loading' ? 'generating' : 'pending'),
+                error: state === 'error' ? unescapeHtmlAttr(extractAttr(block, 'data-error')) : '',
+                declare: declareForPosition([...mes.matchAll(PIC_DECLARE_RE)], mes, pm.index),
+            });
+        }
+
+        // ② 裸标签(流式目标楼跳过,见函数注释)
+        if (isStreamActive && i === chat.length - 1) continue;
+        const stripped = mes.replace(MAG_MEDIA_WRAP_RE, '').replace(MAG_PLACEHOLDER_RE, '');
+        const strippedDeclares = [...stripped.matchAll(PIC_DECLARE_RE)];
+        for (const { type, regexStr } of regexEntries) {
+            const tagRegex = regexFromString(regexStr);
+            if (!tagRegex) continue;
+            const seen = new Map(); // baseHash → 出现次数,occ 后缀算法与 processMessageContent 一致
+            for (const m of stripped.matchAll(tagRegex)) {
+                if (isInsideHtmlTag(stripped, m.index)) continue;
+                const rawPrompt = extractTagPrompt(m);
+                if (!rawPrompt) continue;
+                const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
+                const occ = seen.get(base) || 0;
+                seen.set(base, occ + 1);
+                const promptHash = occ > 0 ? `${base}#${occ}` : base;
+                const kind = (processingHashes.has(promptHash) || inFlightMedia.has(promptHash)) ? 'generating'
+                    : (failedPrompts.has(promptHash) ? 'failed' : 'pending');
+                records.push({
+                    floor: i,
+                    pos: m.index,
+                    mediaType: type,
+                    prompt: rawPrompt,
+                    originalTag: m[0],
+                    promptHash,
+                    kind,
+                    error: kind === 'failed' ? failedPrompts.get(promptHash) : '',
+                    declare: declareForPosition(strippedDeclares, stripped, m.index),
+                });
+            }
+        }
+    }
+
+    records.sort((a, b) => b.floor - a.floor || a.pos - b.pos);
+    return records;
+}
+
 /** 懒挂媒体预览 modal 到 body(居中对话框 + 暗色遮罩) */
 function ensureMediaPreviewModal() {
     if ($('#mag_media_preview_modal').length) return;
@@ -4216,6 +4310,11 @@ function ensureMediaPreviewModal() {
             <div class="preview-modal-dialog">
                 <div class="preview-modal-header">
                     <span class="preview-modal-title" data-i18n="mag_media_preview_title">媒体预览</span>
+                    <label class="preview-modal-pending-filter" title="显示生成失败或尚未生成的媒体标签,可点击重试" data-i18n="[title]mag_media_preview_pending_filter_title">
+                        <input type="checkbox" id="mag_preview_pending_filter" />
+                        <span data-i18n="mag_media_preview_pending_filter">只看未生成/失败</span>
+                        <span id="mag_preview_pending_count"></span>
+                    </label>
                     <div class="preview-modal-close" title="关闭" data-i18n="[title]mag_media_preview_close">
                         <i class="fa-solid fa-xmark"></i>
                     </div>
@@ -4226,6 +4325,11 @@ function ensureMediaPreviewModal() {
     `);
     const $m = $('#mag_media_preview_modal');
     $m.find('.preview-modal-close').on('click', closeMediaPreviewModal);
+    // 勾选「只看未生成/失败」→ 切换过滤态重渲(checked 原生属性读写,不受 jQuery val 缓存影响)
+    $m.find('#mag_preview_pending_filter').on('change', function () {
+        mediaPreviewPendingFilter = this.checked;
+        renderMediaPreviewModal();
+    });
     // 点暗色遮罩关闭(对话框内的点击不关)
     $m.on('click', (e) => {
         if ($(e.target).closest('.preview-modal-dialog').length) return;
@@ -4271,6 +4375,47 @@ function ensureMediaPreviewModal() {
             toastr.error('复制失败');
         }
     });
+    // 点未生成/失败条目的重试按钮 → 走重试管线(转圈/结果由 busy 态 + 落地触发的重渲驱动,委托抗重渲)
+    $m.find('.preview-modal-body').on('click', '.preview-pending-retry-btn', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const $row = $(this).closest('.preview-pending-row');
+        await retryUnfulfilledMedia({
+            floor: Number($row.attr('data-floor')),
+            mediaType: $row.attr('data-media-type') === 'video' ? 'video' : 'image',
+            magId: String($row.attr('data-mag-id') || ''),
+            promptHash: String($row.attr('data-prompt-hash') || ''),
+            prompt: String($row.attr('data-prompt') || ''),
+            originalTag: String($row.attr('data-original-tag') || ''),
+            declare: String($row.attr('data-declare') || '') || null,
+        });
+    });
+}
+
+/** 渲染「未生成/失败」条目行(媒体预览浮窗过滤态):状态徽章 + prompt + 失败原因 + 重试按钮 */
+function buildPendingRowHtml(r, seq) {
+    const busyKey = r.magId || `${r.floor}|${r.promptHash}`;
+    const busy = r.kind === 'generating' || retryUnfulfilledBusy.has(busyKey);
+    const statusText = r.kind === 'failed' ? '生成失败' : (busy ? '生成中' : '未生成');
+    const typeText = r.mediaType === 'video' ? '视频' : '图片';
+    const typeIcon = r.mediaType === 'video' ? 'fa-video' : 'fa-image';
+    const errorHtml = (r.kind === 'failed' && r.error) ? `<div class="preview-pending-error">⚠️ ${escapeHtmlAttribute(String(r.error).slice(0, 200))}</div>` : '';
+    const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
+    const retryIcon = busy ? 'fa-circle-notch fa-spin busy' : 'fa-rotate-right';
+    const retryTitle = busy ? '生成中' : '重试生成';
+    const promptText = r.prompt.length > 300 ? r.prompt.slice(0, 300) + '...' : r.prompt;
+    return `
+        <div class="preview-pending-row ${busy ? 'busy' : r.kind}" data-floor="${r.floor}" data-media-type="${r.mediaType}" data-mag-id="${escapeHtmlAttribute(r.magId || '')}" data-prompt-hash="${escapeHtmlAttribute(r.promptHash || '')}" data-prompt="${escapeHtmlAttribute(r.prompt || '')}" data-original-tag="${escapeHtmlAttribute(r.originalTag || '')}" data-declare="${escapeHtmlAttribute(r.declare || '')}">${declareHtml}
+            <div class="preview-pending-card">
+                <i class="fa-solid ${typeIcon} preview-pending-type-icon"></i>
+                <div class="preview-pending-info">
+                    <div class="preview-pending-status"><span class="preview-pending-seq">第 ${seq} 个</span> · <span class="preview-pending-kind">${statusText}</span> · ${typeText}标签</div>
+                    <div class="preview-pending-prompt">${escapeHtmlAttribute(promptText)}</div>
+                    ${errorHtml}
+                </div>
+                <i class="fa-solid ${retryIcon} preview-pending-retry-btn" title="${retryTitle}"></i>
+            </div>
+        </div>`;
 }
 
 /** 渲染浮窗内容(仅 open 状态执行;重建时保留滚动位置) */
@@ -4279,15 +4424,29 @@ function renderMediaPreviewModal() {
     if (!$m.length || !$m.hasClass('open')) return;
 
     const latestFloor = (getContext().chat || []).length - 1;
-    const records = collectFloorMedia();
+    const pendingOnly = mediaPreviewPendingFilter;
+    // 过滤态只收集未落地条目;常规态照旧只收集已生成媒体(unfulfilled 仍要算,给表头计数徽标用)
+    const records = pendingOnly ? [] : collectFloorMedia();
+    const unfulfilled = collectUnfulfilledMedia();
+
+    // 表头过滤标签上的可重试计数(失败+未生成;生成中是瞬态不计)
+    const $count = $m.find('#mag_preview_pending_count');
+    if ($count.length) {
+        const actionable = unfulfilled.filter(u => u.kind !== 'generating').length;
+        $count.text(actionable > 0 ? `(${actionable})` : '');
+    }
+
     const $body = $m.find('.preview-modal-body');
 
     releaseVideoEl($body.find('video'));
     const scrollTop = $body[0].scrollTop;
     $body.empty();
 
-    if (records.length === 0) {
-        $body.append(`<div class="preview-modal-empty" data-i18n="mag_media_preview_empty">当前聊天暂无生成媒体</div>`);
+    const list = pendingOnly ? unfulfilled : records;
+    if (list.length === 0) {
+        const emptyKey = pendingOnly ? 'mag_media_preview_pending_empty' : 'mag_media_preview_empty';
+        const emptyText = pendingOnly ? '没有未生成或失败的媒体' : '当前聊天暂无生成媒体';
+        $body.append(`<div class="preview-modal-empty" data-i18n="${emptyKey}">${emptyText}</div>`);
         return;
     }
 
@@ -4300,19 +4459,27 @@ function renderMediaPreviewModal() {
 
     let currentFloor = null;
     let floorSeq = 0; // 楼内序号:层内按创建时间正序,即展示顺序编号
-    for (const r of records) {
+    for (const r of list) {
         if (r.floor !== currentFloor) {
             currentFloor = r.floor;
             floorSeq = 0;
             const labelText = r.floor === latestFloor ? '最新' : `第 ${r.floor} 楼的图片`;
-            // 楼层重生按钮:busy 时转圈 + 禁用(重渲由 floorRegenBusy 驱动,落地触发的刷新也能保持禁用态)
-            const busy = floorRegenBusy.has(r.floor);
-            const btnIcon = busy ? 'fa-circle-notch fa-spin busy' : 'fa-rotate-right';
+            // 楼层重生按钮:busy 时转圈 + 禁用(重渲由 floorRegenBusy 驱动,落地触发的刷新也能保持禁用态)。
+            // 过滤态不渲染(重生成只对已落地媒体有意义,未落地走条目自己的重试按钮)
+            const regenBtn = pendingOnly ? '' : (() => {
+                const busy = floorRegenBusy.has(r.floor);
+                const btnIcon = busy ? 'fa-circle-notch fa-spin busy' : 'fa-rotate-right';
+                return `<i class="fa-solid ${btnIcon} preview-floor-regen-btn" title="重新生成本楼层全部媒体"></i>`;
+            })();
             $body.append(`
-                <div class="preview-floor-sep" data-floor="${r.floor}"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div><i class="fa-solid ${btnIcon} preview-floor-regen-btn" title="重新生成本楼层全部媒体"></i></div>
+                <div class="preview-floor-sep" data-floor="${r.floor}"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div>${regenBtn}</div>
             `);
         }
         floorSeq++;
+        if (pendingOnly) {
+            $body.append(buildPendingRowHtml(r, floorSeq));
+            continue;
+        }
         const escapedUrl = escapeHtmlAttribute(r.url);
         const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
@@ -4386,6 +4553,115 @@ async function commitBareMediaToMessage(floor, oldUrl, mediaWrap, callerName) {
     await context.saveChat();
     scheduleMediaPreviewRender();
     return true;
+}
+
+/**
+ * 把楼层 mes 里的裸 [image]/[video] 标签原文(未生成休眠标签)原位替换为 wrapper 并重渲。
+ * 与 commitBareMediaToMessage(旧格式 <img> 按 url 锚定)不同,本函数按标签原文精确匹配,
+ * 供媒体预览浮窗「未生成/失败」重试的裸标签路径使用。收尾与 commitMediaToMessage 一致。
+ * @returns {Promise<boolean>} 是否成功定位并替换
+ */
+async function commitBareTagToMessage(floor, originalTag, mediaWrap, callerName) {
+    const context = getContext();
+    const message = context.chat?.[floor];
+    if (!message || typeof message.mes !== 'string' || !originalTag || !message.mes.includes(originalTag)) {
+        console.warn(`[${extensionName}] ${callerName}: 楼层 ${floor} 未找到裸标签原文(tag=${String(originalTag).slice(0, 60)}),跳过替换`);
+        return false;
+    }
+    message.mes = replaceLiteral(message.mes, originalTag, mediaWrap);
+    updateMessageBlock(floor, message);
+    await eventSource.emit(event_types.MESSAGE_UPDATED, floor);
+    await context.saveChat();
+    scheduleMediaPreviewRender();
+    return true;
+}
+
+// 未生成/失败重试进行中的 key 集合(magId 或 `${floor}|${promptHash}`),renderMediaPreviewModal 据此渲染转圈态
+const retryUnfulfilledBusy = new Set();
+
+/**
+ * 媒体预览浮窗「未生成/失败」条目的重试入口:
+ * - 占位符条目(自动模式失败降级 / 手动模式未点击):按 magId 走 commitMediaToMessage 替换,
+ *   纯 mes 数据层操作,不依赖聊天 DOM 是否渲染了该楼。
+ * - 裸标签条目(自动模式漏触发的休眠标签):按 floor+originalTag 原位替换(commitBareTagToMessage)。
+ * 显式用户操作,不走 promptHistory 冷却(同 regenerateMedia);失败写 failedPrompts(浮窗重渲
+ * 即显示失败原因);替换落点丢失(楼层被编辑/swipe)时媒体仍入图库保底,不静默丢弃。
+ */
+async function retryUnfulfilledMedia(rec) {
+    const s = extension_settings[extensionName];
+    if (!s) return;
+    if (!getActivePreset()) { toastr.warning('请先在「ComfyUI 配置」tab 选一个配置档'); return; }
+
+    const chat = getContext().chat || [];
+    if (isStreamActive && rec.floor === chat.length - 1) {
+        toastr.warning('该楼层正在流式输出,请等本轮回复结束后再重试');
+        return;
+    }
+
+    let promptHash = rec.promptHash;
+    if (!promptHash) promptHash = simpleHash(normalizePrompt(injectCharacterTags(rec.prompt, s.characterTags).modifiedPrompt));
+    const mediaType = rec.mediaType === 'video' ? 'video' : 'image';
+    const busyKey = rec.magId || `${rec.floor}|${promptHash}`;
+    if (retryUnfulfilledBusy.has(busyKey)) return;
+    if (processingHashes.has(promptHash)) { toastr.info('该 prompt 正在生成中,请稍候'); return; }
+
+    const injectionResult = injectCharacterTags(rec.prompt, s.characterTags);
+    processingHashes.add(promptHash);
+    retryUnfulfilledBusy.add(busyKey);
+    scheduleMediaPreviewRender(); // 重渲出转圈态
+
+    let timer = null;
+    let seconds = 0;
+    let toast = null;
+    const mediaTypeText = mediaType === 'image' ? '图片' : '视频';
+    const baseText = `⏳ 生成${mediaTypeText}...`;
+    try {
+        toast = toastr.info(`${baseText} 0s`, '', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        timer = setInterval(() => {
+            seconds++;
+            if (toast && toast.find) toast.find('.toast-message').text(`${baseText} ${seconds}s`);
+        }, 1000);
+
+        const { url, format, character, finalPrompt } = await generateViaComfy(injectionResult.modifiedPrompt, mediaType);
+        clearInterval(timer);
+        if (toast) toastr.clear(toast);
+
+        // 裸标签路径没有现成 magId,合成一个(buildPlaceholder 同款格式,时间戳供预览排序)
+        const mediaWrap = buildMediaWrap({
+            magId: rec.magId || `${promptHash}-r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            mediaType,
+            url,
+            rawPrompt: rec.prompt,
+        });
+
+        const committed = rec.magId
+            ? await commitMediaToMessage(rec.magId, mediaWrap, 'retryUnfulfilledMedia')
+            : await commitBareTagToMessage(rec.floor, rec.originalTag, mediaWrap, 'retryUnfulfilledMedia');
+        if (!committed) {
+            // 媒体已生成,落点丢了不能静默丢弃:入图库保底,用户可从图库/测试 tab 取用
+            toastr.warning(`媒体已生成并入图库,但未找到替换落点(楼层可能已被编辑)`);
+            pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: rec.declare ?? null });
+            return;
+        }
+
+        failedPrompts.delete(promptHash);
+        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: rec.declare ?? null });
+        toastr.success(`生成完成: 1 张${mediaTypeText}`);
+    } catch (err) {
+        console.error(`[${extensionName}] Retry unfulfilled media failed (floor=${rec.floor}, prompt=${String(rec.prompt).slice(0, 80)}):`, err);
+        if (timer) clearInterval(timer);
+        if (toast) toastr.clear(toast);
+        toastr.error(`生成失败: ${err.message || err}`);
+        failedPrompts.set(promptHash, err.message || String(err));
+        if (failedPrompts.size > 200) {
+            const firstKey = failedPrompts.keys().next().value;
+            failedPrompts.delete(firstKey);
+        }
+    } finally {
+        processingHashes.delete(promptHash);
+        retryUnfulfilledBusy.delete(busyKey);
+        scheduleMediaPreviewRender();
+    }
 }
 
 // 楼层级重新生成进行中的楼层号(renderMediaPreviewModal 据此渲染按钮禁用态)
