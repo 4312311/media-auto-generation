@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 功能概览
 
-入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 5 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
@@ -17,6 +17,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 | 角色固定特征 | `chars` | 角色名 → 固定 tag 字典(如 `Lisa → 1girl, chestnut hair`),生成时自动把 prompt 里的角色名替换为 `角色名, 特征tag`。存在 `characterTags` 设置项 |
 | 图库 | `gallery` | 本插件生成过的所有图片/视频,按角色卡(`context.name2 \|\| groupId \|\| 'media'`)分组,角色方块 3 列网格 → 点方块开组 modal 缩略图网格 → 点缩略图开 lightbox。**批量删除(手机相册式,两级都支持)**:长按 500ms 进入选择模式并选中起点项,不松手拖动滑选(经过即选中,`createSlideSelect` 引擎,pointer 事件 + `elementFromPoint`);选择模式下单击=切换、按住拖动=批量设为起点项的反态;操作栏(`#gallery_select_bar` / `#group_select_bar`)含完成/全选(再点清空)/删除(确认弹窗后 filter `galleryManifest`,一级按 character 删整组、二级按 manifest 下标删单条,组删空自动关 modal);只删图库记录不动聊天内媒体。**lightbox 显示 declare**:媒体上方显示该条的 `[img/video_Declare]` 内容——新条目由 `pushGalleryEntry` 直接带 declare(自动模式取 in-flight 快照;手动/重生成走 `findDeclareForMagId` 按 magId 反查消息;楼层重生成取 collectFloorMedia 的 r.declare),存量条目由 `lookupDeclareForEntry` 从当前聊天按 url 兜底匹配(仅显示不写回)。数据在 `galleryManifest` |
 | 测试生成 | `test` | 聊天外直接用当前 ComfyUI 配置档试生成:媒体类型下拉(`#test_media_type`,image/video)+ prompt + 『生成』按钮(Ctrl+Enter 快捷键)。走 `generateViaComfy` 同一条管线(含串行队列/前缀/占位符/放大注入),超时同样按媒体类型分档(video 5min / image 30s);成品预览在 tab 内(`<img>`/`<video>` 按类型切换,切换时 `releaseVideoEl` 释放旧视频资源)并 push 进图库(character 用 preset.name → 图库按配置档分组)。按钮文案随媒体类型联动(生成测试图/生成测试视频,`translate` 动态取词) |
+| 自动回复 | `autoreply` | 挂机:每轮 AI 回复结束(`GENERATION_ENDED`)延迟 N 秒自动把固定内容作为用户消息发出(`sendTextareaMessage` 原生路径,`MESSAGE_SENT` 确认落库才消耗计数,拦截态不消耗并还原输入框),发满自动关。内容支持 `{n}`/`{}` 占位符替换为当前第几轮。流式卡住看门狗(超阈值无新内容 → stopGeneration 掐断 → `#option_regenerate` 重生成,重试耗尽自动停用)。**剩余次数可直接编辑**(`#auto_reply_remaining` 数字输入框,2026-08 加,用户误清零/耗尽自动关后手动补次数的通道;写入钳制 0..maxCount,启用状态下补次数且空闲时会立即续跑)。**启用时余额 >0 保留、为 0 才重置满额**(旧版"启用即重置满额"会覆盖手动设置的余额,正是"次数回不去"的根因);『重置次数』按钮仍一键回满额。停止双保险见事件监听一节 |
 
 核心触发机制:消息中出现 `[image]提示词[/image]` / `[video]提示词[/video]` 标签(BBCode 式,prompt 在标签体内,正则可配),`processMessageContent` 匹配后调 SD/ComfyUI 生成,把标签替换为 mag-media wrapper(内嵌 `<img>`/`<video>`)。同 prompt 有 3 分钟冷却(`PROMPT_COOLDOWN_MS`)。流式模式下 `GENERATION_STARTED` 启动 500ms 轮询只触发生成,`GENERATION_ENDED`/`STOPPED` 后统一落地。prompt 提取统一走 `extractTagPrompt(match)`(组1=成对分支、组2=漏闭合兜底分支,换行折叠为空格)。**流式期间(isFinal=false)只认成对分支(组1),兜底分支被守卫跳过**——否则半截流式输出每轮匹配到不同长度的行内前缀,hash 每轮不同导致冷却/并发锁全失效、疯狂重复触发生成,且落地时半截 originalTag 是完整标签前缀,前缀替换会留下 `[/image]` 残尾(2026-08 实测事故)。旧 `<pic prompt="...">` 属性式格式已废弃不做兼容——属性内引号/换行是结构性字符,AI 输出易坏;loadSettings 里检测存值含 `<pic`/`<video` 自动迁移到新默认正则(注意:历史默认正则的源码字符串用单反斜杠,经 JS 字面量解析 `\s`→`s`、`\b`→退格,从未生效过,用户实际用的是 UI 手配正则)。
 

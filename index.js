@@ -5035,11 +5035,12 @@ async function fireAutoReply() {
     }
 }
 
-/** 剩余次数显示(tab 内实时刷新) */
+/** 剩余次数显示(tab 内实时刷新;输入框可直接编辑,见 bindAutoReplyEvents) */
 function renderAutoReplyRemaining() {
     const ar = extension_settings[extensionName]?.autoReply;
     if (!ar || !$('#auto_reply_remaining').length) return;
-    $('#auto_reply_remaining').text(stringFormat(translate('剩余 {0} / {1} 次', 'mag_ar_remaining_fmt'), ar.remaining, ar.maxCount));
+    $('#auto_reply_remaining').attr('max', ar.maxCount).val(ar.remaining);
+    $('#auto_reply_remaining_of').text(stringFormat(translate('/ {0} 次', 'mag_ar_remaining_of_fmt'), ar.maxCount));
 }
 
 /** 设置 → 自动回复 tab 控件回显 */
@@ -5069,13 +5070,14 @@ function bindAutoReplyEvents() {
             toastr.warning('回复内容为空,请先填写回复内容');
             return;
         }
-        // 启用即重置满额 + 解除停止抑制(见 scheduleAutoReply 注释)
+        // 启用时余额>0 保留(手动设置的次数/暂停后再开不覆盖),为 0(耗尽自动关/从未开跑)才重置满额;
+        // 解除停止抑制(见 scheduleAutoReply 注释)
         ar.enabled = true;
-        ar.remaining = ar.maxCount;
+        if (ar.remaining <= 0) ar.remaining = ar.maxCount;
         autoReplySuppressed = false;
         renderAutoReplyRemaining();
         saveSettingsDebounced();
-        toastr.success(`自动回复已启用,本轮最多 ${ar.maxCount} 次`);
+        toastr.success(`自动回复已启用,剩余 ${ar.remaining} 次`);
         // 当前空闲且最后一楼是 AI 消息 → 立即开始第一轮(开启即挂机,不用再手动发一条)
         const chat = getContext().chat || [];
         const last = chat[chat.length - 1];
@@ -5110,6 +5112,24 @@ function bindAutoReplyEvents() {
         // 0 是合法值(不重试),单独兜底 NaN/越界
         extension_settings[extensionName].autoReply.maxRetries = Number.isFinite(n) ? clamp(n, 0, 10) : defaultSettings.autoReply.maxRetries;
         saveSettingsDebounced();
+    });
+    // 剩余次数可直接编辑:耗尽自动关/误清零后手动补次数的通道
+    $('#auto_reply_remaining').off('input.autoReply change.autoReply').on('input.autoReply', function () {
+        const ar = extension_settings[extensionName].autoReply;
+        const n = Math.floor(Number($(this).val()));
+        if (!Number.isFinite(n)) return; // 清空/输入中途不写库
+        ar.remaining = clamp(n, 0, ar.maxCount);
+        $('#auto_reply_remaining_of').text(stringFormat(translate('/ {0} 次', 'mag_ar_remaining_of_fmt'), ar.maxCount));
+        saveSettingsDebounced();
+        // 补了次数且功能开着但没排程(耗尽前的死角)→ 空闲且末楼是 AI 就立即续跑(与启用路径同判定)
+        const chat = getContext().chat || [];
+        const last = chat[chat.length - 1];
+        if (ar.enabled && ar.remaining > 0 && !autoReplyTimer && !isGenerating() && last && !last.is_user && !last.is_system) {
+            scheduleAutoReply();
+        }
+    }).on('change.autoReply', function () {
+        // 失焦/回车时把字段归一化回填(清空/越界输入)
+        renderAutoReplyRemaining();
     });
     $('#auto_reply_reset_btn').off('click.autoReply').on('click.autoReply', function () {
         const ar = extension_settings[extensionName].autoReply;

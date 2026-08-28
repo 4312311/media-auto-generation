@@ -139,5 +139,7 @@
     "mag_ar_retry": "卡住重试次数",
     "mag_ar_reset_btn": "重置次数",
     "mag_ar_hint": "每轮 AI 回复结束后,延迟指定秒数自动把上方内容作为用户消息发送;内容里的 {n} 或 {} 替换为当前轮次(如「当前是第{n}轮」);流式卡住(无新内容)超阈值自动终止并重新生成,最多重试指定次数;手动停止或切换聊天会暂停",
-    "mag_ar_remaining_fmt": "剩余 {0} / {1} 次"
+    "mag_ar_remaining": "剩余次数",
+    "mag_ar_remaining_edit": "可直接修改剩余次数",
+    "mag_ar_remaining_of_fmt": "/ {0} 次"
 }
