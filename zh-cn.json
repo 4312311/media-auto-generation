@@ -22,6 +22,8 @@
     "mag_auto_replace_hint": "检测到 [image]/[video] 标签后的处理方式。自动:直接调用后端生成并替换为图片/视频;手动:先显示占位符,点击后才生成。",
     "mag_auto_replace_auto_desc": "检测到 [image]/[video] 标签后直接调用后端生成,自动替换为图片/视频",
     "mag_auto_replace_manual_desc": "不自动生成,消息里显示可点击占位符,点击后才生成",
+    "mag_video_default_sound": "视频默认播放声音",
+    "mag_video_default_sound_hint": "开启:所有视频(聊天楼层/图库大图/媒体预览/测试预览)默认带声音播放;关闭:默认静音,需手动点开声音",
     "Character Fixed Tags": "角色固定特征",
     "Auto inject tags to prompt": "自动将特征注入到提示词中",
     "Name (e.g. Lisa)": "角色名 (例如: Lisa)",

@@ -59,6 +59,7 @@ const defaultSettings = {
     imageRegex: '/\\[image\\][ \\t]*([\\s\\S]*?)[ \\t]*\\[\\/image\\]|\\[image\\][ \\t]*([^\\n\\[]+)/gi',
     videoRegex: '/\\[video\\][ \\t]*([\\s\\S]*?)[ \\t]*\\[\\/video\\]|\\[video\\][ \\t]*([^\\n\\[]+)/gi',
     style: 'width:100%;height:auto',
+    videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
@@ -2087,6 +2088,7 @@ function updateUI() {
         $('#video_regex').val(extension_settings[extensionName].videoRegex);
         $('#media_style').val(extension_settings[extensionName].style);
         $('#auto_replace').val(extension_settings[extensionName].autoReplace);
+        $('#video_default_sound').prop('checked', !!extension_settings[extensionName].videoDefaultSound);
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -2206,6 +2208,12 @@ function bindSettingsEvents() {
     $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
+    $('#video_default_sound').on('change', function () {
+        extension_settings[extensionName].videoDefaultSound = $(this).prop('checked');
+        saveSettingsDebounced();
+        // 已渲染在 DOM 的楼层视频立即生效(attachFloorVideoControl 有 WeakSet 挡重复,不会自己重跑)
+        document.querySelectorAll('#chat [data-mag-id] video').forEach(v => applyVideoMuted(v, videoShouldMute()));
+    });
     $('#auto_replace').on('change', function () {
         extension_settings[extensionName].autoReplace = $(this).val();
         saveSettingsDebounced();
@@ -3413,11 +3421,26 @@ function buildMediaWrap({ magId, mediaType, url, rawPrompt }) {
 // 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能 class 选择器)
 $(document).on('click.magph', '[data-mag-id]', onMagClick);
 
-// --- 楼层视频播放控制:禁自动播放 + 离屏自动暂停 ---
+// --- 楼层视频播放控制:禁自动播放 + 离屏自动暂停 + 默认声音开关 ---
 // buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停。
 // 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);回屏不自动恢复,由用户点播。
 const floorVideoControlled = new WeakSet();
 let floorVideoIO = null;
+
+/** 视频是否默认静音:videoDefaultSound 开=false(带声),关=true(静音,现状) */
+function videoShouldMute() {
+    return !extension_settings[extensionName].videoDefaultSound;
+}
+
+/**
+ * 把静音偏好同步到 video 元素。property 和 attribute 都要写:
+ * 媒体元素换 src 重载时会按 attribute(defaultMuted)重置 muted 态,只写 property 会在重载后丢失。
+ */
+function applyVideoMuted(video, muted) {
+    video.muted = muted;
+    if (muted) video.setAttribute('muted', '');
+    else video.removeAttribute('muted');
+}
 
 function attachFloorVideoControl(video) {
     if (floorVideoControlled.has(video)) return;
@@ -3426,6 +3449,9 @@ function attachFloorVideoControl(video) {
         video.removeAttribute('autoplay');
         video.pause();
     }
+    // 默认声音:wrapper HTML 里 baked 的 muted 只是初始值,此处按设置覆写(存量楼层无需改 mes,
+    // 用户手动点开/关掉某条视频的声音后不会被反复拉回——attach 每 element 只跑一次)
+    applyVideoMuted(video, videoShouldMute());
     floorVideoIO.observe(video);
 }
 
@@ -3773,6 +3799,9 @@ function openGalleryLightbox(entry) {
 
     if (entry.mediaType === 'video') {
         $img.css('display', 'none').attr('src', '');
+        // 静音偏好先行于换 src:换源重载会按 attribute 重置 muted(见 applyVideoMuted 注释)。
+        // 开=非静音 autoplay(lightbox 由用户点击打开,带手势,浏览器放行有声自动播放)
+        applyVideoMuted($video[0], videoShouldMute());
         $video.css('display', 'block').attr('src', entry.url);
     } else {
         releaseVideoEl($video.css('display', 'none'));
@@ -4485,7 +4514,7 @@ function renderMediaPreviewModal() {
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
         const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制 prompt"></i></div>`;
         const mediaTag = r.mediaType === 'video'
-            ? `<video src="${escapedUrl}" preload="metadata" controls muted playsinline></video>`
+            ? `<video src="${escapedUrl}" preload="metadata" controls${videoShouldMute() ? ' muted' : ''} playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
         $body.append(`
             <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}">${declareHtml}${mediaTag}${timeHtml}</div>
@@ -4769,6 +4798,7 @@ function setTestPreview(state, payload) {
         $img.attr('src', payload);
     } else if (state === 'video') {
         $img.attr('src', '');
+        applyVideoMuted($video[0], videoShouldMute()); // 静音偏好先行于换 src(重载按 attribute 重置,见 applyVideoMuted)
         $video.attr('src', payload);
     } else {
         releaseVideoEl($video);
