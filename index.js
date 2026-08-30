@@ -4902,6 +4902,7 @@ function bindTestTabEvents() {
 //   防刷新/切聊天后在别的聊天里意外继续挂机。
 let autoReplyTimer = null;
 let autoReplySuppressed = false;
+let autoReplyFloorRetries = 0; // 发送时发现上一楼仍是自动回复产物(AI 未回上轮)的连续重试计数,正常发出一条后清零
 
 function cancelAutoReplyTimer() {
     if (autoReplyTimer) { clearTimeout(autoReplyTimer); autoReplyTimer = null; }
@@ -4921,6 +4922,7 @@ function disableAutoReply() {
     stopStreamWatchdog();
     if (stallRegenTimer) { clearTimeout(stallRegenTimer); stallRegenTimer = null; }
     autoReplyRegenPending = false;
+    autoReplyFloorRetries = 0;
     const ar = extension_settings[extensionName]?.autoReply;
     if (ar) ar.enabled = false;
     $('#auto_reply_enabled').prop('checked', false);
@@ -5021,6 +5023,21 @@ function scheduleAutoReply() {
     console.log(`[${extensionName}] auto reply scheduled in ${delayMs}ms (remaining=${ar.remaining})`);
 }
 
+/** 判定文本是否为"某轮自动回复的产物":回复内容模板按 {n}/{} 占位符挖空成 \d+ 通配,
+ *  任意轮次数字都命中(与 fireAutoReply 的占位符替换用同一套分段规则);
+ *  未配占位符的模板退化为全等匹配(上一楼内容一模一样也算,语义相同);两侧 trim 对齐 */
+function isAutoReplyEcho(text, content) {
+    const tpl = String(content || '').trim();
+    const body = String(text || '').trim();
+    if (!tpl || !body) return false;
+    try {
+        return new RegExp('^' + tpl.split(/\{n\}|\{\}/gi).map(escapeRegExp).join('\\d+') + '$').test(body);
+    } catch (e) {
+        console.error(`[${extensionName}] isAutoReplyEcho regex build failed:`, e);
+        return false;
+    }
+}
+
 /** 定时器到期:实际发送。发送成功才消耗计数 */
 async function fireAutoReply() {
     autoReplyTimer = null;
@@ -5029,6 +5046,28 @@ async function fireAutoReply() {
     // 延迟窗口里用户抢先触发了生成 → 本轮作废不消耗(新 ENDED 会重新 tick)
     if (isGenerating()) {
         console.log(`[${extensionName}] auto reply skipped: generation in progress`);
+        return;
+    }
+    // 上一楼校验:最后一楼仍是"自动回复的产物" = 上轮自动回复发出后 AI 没回(空回复/
+    // 楼层回滚/手动删了 AI 楼)。再发一条只会堆出连续两条用户消息 → 改为 regenerate
+    // 让 AI 回复那条(ST 对最后一楼是 user 的 regenerate 即生成 AI 回复,script.js:11567),
+    // 不发新内容、不消耗计数(下次真发时轮次数字自然接续,不跳号不重复)
+    const chatArr = getContext().chat || [];
+    const lastFloor = chatArr[chatArr.length - 1];
+    if (lastFloor?.is_user && isAutoReplyEcho(lastFloor.mes, ar.content)) {
+        const maxRetry = Number.isFinite(Number(ar.maxRetries)) ? Math.floor(Number(ar.maxRetries)) : 3;
+        autoReplyFloorRetries++;
+        console.warn(`[${extensionName}] auto reply echo on last floor, retry via regenerate (${autoReplyFloorRetries}/${maxRetry})`);
+        if (autoReplyFloorRetries > maxRetry) {
+            disableAutoReply();
+            toastr.warning(`自动回复连续 ${maxRetry} 次未获 AI 回复,已自动停止`);
+            return;
+        }
+        toastr.warning(`上一条自动回复未获 AI 回复,正在重试(${autoReplyFloorRetries}/${maxRetry})`);
+        autoReplyRegenPending = true; // 该次生成按重试链接续(STARTED 接续看门狗/不清卡住计数)
+        $('#option_regenerate').trigger('click');
+        // trigger 万一被 ST 守卫拦下(编辑态等),链条断在原地与看门狗失效同模型,由用户接管;
+        // 残留 pending 只会让下一次 STARTED 跳过一次卡住计数重置,无害
         return;
     }
     const $ta = $('#send_textarea');
@@ -5055,6 +5094,7 @@ async function fireAutoReply() {
         return;
     }
     ar.remaining--;
+    autoReplyFloorRetries = 0; // 正常发出一条 = 链路恢复,echo 重试计数归零
     renderAutoReplyRemaining();
     saveSettingsDebounced();
     if (ar.remaining <= 0) {
