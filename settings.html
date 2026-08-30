@@ -1464,28 +1464,28 @@
     </div>
     <div class="margin-top-5">
         <div><label for="auto_reply_content" class="flex1" data-i18n="mag_ar_content">回复内容</label></div>
-        <textarea id="auto_reply_content" class="text_pole textarea_compact" rows="2" placeholder="继续" data-i18n="[placeholder]mag_ar_content_ph"></textarea>
+        <textarea id="auto_reply_content" class="text_pole textarea_compact" rows="3" placeholder="继续" style="resize:vertical; min-height:56px;" data-i18n="[placeholder]mag_ar_content_ph"></textarea>
     </div>
     <div class="flex-container flexnowrap align_center margin-top-5">
         <label for="auto_reply_max" class="flex1" data-i18n="mag_ar_max">最多自动回复次数</label>
-        <input id="auto_reply_max" type="number" class="text_pole widthNatural margin0" min="1" max="999" step="1">
+        <input id="auto_reply_max" type="number" class="text_pole margin0" style="width:76px;" min="1" max="999" step="1">
     </div>
     <div class="flex-container flexnowrap align_center margin-top-5">
         <label for="auto_reply_delay" class="flex1" data-i18n="mag_ar_delay">发送延迟(秒)</label>
-        <input id="auto_reply_delay" type="number" class="text_pole widthNatural margin0" min="0" max="60" step="0.5">
+        <input id="auto_reply_delay" type="number" class="text_pole margin0" style="width:76px;" min="0" max="60" step="0.5">
     </div>
     <div class="flex-container flexnowrap align_center margin-top-5">
         <label for="auto_reply_stall" class="flex1" data-i18n="mag_ar_stall">流式卡住阈值(秒)</label>
-        <input id="auto_reply_stall" type="number" class="text_pole widthNatural margin0" min="10" max="600" step="5">
+        <input id="auto_reply_stall" type="number" class="text_pole margin0" style="width:76px;" min="10" max="600" step="5">
     </div>
     <div class="flex-container flexnowrap align_center margin-top-5">
         <label for="auto_reply_retry" class="flex1" data-i18n="mag_ar_retry">卡住重试次数</label>
-        <input id="auto_reply_retry" type="number" class="text_pole widthNatural margin0" min="0" max="10">
+        <input id="auto_reply_retry" type="number" class="text_pole margin0" style="width:76px;" min="0" max="10">
     </div>
     <div class="flex-container flexnowrap align_center justifySpaceBetween margin-top-5">
         <div class="flex-container flexnowrap align_center" style="gap:6px;">
             <label for="auto_reply_remaining" data-i18n="mag_ar_remaining">剩余次数</label>
-            <input id="auto_reply_remaining" type="number" class="text_pole widthNatural margin0" min="0" step="1" title="可直接修改剩余次数" data-i18n="[title]mag_ar_remaining_edit">
+            <input id="auto_reply_remaining" type="number" class="text_pole margin0" style="width:76px;" min="0" step="1" title="可直接修改剩余次数" data-i18n="[title]mag_ar_remaining_edit">
             <span id="auto_reply_remaining_of" style="opacity:0.85;"></span>
         </div>
         <div id="auto_reply_reset_btn" class="menu_button" title="重置剩余次数为满额" data-i18n="[title]mag_ar_reset_btn" style="display:inline-flex; gap:5px; align-items:center; padding:3px 8px;">
