@@ -3421,9 +3421,10 @@ function buildMediaWrap({ magId, mediaType, url, rawPrompt }) {
 // 用 data-mag-id 属性锚定(ST sanitizer 会给 class 加 custom- 前缀,不能 class 选择器)
 $(document).on('click.magph', '[data-mag-id]', onMagClick);
 
-// --- 楼层视频播放控制:禁自动播放 + 离屏自动暂停 + 默认声音开关 ---
-// buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停。
-// 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);回屏不自动恢复,由用户点播。
+// --- 楼层视频播放控制:滑入视口自动播放 + 离屏自动暂停 + 默认声音开关 ---
+// buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停,播放统一由 IO 驱动。
+// 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);滑回视口自动恢复播放(短视频式)。
+// 自动播放与声音偏好解耦:有声模式被浏览器自动播放策略拦截(无用户手势)时降级静音照播,"滑到即播"恒成立。
 const floorVideoControlled = new WeakSet();
 let floorVideoIO = null;
 
@@ -3440,6 +3441,17 @@ function applyVideoMuted(video, muted) {
     video.muted = muted;
     if (muted) video.setAttribute('muted', '');
     else video.removeAttribute('muted');
+}
+
+/**
+ * 滑入视口自动播放。声音偏好与自动播放是两回事:videoDefaultSound 开(带声)时手机浏览器
+ * 会拦截无手势的有声自动播放——catch 后降级静音再播,保证滑到必播,想听声点 controls 开。
+ */
+function playFloorVideoOnScroll(video) {
+    video.play().catch(() => {
+        applyVideoMuted(video, true);
+        video.play().catch(() => {});
+    });
 }
 
 function attachFloorVideoControl(video) {
@@ -3467,7 +3479,8 @@ function initFloorVideoPlaybackControl() {
                 floorVideoIO.unobserve(video); // ST 重渲会整块替换消息 DOM,断链的视频及时放手防泄漏
                 continue;
             }
-            if (!entry.isIntersecting && !video.paused) video.pause();
+            if (entry.isIntersecting) playFloorVideoOnScroll(video);
+            else if (!video.paused) video.pause();
         }
     });
 

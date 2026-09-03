@@ -148,7 +148,7 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `createFloatingUI` / `initPanelDrag` / `initFloatBtnDrag` / `toggleFloatingPanel` — 浮动按钮 + 可拖动浮窗(自写 mousedown,不依赖 ST `dragElement`,见"ST 前端踩坑笔记")。浮标另有:`floatBtnMetrics`(默认位尺寸/边距参数)/ `clampFloatBtnIntoView`(恢复落盘位置 & resize/orientationchange 时把浮标拉回屏内,只改视觉不落盘)/ `resetFloatBtnPosition`(手机端从 wand 菜单打开面板时把浮标重置回默认右下角并落盘——浮标被吸附/挤出屏后的救援通道)+ 模块级 `floatBtnDockedEdge` 吸附运行态(手机端吸附少藏:settings.html 的 `.mag-mobile` 覆盖为 translateX ±45%/opacity .8,桌面 ±65%/.5)
 - `renderCharacterTagsList` — 角色特征列表 UI 渲染
 - `createSlideSelect` / `slideSelectEnterMode` / `slideSelectExitMode` / `slideSelectSet` / `slideSelectReapply` / `slideSelectToggleAll` — 长按+滑选批量选择引擎(图库两级共用):pointerdown 起 500ms 长按计时,触发即进选择模式+选中起点+进入滑选;拖动 `elementFromPoint` 命中即选;click 统一由引擎接管(选择模式=toggle,非选择模式=转发 onActivate 原行为);容器绑 non-passive touchmove 只在滑选激活时 preventDefault(网格平时要能触摸滚动,不能设 touch-action:none);contextmenu/dragstart 在 session 期间吞掉(防 Android 长按菜单与 img 原生拖拽断流)。重渲后选中态由 `slideSelectReapply` 恢复(renderGallery/openGroupModal 末尾调用)
-- `videoShouldMute` / `applyVideoMuted` / `attachFloorVideoControl` / `scanFloorVideos` / `initFloorVideoPlaybackControl` — 楼层视频播放控制(禁自动播放 + 离屏 IntersectionObserver 自动暂停 + 默认声音开关):wrapper HTML 恒 baked `muted` 作安全初值(换 src 重载会按 attribute 重置 muted 态,所以 `applyVideoMuted` property+attribute 双写),实际行为由 attach 时按 `videoDefaultSound` 覆写 property 决定——存量楼层免改 mes,数据层与设备偏好解耦;attach 有 WeakSet 挡重复,开关切换时由 checkbox handler 对已渲染楼层视频批量重刷;图库 lightbox 与测试预览在换 src 前先行应用偏好(lightbox 由用户点击打开带手势,非静音 autoplay 浏览器放行)
+- `videoShouldMute` / `applyVideoMuted` / `playFloorVideoOnScroll` / `attachFloorVideoControl` / `scanFloorVideos` / `initFloorVideoPlaybackControl` — 楼层视频播放控制(滑入视口自动播放 + 离屏自动暂停 + 默认声音开关,2026-09 起由 7e4e3f0 的"禁自动播放点播制"改为短视频式滑到即播):IntersectionObserver 回屏即 `playFloorVideoOnScroll`、出视口 pause(threshold 0);自动播放与声音偏好解耦——`videoDefaultSound` 开(带声)时手机浏览器拦截无手势的有声自动播放,catch 后降级静音照播(想听声点 controls 开),"滑到即播"恒成立。wrapper HTML 恒 baked `muted` 作安全初值(换 src 重载会按 attribute 重置 muted 态,所以 `applyVideoMuted` property+attribute 双写),实际行为由 attach 时按 `videoDefaultSound` 覆写 property 决定——存量楼层免改 mes,数据层与设备偏好解耦;attach 有 WeakSet 挡重复,开关切换时由 checkbox handler 对已渲染楼层视频批量重刷;图库 lightbox 与测试预览在换 src 前先行应用偏好(lightbox 由用户点击打开带手势,非静音 autoplay 浏览器放行)
 
 ### 事件监听(底部)
 - `GENERATION_STARTED` — 流式开始,启动 500ms 轮询触发生成(只触发不替换)+ 快照最后楼 mes(入口防御用)。回调**必须检查第 3 个参数 dryRun 并忽略**——dryRun 调用只有 STARTED 没有 ENDED,不忽略会让 isStreamActive 永真(见"ST 前端踩坑笔记"最后一条)
@@ -262,4 +262,5 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 5. 冷却逻辑 → 同一 prompt 3 分钟内不重复生成
 6. ST Regex 还原规则配置后,发 LLM 的上下文里 wrapper 被还原成 `[image]prompt[/image]`(聊天记录与显示不变)
 7. 视频默认播放声音开关 → 关:楼层/图库大图/预览视频静音,点播放无声需手动解锁;开:全部默认带声,切换后已渲染楼层立即生效,刷新后保持
+8. 楼层视频滑入视口自动播放 → 滚到视频楼层即播、滚走暂停、滚回来续播(loop);声音开关开(带声)时手机上被浏览器拦截会自动降级静音照播(滑到必播,不受声音偏好拖累)
 8. 自动回复 echo 校验 → 删掉 AI 末楼(使最后一楼变成上轮自动回复)后等延迟到期:应触发 regenerate 重试而非再发一条;重试后 AI 正常回复则链路恢复照常发下一条;AI 连续不回(可临时把回复内容改成必触发空回的形式)超上限应自动停用
