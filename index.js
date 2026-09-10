@@ -3425,7 +3425,10 @@ $(document).on('click.magph', '[data-mag-id]', onMagClick);
 // buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停,播放统一由 IO 驱动。
 // 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);滑回视口自动恢复播放(短视频式)。
 // 自动播放与声音偏好解耦:有声模式被浏览器自动播放策略拦截(无用户手势)时降级静音照播,"滑到即播"恒成立。
+// 手动暂停记忆:用户经控件手动 pause 过的楼,滑出再滑回不硬拉重播;手动点播放后恢复自动播。
 const floorVideoControlled = new WeakSet();
+const floorVideoUserPaused = new WeakSet(); // 用户手动 pause 过的视频,滑回视口不硬拉重播
+const floorVideoIoPaused = new WeakSet();   // 程序化(离屏)pause 标记:pause 事件异步派发,监听里消费即删,与用户暂停区分
 let floorVideoIO = null;
 
 /** 视频是否默认静音:videoDefaultSound 开=false(带声),关=true(静音,现状) */
@@ -3459,11 +3462,18 @@ function attachFloorVideoControl(video) {
     floorVideoControlled.add(video);
     if (video.hasAttribute('autoplay')) {
         video.removeAttribute('autoplay');
+        floorVideoIoPaused.add(video); // 摘 autoplay 的程序化 pause 不算用户暂停(pause 事件异步派发,先标记后监听)
         video.pause();
     }
     // 默认声音:wrapper HTML 里 baked 的 muted 只是初始值,此处按设置覆写(存量楼层无需改 mes,
     // 用户手动点开/关掉某条视频的声音后不会被反复拉回——attach 每 element 只跑一次)
     applyVideoMuted(video, videoShouldMute());
+    // 区分用户暂停与程序化暂停:用户手动 pause 的滑回视口不硬拉重播,手动点播放后恢复自动播
+    video.addEventListener('pause', () => {
+        if (floorVideoIoPaused.delete(video)) return;
+        floorVideoUserPaused.add(video);
+    });
+    video.addEventListener('play', () => floorVideoUserPaused.delete(video));
     floorVideoIO.observe(video);
 }
 
@@ -3479,8 +3489,12 @@ function initFloorVideoPlaybackControl() {
                 floorVideoIO.unobserve(video); // ST 重渲会整块替换消息 DOM,断链的视频及时放手防泄漏
                 continue;
             }
-            if (entry.isIntersecting) playFloorVideoOnScroll(video);
-            else if (!video.paused) video.pause();
+            if (entry.isIntersecting) {
+                if (!floorVideoUserPaused.has(video)) playFloorVideoOnScroll(video);
+            } else if (!video.paused) {
+                floorVideoIoPaused.add(video); // 离屏程序化 pause 标记,pause 监听里据此不算用户暂停
+                video.pause();
+            }
         }
     });
 
