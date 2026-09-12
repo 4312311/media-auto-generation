@@ -2986,6 +2986,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     mediaType,
                     url,
                     rawPrompt,
+                    finalPrompt,
                 });
 
                 // 暂存到 inFlightMedia → landInFlightMedia() 按触发楼层落地 DOM。
@@ -3314,7 +3315,7 @@ async function startManualGeneration($ph) {
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt });
 
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
@@ -3392,7 +3393,7 @@ async function regenerateMedia($media) {
         if (toast) toastr.clear(toast);
 
         // 构造新 wrapper(同 magId,replacePlaceholderInMes 用 magId 锚定替换 mes 里的旧 wrapper)
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt });
 
         failedPrompts.delete(promptHash);
         pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
@@ -3438,19 +3439,22 @@ function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag
 /**
  * 构造 mag-media wrapper HTML(包 img/video + 4 个 data-mag-role 子元素)。
  * 占位符替换 / 自动模式生成 共用此函数,保证产物结构一致。
+ * finalPrompt:生成时刻拼装完的完整 prompt(含风格前缀+角色注入),bake 进 data-final-prompt——
+ * 复制功能读它就是"当时生成用的完整 prompt",切换配置后也不会变(动态重拼会拿到新前缀,不是历史事实)。
  */
-function buildMediaWrap({ magId, mediaType, url, rawPrompt }) {
+function buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt }) {
     const style = extension_settings[extensionName].style || '';
     const escapedUrl = escapeHtmlAttribute(url);
     const escapedPrompt = escapeHtmlAttribute(rawPrompt);
     const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
     const escapedPromptText = escapeHtmlAttribute(promptText);
+    const finalPromptAttr = finalPrompt ? ` data-final-prompt="${escapeHtmlAttribute(finalPrompt)}"` : '';
 
     const mediaInner = mediaType === 'video'
         ? `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls muted playsinline/>`
         : `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
 
-    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}" data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
+    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}"${finalPromptAttr} data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
@@ -4213,7 +4217,7 @@ function extractAttr(html, name) {
     return m ? m[1] : '';
 }
 
-/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,magId};无 src 返回 null。mediaType 以内层标签名为准 */
+/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,finalPrompt,magId};无 src 返回 null。mediaType 以内层标签名为准 */
 function parseMediaWrapper(block) {
     // lazy [^>]*?:buildMediaWrap 产物里 src 紧跟标签名,避免贪婪回溯扫过整个 base64
     const srcMatch = block.match(/<(img|video)\b[^>]*?\ssrc="([^"]*)"/);
@@ -4226,6 +4230,8 @@ function parseMediaWrapper(block) {
         url: unescapeHtmlAttr(srcMatch[2]),
         mediaType: srcMatch[1] === 'video' ? 'video' : 'image',
         prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
+        // 生成时刻拼装的完整 prompt 快照(含前缀);存量 wrapper(本属性上线前落地)为空,由调用方按 url 回查 manifest 兜底
+        finalPrompt: unescapeHtmlAttr(extractAttr(block, 'data-final-prompt')),
         magId: unescapeHtmlAttr(extractAttr(block, 'data-mag-id')),
     };
 }
@@ -4434,13 +4440,14 @@ function ensureMediaPreviewModal() {
         }
     });
     // 点媒体本体(img/video)→ 放大;declare/时间文字区域不放大
-    // (复用 gallery lightbox,entry 字段与 openGalleryLightbox 一致)
+    // (复用 gallery lightbox,entry 字段与 openGalleryLightbox 一致;prompt 传生成时完整快照,
+    //  与图库路径打开 lightbox 的显示/复制一致,空则退裸 prompt——存量媒体无快照)
     $m.find('.preview-modal-body').on('click', '.preview-media-row img, .preview-media-row video', function () {
         const $row = $(this).closest('.preview-media-row');
         openGalleryLightbox({
             url: $row.attr('data-url'),
             mediaType: $row.attr('data-media-type'),
-            prompt: $row.attr('data-prompt'),
+            prompt: $row.attr('data-final-prompt') || $row.attr('data-prompt'),
         });
     });
     // 点楼层分隔行的重生按钮 → 整楼层媒体重新生成(body 内容会被重渲,委托抗重渲)
@@ -4449,11 +4456,13 @@ function ensureMediaPreviewModal() {
         e.stopPropagation();
         await regenerateFloorMedia(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
     });
-    // 点行尾复制按钮 → 复制该媒体的 prompt(与 onMagClick 的 copy 角色同款:copyText 优先,降级原生剪贴板)
+    // 点行尾复制按钮 → 复制该媒体的生成时完整 prompt(data-final-prompt 快照;无快照退裸 data-prompt)
+    // (与 onMagClick 的 copy 角色同款:copyText 优先,降级原生剪贴板)
     $m.find('.preview-modal-body').on('click', '.preview-media-copy-btn', async function (e) {
         e.preventDefault();
         e.stopPropagation();
-        const prompt = String($(this).closest('.preview-media-row').attr('data-prompt') || '');
+        const $row = $(this).closest('.preview-media-row');
+        const prompt = String($row.attr('data-final-prompt') || $row.attr('data-prompt') || '');
         if (!prompt) { toastr.warning('该媒体没有可复制的 prompt'); return; }
         try {
             if (typeof copyText === 'function') {
@@ -4543,10 +4552,15 @@ function renderMediaPreviewModal() {
     }
 
     // 创建时间优先取图库 manifest(生成完成时刻,最准);没有再退回 magId 时间戳(占位符创建时刻)
+    // finalPrompt 兜底同源:manifest 的 prompt 存的就是生成时 finalPrompt 快照——存量 wrapper(无 data-final-prompt
+    // 属性,本功能上线前落地)按 url 匹配到这里补齐;manifest 条目被删或旧格式裸标签则退回裸 prompt
     const manifest = extension_settings[extensionName].galleryManifest || [];
     const manifestTs = new Map();
+    const manifestFinalPrompt = new Map();
     for (const e of manifest) {
-        if (e?.url) manifestTs.set(e.url, e.timestamp || 0);
+        if (!e?.url) continue;
+        manifestTs.set(e.url, e.timestamp || 0);
+        if (e.prompt) manifestFinalPrompt.set(e.url, e.prompt);
     }
 
     let currentFloor = null;
@@ -4575,12 +4589,14 @@ function renderMediaPreviewModal() {
         const escapedUrl = escapeHtmlAttribute(r.url);
         const declareHtml = r.declare ? `<div class="preview-media-declare">${escapeHtmlAttribute(r.declare)}</div>` : '';
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
-        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制 prompt"></i></div>`;
+        // 复制用完整 prompt:wrapper bake 的生成时快照优先,存量 wrapper 按 url 回查 manifest,再退裸 prompt
+        const finalPrompt = r.finalPrompt || manifestFinalPrompt.get(r.url) || '';
+        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制生成时完整 prompt"></i></div>`;
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls${videoShouldMute() ? ' muted' : ''} playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
         $body.append(`
-            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}">${declareHtml}${mediaTag}${timeHtml}</div>
+            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}" data-final-prompt="${escapeHtmlAttribute(finalPrompt)}">${declareHtml}${mediaTag}${timeHtml}</div>
         `);
     }
     $body[0].scrollTop = scrollTop;
@@ -4724,6 +4740,7 @@ async function retryUnfulfilledMedia(rec) {
             mediaType,
             url,
             rawPrompt: rec.prompt,
+            finalPrompt,
         });
 
         const committed = rec.magId
@@ -4809,6 +4826,7 @@ async function regenerateFloorMedia(floor) {
                     mediaType: r.mediaType,
                     url,
                     rawPrompt: r.prompt,
+                    finalPrompt,
                 });
                 const committed = r.magId
                     ? await commitMediaToMessage(r.magId, mediaWrap, 'regenerateFloorMedia')
