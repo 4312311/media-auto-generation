@@ -741,20 +741,22 @@ function migrateLegacyPrefixes(presets) {
  * 本次生成用哪条前缀。循环开:游标推进(发出即消耗)并持久化;循环关:用选中行(count 不参与,选中即用)。
  * 游标自愈:行被删短 → row 对 length 取模归位;count 被改小/游标 used 超额 → while 快进到下一个该用的行。
  * count=0 的行循环时跳过(快进条件 used≥count 对 0 恒真);全表 0 无可用行 → 无前缀。
- * @returns {string} 前缀文本(可能为空 = 无前缀,与旧单值空串行为一致)
+ * @returns {{text: string, name: string}} 前缀文本与名称(text 可能空 = 无前缀;name 是条目名称快照,
+ *   供 wrapper/manifest 记"当时用的哪条",媒体预览显示用——读取端不重算,前缀列表后来改了也不影响历史记录)
  */
 function pickPositivePrefix(preset) {
     const list = ensurePrefixList(preset);
-    if (!list.length) return '';
+    if (!list.length) return { text: '', name: '' };
 
     if (!preset.prefixCycleEnabled) {
-        return String(list[clampPrefixIndex(preset.activePrefixIndex, list.length)]?.text ?? '');
+        const entry = list[clampPrefixIndex(preset.activePrefixIndex, list.length)];
+        return { text: String(entry?.text ?? ''), name: String(entry?.name ?? '') };
     }
 
     // 全表 count=0(全跳过)防护:while 快进的终止前提是存在 count≥1 的行,全 0 会死循环
     if (!list.some(e => prefixEntryCount(e) > 0)) {
         console.log(`[${extensionName}] style prefix cycle: 所有前缀次数均为 0,本轮不带前缀`);
-        return '';
+        return { text: '', name: '' };
     }
 
     const saved = preset.prefixCycleCursor;
@@ -777,7 +779,7 @@ function pickPositivePrefix(preset) {
     preset.prefixCycleCursor = { row, used };
     saveSettingsDebounced();
     console.log(`[${extensionName}] style prefix cycle: 使用「${label}」(${pickedIdx + 1}/${list.length})`);
-    return text;
+    return { text, name: String(list[pickedIdx].name ?? '') };
 }
 
 async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
@@ -788,8 +790,8 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     if (!preset.model) throw new Error('Active preset has no model selected');
 
     // 前缀取用(多条列表+循环轮换,见 pickPositivePrefix)→ 拼接([%style%] / [Shot 1] 分镜格式感知,见 applyStylePrefixToPrompt)
-    const prefix = pickPositivePrefix(preset).trimEnd();
-    const finalPrompt = applyStylePrefixToPrompt(modifiedPrompt, prefix);
+    const prefixPick = pickPositivePrefix(preset);
+    const finalPrompt = applyStylePrefixToPrompt(modifiedPrompt, prefixPick.text.trimEnd());
     const negativePrompt = preset.negativePromptPrefix || '';
     let workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
     if (preset.upscaleModel) workflow = injectUpscaleIntoWorkflowJson(workflow, preset.upscaleModel);
@@ -807,7 +809,7 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const filename = `${mediaType}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const url = await saveBase64AsFile(result.data, charName, filename, format);
 
-    return { url, format, character: charName, finalPrompt };
+    return { url, format, character: charName, finalPrompt, prefixName: prefixPick.name };
 }
 
 // --- 设置与UI逻辑 ---
@@ -3159,7 +3161,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                 }, 1000);
 
                 // 直接调远程 ComfyUI(走 ST 后端代理 /api/sd/comfy/generate)
-                const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
+                const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(modifiedPrompt, mediaType);
 
                 clearInterval(timer);
                 if (toast) toastr.clear(toast);
@@ -3180,6 +3182,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     url,
                     rawPrompt,
                     finalPrompt,
+                    prefixName,
                 });
 
                 // 暂存到 inFlightMedia → landInFlightMedia() 按触发楼层落地 DOM。
@@ -3200,7 +3203,7 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
 
                 // 记录到图库 manifest(供 Gallery tab 展示)。prompt 用 finalPrompt 快照(含前缀+角色注入),
                 // declare 同步带上(图库 lightbox 显示用,与媒体预览浮窗一致)
-                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: inFlightMedia.get(promptHash)?.declare ?? null });
+                pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType, format, declare: inFlightMedia.get(promptHash)?.declare ?? null });
 
                 // 成功后立即解锁
                 processingHashes.delete(promptHash);
@@ -3504,14 +3507,14 @@ async function startManualGeneration($ph) {
             }
         }, 1000);
 
-        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType, null, false, abortController.signal);
+        const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(modifiedPrompt, mediaType, null, false, abortController.signal);
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt, prefixName });
 
         failedPrompts.delete(promptHash);
-        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
+        pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType, format, declare: findDeclareForMagId(magId) });
 
         // 按 magId 反查真实消息并替换(占位符可能在旧楼层,非最后一条),成功才提示
         const committed = await commitMediaToMessage(magId, mediaWrap, 'startManualGeneration');
@@ -3581,15 +3584,15 @@ async function regenerateMedia($media) {
             if (toast && toast.find) toast.find('.toast-message').text(`${baseText} ${seconds}s`);
         }, 1000);
 
-        const { url, format, character, finalPrompt } = await generateViaComfy(modifiedPrompt, mediaType);
+        const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(modifiedPrompt, mediaType);
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
         // 构造新 wrapper(同 magId,replacePlaceholderInMes 用 magId 锚定替换 mes 里的旧 wrapper)
-        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt });
+        const mediaWrap = buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt, prefixName });
 
         failedPrompts.delete(promptHash);
-        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: findDeclareForMagId(magId) });
+        pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType, format, declare: findDeclareForMagId(magId) });
 
         // 按 magId 反查真实消息并替换(wrapper 可能在旧楼层),成功才提示
         const committed = await commitMediaToMessage(magId, mediaWrap, 'regenerateMedia');
@@ -3634,20 +3637,23 @@ function buildPlaceholder({ promptHash, index, mediaType, rawPrompt, originalTag
  * 占位符替换 / 自动模式生成 共用此函数,保证产物结构一致。
  * finalPrompt:生成时刻拼装完的完整 prompt(含风格前缀+角色注入),bake 进 data-final-prompt——
  * 复制功能读它就是"当时生成用的完整 prompt",切换配置后也不会变(动态重拼会拿到新前缀,不是历史事实)。
+ * prefixName:同一次生成用的前缀条目名称快照,bake 进 data-prefix-name(媒体预览显示"用的哪条前缀"用;
+ * 为空=无前缀或未命名,属性缺席)。
  */
-function buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt }) {
+function buildMediaWrap({ magId, mediaType, url, rawPrompt, finalPrompt, prefixName }) {
     const style = extension_settings[extensionName].style || '';
     const escapedUrl = escapeHtmlAttribute(url);
     const escapedPrompt = escapeHtmlAttribute(rawPrompt);
     const promptText = rawPrompt.length > 200 ? rawPrompt.slice(0, 200) + '...' : rawPrompt;
     const escapedPromptText = escapeHtmlAttribute(promptText);
     const finalPromptAttr = finalPrompt ? ` data-final-prompt="${escapeHtmlAttribute(finalPrompt)}"` : '';
+    const prefixNameAttr = prefixName ? ` data-prefix-name="${escapeHtmlAttribute(prefixName)}"` : '';
 
     const mediaInner = mediaType === 'video'
         ? `<video src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" loop controls muted playsinline/>`
         : `<img src="${escapedUrl}" prompt="${escapedPrompt}" style="${style}" />`;
 
-    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}"${finalPromptAttr} data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
+    return `<span class="mag-media" data-mag-id="${escapeHtmlAttribute(magId)}" data-media-type="${mediaType}" data-prompt="${escapedPrompt}"${finalPromptAttr}${prefixNameAttr} data-revealed="false" data-view="default" contenteditable="false">${mediaInner}<small data-mag-role="prompt-text">${escapedPromptText}</small><i class="fa-solid fa-copy" data-mag-role="copy"></i><small data-mag-role="prompt-toggle">prompt描述</small><small data-mag-role="regenerate">重新生成</small><small data-mag-role="zoom">放大</small></span>`;
 }
 
 // 全局事件委托 — 抗 ST 重渲/切聊天,只在 document 上绑一次
@@ -4410,7 +4416,7 @@ function extractAttr(html, name) {
     return m ? m[1] : '';
 }
 
-/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,finalPrompt,magId};无 src 返回 null。mediaType 以内层标签名为准 */
+/** 把 mag-media wrapper 块解析成 {ts,url,mediaType,prompt,finalPrompt,prefixName,magId};无 src 返回 null。mediaType 以内层标签名为准 */
 function parseMediaWrapper(block) {
     // lazy [^>]*?:buildMediaWrap 产物里 src 紧跟标签名,避免贪婪回溯扫过整个 base64
     const srcMatch = block.match(/<(img|video)\b[^>]*?\ssrc="([^"]*)"/);
@@ -4425,6 +4431,8 @@ function parseMediaWrapper(block) {
         prompt: unescapeHtmlAttr(extractAttr(block, 'data-prompt')),
         // 生成时刻拼装的完整 prompt 快照(含前缀);存量 wrapper(本属性上线前落地)为空,由调用方按 url 回查 manifest 兜底
         finalPrompt: unescapeHtmlAttr(extractAttr(block, 'data-final-prompt')),
+        // 生成时刻用的前缀条目名称快照;存量 wrapper 为空,同样按 url 回查 manifest
+        prefixName: unescapeHtmlAttr(extractAttr(block, 'data-prefix-name')),
         magId: unescapeHtmlAttr(extractAttr(block, 'data-mag-id')),
     };
 }
@@ -4745,15 +4753,17 @@ function renderMediaPreviewModal() {
     }
 
     // 创建时间优先取图库 manifest(生成完成时刻,最准);没有再退回 magId 时间戳(占位符创建时刻)
-    // finalPrompt 兜底同源:manifest 的 prompt 存的就是生成时 finalPrompt 快照——存量 wrapper(无 data-final-prompt
-    // 属性,本功能上线前落地)按 url 匹配到这里补齐;manifest 条目被删或旧格式裸标签则退回裸 prompt
+    // finalPrompt / prefixName 兜底同源:manifest 存的就是生成时快照——存量 wrapper(无对应 data-* 属性,
+    // 本功能上线前落地)按 url 匹配到这里补齐;manifest 条目被删或旧格式裸标签则退回裸 prompt / 不显示徽标
     const manifest = extension_settings[extensionName].galleryManifest || [];
     const manifestTs = new Map();
     const manifestFinalPrompt = new Map();
+    const manifestPrefixName = new Map();
     for (const e of manifest) {
         if (!e?.url) continue;
         manifestTs.set(e.url, e.timestamp || 0);
         if (e.prompt) manifestFinalPrompt.set(e.url, e.prompt);
+        if (e.prefixName) manifestPrefixName.set(e.url, e.prefixName);
     }
 
     let currentFloor = null;
@@ -4784,7 +4794,10 @@ function renderMediaPreviewModal() {
         const timeTs = manifestTs.get(r.url) || r.ts || 0;
         // 复制用完整 prompt:wrapper bake 的生成时快照优先,存量 wrapper 按 url 回查 manifest,再退裸 prompt
         const finalPrompt = r.finalPrompt || manifestFinalPrompt.get(r.url) || '';
-        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制生成时完整 prompt"></i></div>`;
+        // 用的哪条前缀:生成时快照(wrapper data-prefix-name 优先,存量按 url 回查 manifest);无前缀/未命名/存量查不到 → 不显示
+        const prefixName = r.prefixName || manifestPrefixName.get(r.url) || '';
+        const prefixBadge = prefixName ? `<span class="preview-media-prefix" title="生成时使用的前缀条目">${escapeHtmlAttribute(prefixName)}</span>` : '';
+        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${prefixBadge}${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制生成时完整 prompt"></i></div>`;
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls${videoShouldMute() ? ' muted' : ''} playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
@@ -4923,7 +4936,7 @@ async function retryUnfulfilledMedia(rec) {
             if (toast && toast.find) toast.find('.toast-message').text(`${baseText} ${seconds}s`);
         }, 1000);
 
-        const { url, format, character, finalPrompt } = await generateViaComfy(injectionResult.modifiedPrompt, mediaType);
+        const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(injectionResult.modifiedPrompt, mediaType);
         clearInterval(timer);
         if (toast) toastr.clear(toast);
 
@@ -4934,6 +4947,7 @@ async function retryUnfulfilledMedia(rec) {
             url,
             rawPrompt: rec.prompt,
             finalPrompt,
+            prefixName,
         });
 
         const committed = rec.magId
@@ -4942,12 +4956,12 @@ async function retryUnfulfilledMedia(rec) {
         if (!committed) {
             // 媒体已生成,落点丢了不能静默丢弃:入图库保底,用户可从图库/测试 tab 取用
             toastr.warning(`媒体已生成并入图库,但未找到替换落点(楼层可能已被编辑)`);
-            pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: rec.declare ?? null });
+            pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType, format, declare: rec.declare ?? null });
             return;
         }
 
         failedPrompts.delete(promptHash);
-        pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType, format, declare: rec.declare ?? null });
+        pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType, format, declare: rec.declare ?? null });
         toastr.success(`生成完成: 1 张${mediaTypeText}`);
     } catch (err) {
         console.error(`[${extensionName}] Retry unfulfilled media failed (floor=${rec.floor}, prompt=${String(rec.prompt).slice(0, 80)}):`, err);
@@ -5012,7 +5026,7 @@ async function regenerateFloorMedia(floor) {
             }
             processingHashes.add(promptHash);
             try {
-                const { url, format, character, finalPrompt } = await generateViaComfy(injectionResult.modifiedPrompt, r.mediaType, null, true);
+                const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(injectionResult.modifiedPrompt, r.mediaType, null, true);
                 // 旧格式裸标签没有 magId,合成一个(buildPlaceholder 同款格式,时间戳可供预览排序)
                 const mediaWrap = buildMediaWrap({
                     magId: r.magId || `${promptHash}-${i}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -5020,6 +5034,7 @@ async function regenerateFloorMedia(floor) {
                     url,
                     rawPrompt: r.prompt,
                     finalPrompt,
+                    prefixName,
                 });
                 const committed = r.magId
                     ? await commitMediaToMessage(r.magId, mediaWrap, 'regenerateFloorMedia')
@@ -5028,7 +5043,7 @@ async function regenerateFloorMedia(floor) {
                     fail++;
                     continue;
                 }
-                pushGalleryEntry({ url, character, prompt: finalPrompt, mediaType: r.mediaType, format, declare: r.declare ?? null });
+                pushGalleryEntry({ url, character, prompt: finalPrompt, prefixName, mediaType: r.mediaType, format, declare: r.declare ?? null });
                 ok++;
             } catch (err) {
                 console.error(`[${extensionName}] Floor regenerate failed (floor=${floor}, prompt=${String(r.prompt).slice(0, 80)}):`, err);
@@ -5106,10 +5121,10 @@ async function runTestGenerate() {
 
     try {
         // 视频时 generateViaComfyInner 内部超时自动放宽到 5min(多帧采样耗时数分钟),图片 30s
-        const { url, format, character, finalPrompt } = await generateViaComfy(rawPrompt, mediaType, preset.name);
+        const { url, format, character, finalPrompt, prefixName } = await generateViaComfy(rawPrompt, mediaType, preset.name);
 
         // 用 preset.name 作为 character → 图库 tab 自动按 preset 分组。prompt 用 finalPrompt 快照(含前缀)
-        const entry = { url, character, prompt: finalPrompt, mediaType, format, timestamp: Date.now() };
+        const entry = { url, character, prompt: finalPrompt, prefixName, mediaType, format, timestamp: Date.now() };
         pushGalleryEntry(entry);
         testGenLastEntry = entry;
 

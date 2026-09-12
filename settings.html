@@ -493,6 +493,16 @@
         font-weight: bold;
         opacity: 0.85; /* 序号比时间醒目 */
     }
+    /* 前缀名称徽标:显示该媒体生成时用的前缀条目(多前缀轮换时对号用);生成时没带前缀或存量无记录则不渲染 */
+    #mag_media_preview_modal .preview-media-prefix {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 6px;
+        border: 1px solid var(--SmartThemeQuoteColor, #888);
+        border-radius: 8px;
+        opacity: 0.8;
+        vertical-align: middle;
+    }
     #mag_media_preview_modal .preview-media-timestamp {
         opacity: 0.55;
     }
