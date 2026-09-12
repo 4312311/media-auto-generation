@@ -699,7 +699,8 @@ function applyStylePrefixToPrompt(prompt, prefix) {
 /**
  * 前缀列表数据层 —— 一个配置档下多条正向前缀 + 可开关的循环轮换。
  * preset 字段(随 settings 持久化,每个配置档独立):
- *   positivePromptPrefixList: [{ text, count }]  前缀条目(count=循环时该条连续使用的生成次数,钳制 ≥1)
+ *   positivePromptPrefixList: [{ name, text, count }]  前缀条目(name=便于识别的短名称,可空;
+ *                                                count=循环时该条连续使用的生成次数,钳制 ≥1)
  *   prefixCycleEnabled: bool                     循环开关(true=按次数轮换 / false=用 activePrefixIndex 选中的行)
  *   activePrefixIndex: number                    手动模式选中行
  *   prefixCycleCursor: { row, used }             循环游标(走到第几行、该行已消耗几次)——持久化,
@@ -730,7 +731,7 @@ function migrateLegacyPrefixes(presets) {
         if (!p || typeof p !== 'object') continue;
         const list = ensurePrefixList(p);
         const legacy = String(p.positivePromptPrefix ?? '').trim();
-        if (legacy && !list.length) list.push({ text: p.positivePromptPrefix, count: 1 });
+        if (legacy && !list.length) list.push({ name: '', text: p.positivePromptPrefix, count: 1 });
         delete p.positivePromptPrefix;
     }
 }
@@ -757,16 +758,17 @@ function pickPositivePrefix(preset) {
         row = (row + 1) % list.length;
         used = 0;
     }
-    const text = String(list[row].text ?? '');
-    const pickedNo = row + 1;
+    const pickedIdx = row;
+    const text = String(list[pickedIdx].text ?? '');
+    const label = String(list[pickedIdx].name ?? '').trim() || `第 ${pickedIdx + 1} 条`;
     used += 1; // 发出即消耗
-    if (used >= prefixEntryCount(list[row])) {
+    if (used >= prefixEntryCount(list[pickedIdx])) {
         row = (row + 1) % list.length;
         used = 0;
     }
     preset.prefixCycleCursor = { row, used };
     saveSettingsDebounced();
-    console.log(`[${extensionName}] style prefix cycle: 使用第 ${pickedNo}/${list.length} 条前缀`);
+    console.log(`[${extensionName}] style prefix cycle: 使用「${label}」(${pickedIdx + 1}/${list.length})`);
     return text;
 }
 
@@ -1085,10 +1087,12 @@ function renderPrefixList(preset) {
         const $row = $(`
             <div class="mag-prefix-row" data-index="${i}">
                 <input type="radio" class="mag-prefix-active" name="comfy_prefix_active_group" title="非循环模式使用此前缀" data-i18n="[title]mag_prefix_active_title"${i === activeIdx ? ' checked' : ''}${cycle ? ' disabled' : ''}>
+                <input type="text" class="text_pole mag-prefix-name" placeholder="名称" title="便于识别的短名称(可空)" data-i18n="[placeholder]mag_prefix_name_ph">
                 <textarea class="text_pole textarea_compact mag-prefix-text" rows="2" placeholder="masterpiece, best quality, ..." data-i18n="[placeholder]mag_prefix_text_ph"></textarea>
                 <input type="number" class="text_pole mag-prefix-count" min="1" step="1" value="${prefixEntryCount(entry)}" title="循环时该前缀连续生成的次数" data-i18n="[title]mag_prefix_count_title">
                 <i class="fa-solid fa-xmark interactable mag-prefix-delete" title="删除此条前缀" data-i18n="[title]mag_prefix_remove"></i>
             </div>`);
+        $row.find('.mag-prefix-name').val(String(entry.name ?? ''));
         $row.find('.mag-prefix-text').val(String(entry.text ?? ''));
         $list.append($row);
     });
@@ -1172,6 +1176,9 @@ function bindPresetFieldEvents() {
         saveSettingsDebounced();
     };
     $('#comfy_prefix_list')
+        .on('change.preset', '.mag-prefix-name', function () {
+            writePrefixEntry(rowIndex(this), 'name', $(this).val());
+        })
         .on('change.preset', '.mag-prefix-text', function () {
             writePrefixEntry(rowIndex(this), 'text', $(this).val());
         })
@@ -1208,7 +1215,7 @@ function bindPresetFieldEvents() {
     $('#comfy_prefix_add_btn').on('click.preset', () => {
         const p = getActivePreset();
         if (!p) return;
-        ensurePrefixList(p).push({ text: '', count: 1 });
+        ensurePrefixList(p).push({ name: '', text: '', count: 1 });
         saveSettingsDebounced();
         renderPrefixList(p);
         $('#comfy_prefix_list .mag-prefix-row:last .mag-prefix-text').trigger('focus');
@@ -1273,7 +1280,7 @@ function duplicatePreset() {
         ...src,
         name,
         previewImage: '',
-        positivePromptPrefixList: (src.positivePromptPrefixList || []).map(e => ({ text: e?.text ?? '', count: prefixEntryCount(e) })),
+        positivePromptPrefixList: (src.positivePromptPrefixList || []).map(e => ({ name: e?.name ?? '', text: e?.text ?? '', count: prefixEntryCount(e) })),
         prefixCycleCursor: { row: 0, used: 0 },
     });
     extension_settings[extensionName].activePresetName = name;
@@ -1432,7 +1439,7 @@ async function fetchAndApplyImportUrl() {
         // 正向前缀整体换血为单条列表(导入=换一套配置),循环游标/选中行归零
         const oldPath = preset.previewImage || '';
         preset.workflowJson = data.workflow;
-        preset.positivePromptPrefixList = [{ text: data.prefix, count: 1 }];
+        preset.positivePromptPrefixList = [{ name: '', text: data.prefix, count: 1 }];
         preset.activePrefixIndex = 0;
         preset.prefixCycleCursor = { row: 0, used: 0 };
         preset.negativePromptPrefix = data.negative;
