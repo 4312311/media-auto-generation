@@ -696,6 +696,80 @@ function applyStylePrefixToPrompt(prompt, prefix) {
     return prefix + sep + p;
 }
 
+/**
+ * 前缀列表数据层 —— 一个配置档下多条正向前缀 + 可开关的循环轮换。
+ * preset 字段(随 settings 持久化,每个配置档独立):
+ *   positivePromptPrefixList: [{ text, count }]  前缀条目(count=循环时该条连续使用的生成次数,钳制 ≥1)
+ *   prefixCycleEnabled: bool                     循环开关(true=按次数轮换 / false=用 activePrefixIndex 选中的行)
+ *   activePrefixIndex: number                    手动模式选中行
+ *   prefixCycleCursor: { row, used }             循环游标(走到第几行、该行已消耗几次)——持久化,
+ *                                                刷新/重启接着上次的进度走(挂机跨天不乱序);发出即消耗(失败也算,
+ *                                                规则简单可预测,失败重试自然换下一条前缀)
+ */
+
+/** 列表条目的有效次数(count 缺失/非法钳到 1,循环 while 快进的终止前提) */
+function prefixEntryCount(entry) {
+    const n = Number.parseInt(entry?.count, 10);
+    return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
+/** activePrefixIndex 的钳制读取(非法/越界 → 有效行下标),pick/渲染/删行三处共用 */
+function clampPrefixIndex(value, listLength) {
+    return clamp(Number.parseInt(value, 10) || 0, 0, Math.max(0, listLength - 1));
+}
+
+/** 防御性数组守卫:positivePromptPrefixList 缺失(手改 settings/异常数据)时补空数组 */
+function ensurePrefixList(preset) {
+    if (!Array.isArray(preset.positivePromptPrefixList)) preset.positivePromptPrefixList = [];
+    return preset.positivePromptPrefixList;
+}
+
+/** 旧单值前缀 → 多前缀列表的一次性迁移(loadSettings 调,与其他 preset 迁移同住一处;幂等:字段删掉后不再触发) */
+function migrateLegacyPrefixes(presets) {
+    for (const p of presets) {
+        if (!p || typeof p !== 'object') continue;
+        const list = ensurePrefixList(p);
+        const legacy = String(p.positivePromptPrefix ?? '').trim();
+        if (legacy && !list.length) list.push({ text: p.positivePromptPrefix, count: 1 });
+        delete p.positivePromptPrefix;
+    }
+}
+
+/**
+ * 本次生成用哪条前缀。循环开:游标推进(发出即消耗)并持久化;循环关:用选中行。
+ * 游标自愈:行被删短 → row 对 length 取模归位;count 被改小/游标 used 超额 → while 快进到下一个该用的行。
+ * @returns {string} 前缀文本(可能为空 = 无前缀,与旧单值空串行为一致)
+ */
+function pickPositivePrefix(preset) {
+    const list = ensurePrefixList(preset);
+    if (!list.length) return '';
+
+    if (!preset.prefixCycleEnabled) {
+        return String(list[clampPrefixIndex(preset.activePrefixIndex, list.length)]?.text ?? '');
+    }
+
+    const saved = preset.prefixCycleCursor;
+    const cur = saved && typeof saved === 'object' ? saved : { row: 0, used: 0 };
+    let row = (Number.parseInt(cur.row, 10) || 0) % list.length;
+    let used = Math.max(0, Number.parseInt(cur.used, 10) || 0);
+    // 快进:游标停留行的次数已被改小/游标过期(used ≥ count)→ 顺位跳到下一个还有余额的行(count 恒 ≥1,必终止)
+    while (used >= prefixEntryCount(list[row])) {
+        row = (row + 1) % list.length;
+        used = 0;
+    }
+    const text = String(list[row].text ?? '');
+    const pickedNo = row + 1;
+    used += 1; // 发出即消耗
+    if (used >= prefixEntryCount(list[row])) {
+        row = (row + 1) % list.length;
+        used = 0;
+    }
+    preset.prefixCycleCursor = { row, used };
+    saveSettingsDebounced();
+    console.log(`[${extensionName}] style prefix cycle: 使用第 ${pickedNo}/${list.length} 条前缀`);
+    return text;
+}
+
 async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
@@ -703,8 +777,8 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     if (!comfyUrl) throw new Error('No ComfyUI URL configured');
     if (!preset.model) throw new Error('Active preset has no model selected');
 
-    // 前缀拼接([%style%] / [Shot 1] 分镜格式感知,见 applyStylePrefixToPrompt)
-    const prefix = (preset.positivePromptPrefix || '').trimEnd();
+    // 前缀取用(多条列表+循环轮换,见 pickPositivePrefix)→ 拼接([%style%] / [Shot 1] 分镜格式感知,见 applyStylePrefixToPrompt)
+    const prefix = pickPositivePrefix(preset).trimEnd();
     const finalPrompt = applyStylePrefixToPrompt(modifiedPrompt, prefix);
     const negativePrompt = preset.negativePromptPrefix || '';
     let workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
@@ -956,11 +1030,13 @@ function renderPresetFields() {
     const hasPreset = !!preset;
     $('#comfy_empty_hint').css('display', hasPreset ? 'none' : 'block');
 
-    // 临时解绑所有字段事件,灌值后再绑回(避免连锁写)
-    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow').off('.preset');
+    // 临时解绑所有字段事件,灌值后再绑回(避免连锁写)。前缀列表的行事件是委托,容器一并解绑
+    $('#comfy_url, #comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_neg_prefix, #comfy_workflow, #comfy_prefix_cycle, #comfy_prefix_add_btn, #comfy_prefix_list').off('.preset');
 
     $('#comfy_url').val(getActiveComfyUrl());
-    $('#comfy_pos_prefix').val(preset?.positivePromptPrefix || '');
+    // 正向前缀:多前缀列表(旧单值经 ensurePrefixList 自动迁移为第一项)+ 循环开关
+    $('#comfy_prefix_cycle').prop('checked', !!preset?.prefixCycleEnabled);
+    renderPrefixList(preset);
     $('#comfy_neg_prefix').val(preset?.negativePromptPrefix || '');
     $('#comfy_workflow').val(preset?.workflowJson || '');
     validateComfyWorkflow();
@@ -979,13 +1055,43 @@ function renderPresetFields() {
     // 放大模型:首项恒为『不使用』,列表来自 comfyCache.upscaleModels
     renderUpscaleSelect(preset?.upscaleModel || '');
 
-    // 字段使能状态(无 preset 时 disabled;comfy_url 系全局字段不依赖 preset)
-    $('#comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_pos_prefix, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
+    // 字段使能状态(无 preset 时 disabled;comfy_url 系全局字段不依赖 preset)。
+    // #comfy_prefix_list 行内元素不进这行统一启停:行只在有 preset 时才渲染,且 radio 的置灰由循环开关决定
+    // (renderPrefixList 所有)——统一 enable 会把"循环开 → radio disabled"的状态洗掉(E2E 实测过的坑)
+    $('#comfy_model, #comfy_sampler, #comfy_scheduler, #comfy_upscale, #comfy_width, #comfy_height, #comfy_steps, #comfy_scale, #comfy_denoise, #comfy_seed, #comfy_prefix_cycle, #comfy_neg_prefix, #comfy_workflow, #comfy_refresh').prop('disabled', !hasPreset);
 
     bindPresetFieldEvents();
     renderPresetPreview();
     renderComfyUrlBookmark();
     renderComfyImportUrlBookmark();
+}
+
+/**
+ * 渲染正向前缀列表(多前缀 + 循环轮换,数据结构见 pickPositivePrefix 注释):
+ * 每行 = ⊙ 选中标记(循环开时置灰,轮换自动决定)+ 前缀文本 textarea + 次数(循环时连续生成的张数)+ ✕ 删行。
+ * 行内编辑不重渲(写回数据层即可),增删行/切循环开关才整体重渲——与 LoRA 列表同款交互惯例。
+ */
+function renderPrefixList(preset) {
+    const $list = $('#comfy_prefix_list');
+    if (!$list.length) return;
+    $list.empty();
+    if (!preset) { $('#comfy_prefix_empty').css('display', 'none'); return; }
+    const list = ensurePrefixList(preset);
+    $('#comfy_prefix_empty').css('display', list.length ? 'none' : 'block');
+
+    const cycle = !!preset.prefixCycleEnabled;
+    const activeIdx = clampPrefixIndex(preset.activePrefixIndex, list.length);
+    list.forEach((entry, i) => {
+        const $row = $(`
+            <div class="mag-prefix-row" data-index="${i}">
+                <input type="radio" class="mag-prefix-active" name="comfy_prefix_active_group" title="非循环模式使用此前缀" data-i18n="[title]mag_prefix_active_title"${i === activeIdx ? ' checked' : ''}${cycle ? ' disabled' : ''}>
+                <textarea class="text_pole textarea_compact mag-prefix-text" rows="2" placeholder="masterpiece, best quality, ..." data-i18n="[placeholder]mag_prefix_text_ph"></textarea>
+                <input type="number" class="text_pole mag-prefix-count" min="1" step="1" value="${prefixEntryCount(entry)}" title="循环时该前缀连续生成的次数" data-i18n="[title]mag_prefix_count_title">
+                <i class="fa-solid fa-xmark interactable mag-prefix-delete" title="删除此条前缀" data-i18n="[title]mag_prefix_remove"></i>
+            </div>`);
+        $row.find('.mag-prefix-text').val(String(entry.text ?? ''));
+        $list.append($row);
+    });
 }
 
 /** 渲染单个 ComfyUI select(model/sampler/scheduler) */
@@ -1055,7 +1161,65 @@ function bindPresetFieldEvents() {
         // URL 改变 → renderPresetFields 按新地址从持久化存档灌列表(有存档直接用,没有则显示 refresh first)
         renderPresetFields();
     });
-    $('#comfy_pos_prefix').on('change.preset', (e) => writeField('positivePromptPrefix', $(e.target).val()));
+    // 正向前缀列表:行内编辑委托到容器(重渲安全),增删行/循环开关整体重渲
+    const rowIndex = (el) => Number($(el).closest('.mag-prefix-row').data('index'));
+    const writePrefixEntry = (index, key, value) => {
+        const p = getActivePreset();
+        if (!p) return;
+        const list = ensurePrefixList(p);
+        if (!list[index]) return;
+        list[index][key] = value;
+        saveSettingsDebounced();
+    };
+    $('#comfy_prefix_list')
+        .on('change.preset', '.mag-prefix-text', function () {
+            writePrefixEntry(rowIndex(this), 'text', $(this).val());
+        })
+        .on('change.preset', '.mag-prefix-count', function () {
+            // 钳制 ≥1(0/空/非法都归 1,与数据层同一条规则)并纠正输入框显示
+            const v = prefixEntryCount({ count: $(this).val() });
+            $(this).val(v);
+            writePrefixEntry(rowIndex(this), 'count', v);
+        })
+        .on('change.preset', '.mag-prefix-active', function () {
+            const p = getActivePreset();
+            if (!p) return;
+            p.activePrefixIndex = rowIndex(this);
+            saveSettingsDebounced();
+        })
+        .on('click.preset', '.mag-prefix-delete', function () {
+            const p = getActivePreset();
+            if (!p) return;
+            const list = ensurePrefixList(p);
+            const idx = rowIndex(this);
+            if (!Number.isInteger(idx) || !list[idx]) return;
+            list.splice(idx, 1);
+            // 选中行钳回有效范围;循环游标:删的是当前行→该行 used 清零(现在指向挤上来的下一条),
+            // 删的是游标前的行→row 前移一位(仍是原逻辑行);取模+快进在 pickPositivePrefix 里还有二道自愈
+            p.activePrefixIndex = clampPrefixIndex(p.activePrefixIndex, list.length);
+            const cur = p.prefixCycleCursor;
+            if (cur && typeof cur === 'object') {
+                if (cur.row === idx) cur.used = 0;
+                else if (cur.row > idx) cur.row -= 1;
+            }
+            saveSettingsDebounced();
+            renderPrefixList(p);
+        });
+    $('#comfy_prefix_add_btn').on('click.preset', () => {
+        const p = getActivePreset();
+        if (!p) return;
+        ensurePrefixList(p).push({ text: '', count: 1 });
+        saveSettingsDebounced();
+        renderPrefixList(p);
+        $('#comfy_prefix_list .mag-prefix-row:last .mag-prefix-text').trigger('focus');
+    });
+    $('#comfy_prefix_cycle').on('change.preset', (e) => {
+        const p = getActivePreset();
+        if (!p) { e.target.checked = false; return; }
+        p.prefixCycleEnabled = e.target.checked;
+        saveSettingsDebounced();
+        renderPrefixList(p); // ⊙ 选中标记的置灰态随开关联动
+    });
     $('#comfy_neg_prefix').on('change.preset', (e) => writeField('negativePromptPrefix', $(e.target).val()));
     $('#comfy_workflow').on('change.preset', (e) => writeField('workflowJson', $(e.target).val()));
 
@@ -1084,7 +1248,10 @@ function createPreset() {
         workflowJson: '',
         model: '', sampler: '', scheduler: '', upscaleModel: '',
         width: 640, height: 960, steps: 20, scale: 7, denoise: 1, seed: -1,
-        positivePromptPrefix: '',
+        positivePromptPrefixList: [],
+        prefixCycleEnabled: false,
+        activePrefixIndex: 0,
+        prefixCycleCursor: { row: 0, used: 0 },
         negativePromptPrefix: '',
     });
     extension_settings[extensionName].activePresetName = name;
@@ -1101,7 +1268,14 @@ function duplicatePreset() {
     const name = getUniqueName(`${src.name} copy`, n => presets.some(p => p.name === n), {
         nameBuilder: (base, i) => i === 1 ? base : `${base} ${i}`,
     });
-    presets.push({ ...src, name, previewImage: '' });
+    // 前缀列表深拷贝(浅拷贝会让两个档共享同一数组,改一条互相污染);循环游标归零,新档从第一条走起
+    presets.push({
+        ...src,
+        name,
+        previewImage: '',
+        positivePromptPrefixList: (src.positivePromptPrefixList || []).map(e => ({ text: e?.text ?? '', count: prefixEntryCount(e) })),
+        prefixCycleCursor: { row: 0, used: 0 },
+    });
     extension_settings[extensionName].activePresetName = name;
     saveSettingsDebounced();
     renderPresetDropdown();
@@ -1254,10 +1428,13 @@ async function fetchAndApplyImportUrl() {
 
         const newPath = await uploadPreviewBase64(base64, ext);
 
-        // 应用字段 + 删旧预览图(checkpoint 可选,接口没返回则不动 preset.model)
+        // 应用字段 + 删旧预览图(checkpoint 可选,接口没返回则不动 preset.model)。
+        // 正向前缀整体换血为单条列表(导入=换一套配置),循环游标/选中行归零
         const oldPath = preset.previewImage || '';
         preset.workflowJson = data.workflow;
-        preset.positivePromptPrefix = data.prefix;
+        preset.positivePromptPrefixList = [{ text: data.prefix, count: 1 }];
+        preset.activePrefixIndex = 0;
+        preset.prefixCycleCursor = { row: 0, used: 0 };
         preset.negativePromptPrefix = data.negative;
         preset.previewImage = newPath;
         if (data.checkpoint) preset.model = data.checkpoint;
@@ -2173,6 +2350,7 @@ async function loadSettings() {
     if (activeName && !presets.some(p => p.name === activeName)) {
         extension_settings[extensionName].activePresetName = presets[0]?.name ?? null;
     }
+    migrateLegacyPrefixes(presets);
     // 地址簿迁移:确保是数组,字符串/缺字段项规范化为 { name, url }
     if (!Array.isArray(extension_settings[extensionName].comfyUrls)) {
         extension_settings[extensionName].comfyUrls = [];

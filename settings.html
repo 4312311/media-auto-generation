@@ -1089,7 +1089,7 @@
     #media_auto_gen_panel_body .mag-preset-thumb.active .mag-preset-thumb-badge { display: flex; }
 
     /* --- LoRA 强度编辑(从工作流 JSON 自动提取) --- */
-    #comfy_lora_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    #comfy_lora_list, #comfy_prefix_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
     #comfy_lora_list .mag-lora-row { display: flex; align-items: center; gap: 6px; }
     #comfy_lora_list .mag-lora-name {
         flex: 1;
@@ -1134,7 +1134,7 @@
         opacity: 0.7;
         text-align: center;
     }
-    .mag_lora_empty {
+    .mag_lora_empty, .mag_prefix_empty {
         text-align: center;
         opacity: 0.6;
         font-size: 0.85em;
@@ -1143,6 +1143,15 @@
         border-radius: 5px;
         margin-top: 4px;
     }
+    /* 正向前缀列表(多前缀 + 循环轮换) */
+    .mag-prefix-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mag-prefix-cycle-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.9em; cursor: pointer; margin: 0; }
+    .mag-prefix-hint { opacity: 0.7; font-size: 0.85em; display: block; margin-top: 2px; }
+    #comfy_prefix_list .mag-prefix-row { display: flex; align-items: flex-start; gap: 6px; }
+    #comfy_prefix_list .mag-prefix-active { margin-top: 8px; flex-shrink: 0; }
+    #comfy_prefix_list .mag-prefix-text { flex: 1; resize: vertical; min-height: 2.8em; }
+    #comfy_prefix_list .mag-prefix-count { width: 60px; flex-shrink: 0; }
+    #comfy_prefix_list .mag-prefix-delete { flex-shrink: 0; padding: 8px 4px 0 2px; cursor: pointer; }
 </style>
 
 <div class="mag-tabs-header">
@@ -1334,9 +1343,21 @@
         </div>
     </div>
 
-    <div class="margin-top-5">
-        <label for="comfy_pos_prefix" data-i18n="Positive Prompt Prefix">Positive Prompt Prefix</label>
-        <textarea id="comfy_pos_prefix" class="text_pole textarea_compact" rows="2" placeholder="masterpiece, best quality, ..."></textarea>
+    <div class="margin-top-5" id="comfy_prefix_wrap">
+        <div class="mag-prefix-head">
+            <label for="comfy_prefix_list" data-i18n="Positive Prompt Prefix">Positive Prompt Prefix</label>
+            <label class="mag-prefix-cycle-label" for="comfy_prefix_cycle" title="开启后每次生成按各条的次数自动轮换前缀;关闭时固定使用选中的那条" data-i18n="[title]mag_prefix_cycle_title">
+                <input type="checkbox" id="comfy_prefix_cycle">
+                <span data-i18n="mag_prefix_cycle">循环前缀</span>
+            </label>
+        </div>
+        <small class="mag-prefix-hint" data-i18n="mag_prefix_hint">循环开:按各条「次数」自动轮换;关:用 ⊙ 选中的那条(次数存着,开循环才生效)</small>
+        <div id="comfy_prefix_list"></div>
+        <div id="comfy_prefix_empty" class="mag_prefix_empty" style="display:none;" data-i18n="mag_prefix_empty">暂无前缀,点下方按钮新增</div>
+        <div id="comfy_prefix_add_btn" class="menu_button" style="display: inline-flex; gap: 5px; align-items: center; margin-top: 6px;" title="新增前缀" data-i18n="[title]mag_prefix_add">
+            <i class="fa-solid fa-plus interactable"></i>
+            <span data-i18n="mag_prefix_add_label">新增前缀</span>
+        </div>
     </div>
     <div class="margin-top-5">
         <label for="comfy_neg_prefix" data-i18n="Negative Prompt Prefix">Negative Prompt Prefix</label>
