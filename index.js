@@ -659,6 +659,43 @@ function getActiveComfyUrl() {
     return String(extension_settings[extensionName].activeComfyUrl || '').trim();
 }
 
+/** [%style%] 占位符:AI 按固定格式写在 [Shot 1] 后的风格位,生成时原位替换为正向风格前缀 */
+const STYLE_PREFIX_PLACEHOLDER = '[%style%]';
+/** MiniMax H3 分镜格式的首个分镜标记,无占位符时前缀插到它后面 */
+const SHOT_TAG = '[Shot 1]';
+
+/**
+ * 把正向风格前缀拼进 prompt——[Shot 1] 分镜格式感知,图片/视频统一走(图片无标记自然落到③旧行为):
+ * ① prompt 带 [%style%] → 原位替换为前缀(AI 按固定格式排好了周围标点,直接换字;出现多次则全换,多 shot 同风格)
+ * ② 无占位符但有 [Shot 1] → 前缀插到首个 [Shot 1] 后:前缀归一成句号"."结尾,插入点后紧跟的逗号删掉(分隔句号由前缀提供)
+ * ③ 都没有 → 旧行为:前缀 + 逗号分隔 + prompt(前缀末尾无逗号时自动补,避免 "1girl"+"solo" 粘连成 "1girlsolo")
+ */
+function applyStylePrefixToPrompt(prompt, prefix) {
+    const p = String(prompt || '');
+    if (!prefix) return p;
+
+    if (p.includes(STYLE_PREFIX_PLACEHOLDER)) {
+        console.log(`[${extensionName}] style prefix: replaced ${STYLE_PREFIX_PLACEHOLDER} placeholder in-place`);
+        // split/join = 纯字面全量替换(多个占位符全换,多 shot 同风格),且无 $ 展开语义
+        return p.split(STYLE_PREFIX_PLACEHOLDER).join(prefix);
+    }
+
+    const shotIdx = p.indexOf(SHOT_TAG);
+    if (shotIdx !== -1) {
+        // 前缀归一成句号结尾:剥尾逗号(tag 风格前缀的习惯收尾),没有句号类标点就补 "."
+        const trimmed = prefix.replace(/[\s,，]+$/, '');
+        const prefixDot = /[.。!?？]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+        // 插入点后紧跟的逗号删掉改成句号分隔(句号由 prefixDot 提供),顺手吞多余空白/连续逗号
+        const insertAt = shotIdx + SHOT_TAG.length;
+        const rest = p.slice(insertAt).replace(/^\s*,[\s,]*/, '').trimStart();
+        console.log(`[${extensionName}] style prefix: inserted after ${SHOT_TAG}`);
+        return p.slice(0, insertAt) + ' ' + prefixDot + (rest ? ' ' + rest : '');
+    }
+
+    const sep = !prefix.endsWith(',') ? ',' : '';
+    return prefix + sep + p;
+}
+
 async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
@@ -666,10 +703,9 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     if (!comfyUrl) throw new Error('No ComfyUI URL configured');
     if (!preset.model) throw new Error('Active preset has no model selected');
 
-    // 前缀末尾无逗号 → 自动补一个,避免 "1girl" + "solo" 粘连成 "1girlsolo"
+    // 前缀拼接([%style%] / [Shot 1] 分镜格式感知,见 applyStylePrefixToPrompt)
     const prefix = (preset.positivePromptPrefix || '').trimEnd();
-    const sep = prefix && !prefix.endsWith(',') ? ',' : '';
-    const finalPrompt = prefix + sep + modifiedPrompt;
+    const finalPrompt = applyStylePrefixToPrompt(modifiedPrompt, prefix);
     const negativePrompt = preset.negativePromptPrefix || '';
     let workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
     if (preset.upscaleModel) workflow = injectUpscaleIntoWorkflowJson(workflow, preset.upscaleModel);
