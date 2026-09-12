@@ -136,7 +136,7 @@
     "mag_prefix_active_title": "非循环模式使用此前缀",
     "mag_prefix_name_ph": "名称",
     "mag_prefix_text_ph": "masterpiece, best quality, ...",
-    "mag_prefix_count_title": "循环时该前缀连续生成的次数",
+    "mag_prefix_count_title": "循环时该前缀连续生成的次数;0=跳过",
     "mag_prefix_remove": "删除此条前缀",
 
     "mag_upscale_model": "放大模型(可选)",

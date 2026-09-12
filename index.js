@@ -708,10 +708,11 @@ function applyStylePrefixToPrompt(prompt, prefix) {
  *                                                规则简单可预测,失败重试自然换下一条前缀)
  */
 
-/** 列表条目的有效次数(count 缺失/非法钳到 1,循环 while 快进的终止前提) */
+/** 列表条目的有效次数:缺失/非法 → 默认 1;显式 0 → 循环时跳过该条(负数同 0) */
 function prefixEntryCount(entry) {
     const n = Number.parseInt(entry?.count, 10);
-    return Number.isFinite(n) && n >= 1 ? n : 1;
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(0, n);
 }
 
 /** activePrefixIndex 的钳制读取(非法/越界 → 有效行下标),pick/渲染/删行三处共用 */
@@ -737,8 +738,9 @@ function migrateLegacyPrefixes(presets) {
 }
 
 /**
- * 本次生成用哪条前缀。循环开:游标推进(发出即消耗)并持久化;循环关:用选中行。
+ * 本次生成用哪条前缀。循环开:游标推进(发出即消耗)并持久化;循环关:用选中行(count 不参与,选中即用)。
  * 游标自愈:行被删短 → row 对 length 取模归位;count 被改小/游标 used 超额 → while 快进到下一个该用的行。
+ * count=0 的行循环时跳过(快进条件 used≥count 对 0 恒真);全表 0 无可用行 → 无前缀。
  * @returns {string} 前缀文本(可能为空 = 无前缀,与旧单值空串行为一致)
  */
 function pickPositivePrefix(preset) {
@@ -749,11 +751,17 @@ function pickPositivePrefix(preset) {
         return String(list[clampPrefixIndex(preset.activePrefixIndex, list.length)]?.text ?? '');
     }
 
+    // 全表 count=0(全跳过)防护:while 快进的终止前提是存在 count≥1 的行,全 0 会死循环
+    if (!list.some(e => prefixEntryCount(e) > 0)) {
+        console.log(`[${extensionName}] style prefix cycle: 所有前缀次数均为 0,本轮不带前缀`);
+        return '';
+    }
+
     const saved = preset.prefixCycleCursor;
     const cur = saved && typeof saved === 'object' ? saved : { row: 0, used: 0 };
     let row = (Number.parseInt(cur.row, 10) || 0) % list.length;
     let used = Math.max(0, Number.parseInt(cur.used, 10) || 0);
-    // 快进:游标停留行的次数已被改小/游标过期(used ≥ count)→ 顺位跳到下一个还有余额的行(count 恒 ≥1,必终止)
+    // 快进:游标停留行的次数已被改小/游标过期(used ≥ count,count=0 恒跳过)→ 顺位跳到下一个还有余额的行
     while (used >= prefixEntryCount(list[row])) {
         row = (row + 1) % list.length;
         used = 0;
@@ -1089,7 +1097,7 @@ function renderPrefixList(preset) {
                 <input type="radio" class="mag-prefix-active" name="comfy_prefix_active_group" title="非循环模式使用此前缀" data-i18n="[title]mag_prefix_active_title"${i === activeIdx ? ' checked' : ''}${cycle ? ' disabled' : ''}>
                 <input type="text" class="text_pole mag-prefix-name" placeholder="名称" title="便于识别的短名称(可空)" data-i18n="[placeholder]mag_prefix_name_ph">
                 <textarea class="text_pole textarea_compact mag-prefix-text" rows="2" placeholder="masterpiece, best quality, ..." data-i18n="[placeholder]mag_prefix_text_ph"></textarea>
-                <input type="number" class="text_pole mag-prefix-count" min="1" step="1" value="${prefixEntryCount(entry)}" title="循环时该前缀连续生成的次数" data-i18n="[title]mag_prefix_count_title">
+                <input type="number" class="text_pole mag-prefix-count" min="0" step="1" value="${prefixEntryCount(entry)}" title="循环时该前缀连续生成的次数;0=跳过" data-i18n="[title]mag_prefix_count_title">
                 <i class="fa-solid fa-xmark interactable mag-prefix-delete" title="删除此条前缀" data-i18n="[title]mag_prefix_remove"></i>
             </div>`);
         $row.find('.mag-prefix-name').val(String(entry.name ?? ''));
@@ -1183,7 +1191,7 @@ function bindPresetFieldEvents() {
             writePrefixEntry(rowIndex(this), 'text', $(this).val());
         })
         .on('change.preset', '.mag-prefix-count', function () {
-            // 钳制 ≥1(0/空/非法都归 1,与数据层同一条规则)并纠正输入框显示
+            // 钳到 ≥0(显式 0=循环时跳过;空/非法归默认 1),与数据层 prefixEntryCount 同一条规则,并纠正输入框显示
             const v = prefixEntryCount({ count: $(this).val() });
             $(this).val(v);
             writePrefixEntry(rowIndex(this), 'count', v);
