@@ -4802,7 +4802,7 @@ function renderMediaPreviewModal() {
             ? `<video src="${escapedUrl}" preload="metadata" controls${videoShouldMute() ? ' muted' : ''} playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
         $body.append(`
-            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}" data-final-prompt="${escapeHtmlAttribute(finalPrompt)}">${declareHtml}${mediaTag}${timeHtml}</div>
+            <div class="preview-media-row" data-url="${escapedUrl}" data-media-type="${r.mediaType}" data-prompt="${escapeHtmlAttribute(r.prompt)}" data-final-prompt="${escapeHtmlAttribute(finalPrompt)}">${timeHtml}${declareHtml}${mediaTag}</div>
         `);
     }
     $body[0].scrollTop = scrollTop;
