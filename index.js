@@ -3663,11 +3663,16 @@ $(document).on('click.magph', '[data-mag-id]', onMagClick);
 // --- 楼层视频播放控制:滑入视口自动播放 + 离屏自动暂停 + 默认声音开关 ---
 // buildMediaWrap 产物已不带 autoplay;存量楼层 mes 里的 autoplay 由这里摘属性 + pause 掐停,播放统一由 IO 驱动。
 // 离屏暂停:视频完全滚出视口即 pause(threshold 0,还有任一像素相交算在屏内);滑回视口自动恢复播放(短视频式)。
+// 同屏单播:同屏可见的楼层视频至多播一个——IO 只负责记账"谁在屏内",播谁由 resolveFloorVideoPlayback 统一裁决
+// (优先维持当前在播的,滚动中新视频露头不抢播;用户手动点播可抢占,被让位的一条自动掐停)。
 // 自动播放与声音偏好解耦:有声模式被浏览器自动播放策略拦截(无用户手势)时降级静音照播,"滑到即播"恒成立。
 // 手动暂停记忆:用户经控件手动 pause 过的楼,滑出再滑回不硬拉重播;手动点播放后恢复自动播。
 const floorVideoControlled = new WeakSet();
 const floorVideoUserPaused = new WeakSet(); // 用户手动 pause 过的视频,滑回视口不硬拉重播
 const floorVideoIoPaused = new WeakSet();   // 程序化(离屏)pause 标记:pause 事件异步派发,监听里消费即删,与用户暂停区分
+const floorVideoPolicyPlay = new WeakSet(); // 单播策略发起的 play 标记:play 事件监听里消费即删,剩下的才算用户主动点播
+const floorVideoVisibility = new Map();     // video el → 是否在视口内(IO 回调刷新);单播裁决的在屏名单数据源
+let activeFloorVideo = null;                // 单播策略当前选中的唯一在播视频(用户手动点播会抢占它)
 let floorVideoIO = null;
 
 /** 视频是否默认静音:videoDefaultSound 开=false(带声),关=true(静音,现状) */
@@ -3712,12 +3717,68 @@ function attachFloorVideoControl(video) {
         if (floorVideoIoPaused.delete(video)) return;
         floorVideoUserPaused.add(video);
     });
-    video.addEventListener('play', () => floorVideoUserPaused.delete(video));
+    video.addEventListener('play', () => {
+        floorVideoUserPaused.delete(video); // 手动点播放后恢复自动播资格
+        if (floorVideoPolicyPlay.delete(video)) return; // 单播策略发起的播,不是用户抢播
+        if (activeFloorVideo === video) return;
+        // 用户手动点播同屏另一条:点播的这条立即成为唯一在播,其余在播的一律让位(单播约束对手动同样生效)
+        activeFloorVideo = video;
+        document.querySelectorAll('#chat [data-mag-id] video').forEach((el) => {
+            if (el !== video && !el.paused) {
+                floorVideoIoPaused.add(el); // 让位掐停不算用户暂停,之后轮到它时照常自动播
+                el.pause();
+            }
+        });
+    });
     floorVideoIO.observe(video);
 }
 
 function scanFloorVideos() {
     document.querySelectorAll('#chat [data-mag-id] video').forEach(attachFloorVideoControl);
+}
+
+/**
+ * 同屏多视频单播裁决:全部楼层视频里至多只有一个在播。IO 只记账不播,每次回调后到这里统一重算:
+ * - 离屏的一律掐停(与 IO 逐 entry 的暂停互为兜底);
+ * - 在屏的挑一个 winner:优先维持当前活跃的(正在播的不被打断,滚动中新视频露头不抢播),
+ *   不在/被掐了才轮到 DOM 顺序最上的;winner 被用户手动暂停过则顺延下一个未被手动暂停的;
+ * - 其余在屏的一律掐停(带 ioPaused 标记,不算用户暂停,之后轮到它时照常自动播)。
+ * 全部在屏视频都被手动暂停过 → 谁也不播,尊重用户操作。
+ */
+function resolveFloorVideoPlayback() {
+    for (const el of floorVideoVisibility.keys()) {
+        if (!el.isConnected) floorVideoVisibility.delete(el); // Map 是强引用,断链条目及时清防泄漏
+    }
+    const visible = [];
+    const offscreen = [];
+    document.querySelectorAll('#chat [data-mag-id] video').forEach((el) => {
+        (floorVideoVisibility.get(el) === true ? visible : offscreen).push(el); // querySelectorAll 保 DOM 序
+    });
+    for (const el of offscreen) {
+        if (!el.paused) {
+            floorVideoIoPaused.add(el);
+            el.pause();
+        }
+    }
+    if (!visible.length) {
+        activeFloorVideo = null;
+        return;
+    }
+    let winner = activeFloorVideo && visible.includes(activeFloorVideo) ? activeFloorVideo : visible[0];
+    if (floorVideoUserPaused.has(winner)) {
+        winner = visible.find((el) => !floorVideoUserPaused.has(el)) || null;
+    }
+    for (const el of visible) {
+        if (el !== winner && !el.paused) {
+            floorVideoIoPaused.add(el); // 被单播策略掐停不算用户暂停,之后轮到它时照常自动播
+            el.pause();
+        }
+    }
+    activeFloorVideo = winner;
+    if (winner && winner.paused && !floorVideoUserPaused.has(winner)) {
+        floorVideoPolicyPlay.add(winner);
+        playFloorVideoOnScroll(winner);
+    }
 }
 
 function initFloorVideoPlaybackControl() {
@@ -3726,15 +3787,12 @@ function initFloorVideoPlaybackControl() {
             const video = entry.target;
             if (!video.isConnected) {
                 floorVideoIO.unobserve(video); // ST 重渲会整块替换消息 DOM,断链的视频及时放手防泄漏
+                floorVideoVisibility.delete(video);
                 continue;
             }
-            if (entry.isIntersecting) {
-                if (!floorVideoUserPaused.has(video)) playFloorVideoOnScroll(video);
-            } else if (!video.paused) {
-                floorVideoIoPaused.add(video); // 离屏程序化 pause 标记,pause 监听里据此不算用户暂停
-                video.pause();
-            }
+            floorVideoVisibility.set(video, entry.isIntersecting); // 只记账,播谁交给单播裁决
         }
+        resolveFloorVideoPlayback();
     });
 
     // ST 重渲 / 媒体落地 / 切聊天都会整块重插消息 DOM,MutationObserver 一处兜住所有插入来源
