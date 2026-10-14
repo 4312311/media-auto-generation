@@ -49,6 +49,20 @@ const processingHashes = new Set();
 // 冷却时间设置：3分钟
 const PROMPT_COOLDOWN_MS = 180000;
 
+// 默认风格美化包([%beauty:名称%] → text,用户提供的 10 风格;安装即生效,UI 里可改)
+const DEFAULT_BEAUTY_PACK = [
+    { name: '成熟风韵', text: '剥壳鸡蛋般透亮紧致冷白水光肌，精致小巧短鹅蛋脸配紧致下颌线，含情桃花眼带饱满卧蚕，秀挺小鼻，水润饱满豆沙红唇。日系温润伪素颜，眼尾淡淡大地色阴影配极细内眼线，无浓假睫毛，搭配极细紧致蜂腰与平坦小腹毫无赘肉，高位紧致挺翘的圆润蜜桃臀，骨感清晰锁骨与纤细四肢' },
+    { name: '清冷御姐', text: '冷白瓷透紧致水光肌，立体精致小巧瓜子脸配刀削般清晰紧致下颌线，微挑凤眼带饱满卧蚕，秀挺英气小巧鼻梁，饱满正红水光唇。冷艳高智感极简妆容，极细上扬黑眼线勾勒眼尾，无厚重眼影，搭配极细马甲线蜂腰与平坦紧实小腹，高位紧绷挺翘圆润蜜桃臀，骨感清晰锁骨与修长四肢' },
+    { name: '清纯初恋', text: '白瓷般无瑕紧致冷白水光肌，巴掌大小巧骨相脸配收拢下颌线，清澈水灵大杏眼带饱满卧蚕，秀挺小鼻，水嫩微翘裸粉果冻樱唇。清透氧气伪素颜，自然毛流感野生眉，面颊微透极淡蜜桃色红晕，无眼影无粗眼线，搭配极细紧致蜂腰与平坦无赘肉小腹，轻盈挺翘圆润蜜桃臀，骨感清晰锁骨与纤细四肢' },
+    { name: '纯欲诱惑', text: '微醺粉嫩透亮冷白水光肌，精致小巧短鹅蛋脸配紧致下颌线，无辜微垂水润杏眼含情带媚，饱满水光玻璃果冻粉唇。网红纯欲微醺妆，眼尾与小巧鼻尖微透淡橘粉腮红，卧蚕与山根水光微闪，极细内眼线，清纯面庞流露撩人诱惑神态，搭配极细紧致蜂腰与平坦小腹毫无赘肉，高位紧致挺翘圆润蜜桃臀，骨感锁骨与纤细四肢' },
+    { name: '软媚娇憨', text: '白嫩凝脂透亮水光肌，娇小柔和短鹅蛋脸配圆润收紧下颌线，水汪汪无辜含水眼带饱满卧蚕，秀挺小巧鼻梁，粉嫩微翘水润果冻唇。日系娇憨软妹妆，眼角泛着微弱水光感，面颊微醺浅粉腮红，神情娇柔呆萌带一丝天然媚态，搭配极细紧致蜂腰与平坦小腹，小巧挺翘圆润蜜桃臀，纤细手腕与骨感锁骨' },
+    { name: '元气甜美', text: '透亮晶莹冷白水光肌，精致小巧短鹅蛋脸配紧致骨相下颌线，弯月含笑水润杏眼带饱满卧蚕，秀挺小鼻，微扬粉嫩水光樱唇。元气果汁水光妆，面颊微透橘粉色元气腮红，清澈明亮无厚重粉感，神态明媚亲和充满感染力，搭配极细紧致蜂腰与平坦小腹，轻盈挺翘圆润蜜桃臀，修长匀称四肢与清晰锁骨' },
+    { name: '可爱娇小', text: '清透白皙紧致瓷肌，巴掌大小巧精致心形脸配收拢下颌线，灵动清澈大鹿眼带饱满卧蚕，小巧微翘秀挺鼻梁，微翘粉嫩水润草莓果冻樱唇。日杂元气果汁妆，眼下微透嫩粉腮红，清透无浓重眼妆，神情娇俏灵动，搭配极细纤弱蜂腰与平坦小腹，小巧紧致挺翘圆润蜜桃臀，纤细手腕与骨感小巧锁骨' },
+    { name: '活力运动', text: '自然白皙紧致透亮水光肌，精致小巧瓜子脸配利落下颌线，神采奕奕微挑含笑眼带饱满卧蚕，秀挺立体鼻梁，红润饱满微翘薄唇。自然通透运动裸妆，毛流感浓密野生眉，透气裸色润唇，干爽无厚重粉感，搭配深刻马甲线极细劲瘦蜂腰与紧实平腹，高位紧绷挺翘圆润蜜桃臀，修长紧实双腿与清晰锁骨' },
+    { name: '温婉古典', text: '瓷白温润紧致水光肌，古典小巧鹅蛋脸配柔和紧致下颌线，含蓄多情秋水杏眼带饱满卧蚕，秀挺小巧鼻梁，粉润水润含笑樱唇。新中式清雅古典妆，远山黛色细眉，眼尾一抹淡淡胭脂红晕，极细清雅内眼线，神情端庄温婉，搭配极细盈盈一握蜂腰与平坦无赘肉小腹，端庄高位挺翘圆润蜜桃臀，纤细直角肩与骨感锁骨' },
+    { name: '明艳魅惑', text: '明艳冷白无瑕紧致水光肌，深邃立体小巧瓜子脸配锐利清晰下颌线，勾魂桃花眼带饱满卧蚕，高挺小巧鼻梁，娇艳水润饱满微翘复古红唇。港风浓颜高定妆，深邃眼窝微光大地色眼影，清晰眼线微扬，修容立体，搭配极细沙漏蜂腰与平坦紧绷小腹，高位紧致挺翘圆润蜜桃臀，骨感锁骨与修长四肢' },
+];
+
 // 默认设置 (新增 characterTags)
 const defaultSettings = {
     mediaType: 'disabled',
@@ -62,6 +76,7 @@ const defaultSettings = {
     videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
+    beautyPack: DEFAULT_BEAUTY_PACK, // --- 新增: 风格美化包([{name,text}] 全局共享,prompt 里 [%beauty:名称%] → text) ---
     floatBtnPosition: null, // 浮动按钮位置 { left, top },null=默认右下角
     comfyPresets: [], // ComfyUI 配置档列表
     activePresetName: null, // 当前激活的配置档名字
@@ -697,6 +712,47 @@ function applyStylePrefixToPrompt(prompt, prefix) {
 }
 
 /**
+ * 风格美化包 token:`[%beauty:名称%]` —— AI 按卡约定写在 prompt 里(如 "[%beauty:清冷御姐%]"),
+ * 生成时把整个 token 替换为美化包里同名条目的 text(与 [%style%] 同思路:长文本不进 LLM 上下文,
+ * ST Regex 还原出去的仍是裸 token,LLM 只见短标记不学长描述)。
+ * key 允许首尾空白(`[%beauty: 清冷御姐 %]` 同样命中);同名条目列表靠前的生效;
+ * 未命中名原样保留 + console warn(可观测,不静默吞 token)。
+ */
+const MAG_BEAUTY_TOKEN_RE = /\[%beauty:([^%]+)%\]/g;
+
+function applyBeautyPackToPrompt(prompt) {
+    const p = String(prompt || '');
+    if (!p.includes('[%beauty:')) return p;
+    const map = new Map();
+    for (const e of ensureBeautyPack()) {
+        const name = String(e?.name ?? '').trim();
+        if (name && !map.has(name)) map.set(name, String(e?.text ?? ''));
+    }
+    const missing = [];
+    // 函数替换 = 免疫 text 里的 $&/$1 等展开序列(与 replaceLiteral 同理)
+    const out = p.replace(MAG_BEAUTY_TOKEN_RE, (m, key) => {
+        const k = String(key).trim();
+        if (map.has(k)) {
+            console.log(`[${extensionName}] beauty pack: 替换「${k}」`);
+            return map.get(k);
+        }
+        missing.push(k);
+        return m;
+    });
+    if (missing.length) {
+        console.warn(`[${extensionName}] beauty pack: 未找到风格条目「${missing.join('、')}」,token 原样保留`);
+    }
+    return out;
+}
+
+/** 防御性数组守卫:beautyPack 缺失(手改 settings/异常数据)时补空数组。全局设置,跨配置档共享 */
+function ensureBeautyPack() {
+    const s = extension_settings[extensionName];
+    if (!Array.isArray(s.beautyPack)) s.beautyPack = [];
+    return s.beautyPack;
+}
+
+/**
  * 前缀列表数据层 —— 一个配置档下多条正向前缀 + 可开关的循环轮换。
  * preset 字段(随 settings 持久化,每个配置档独立):
  *   positivePromptPrefixList: [{ name, text, count }]  前缀条目(name=便于识别的短名称,可空;
@@ -790,8 +846,11 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     if (!preset.model) throw new Error('Active preset has no model selected');
 
     // 前缀取用(多条列表+循环轮换,见 pickPositivePrefix)→ 拼接([%style%] / [Shot 1] 分镜格式感知,见 applyStylePrefixToPrompt)
+    // 美化包展开([%beauty:名称%] → 对应文本,见 applyBeautyPackToPrompt)放在前缀拼接**之后**:
+    // prompt 与前缀文本里的 token 都能命中;finalPrompt 快照(wrapper data-final-prompt / manifest /
+    // 复制按钮)天然带展开结果,发出去的 workflow JSON 同样是展开后的文本
     const prefixPick = pickPositivePrefix(preset);
-    const finalPrompt = applyStylePrefixToPrompt(modifiedPrompt, prefixPick.text.trimEnd());
+    const finalPrompt = applyBeautyPackToPrompt(applyStylePrefixToPrompt(modifiedPrompt, prefixPick.text.trimEnd()));
     const negativePrompt = preset.negativePromptPrefix || '';
     let workflow = applyWorkflowPlaceholders(preset.workflowJson, preset, finalPrompt, negativePrompt, forceRandomSeed);
     if (preset.upscaleModel) workflow = injectUpscaleIntoWorkflowJson(workflow, preset.upscaleModel);
@@ -2311,6 +2370,58 @@ function bindCharTagsEvents() {
     });
 }
 
+// --- 风格美化包 UI:名称 + 替换文本的行内编辑列表(前缀列表同款惯例,change 即写回) ---
+function renderBeautyPackList() {
+    const $list = $('#beauty_pack_list');
+    if (!$list.length) return;
+    $list.empty();
+    const list = ensureBeautyPack();
+    $('#beauty_pack_empty').css('display', list.length ? 'none' : 'block');
+    list.forEach((entry, i) => {
+        const $row = $(`
+            <div class="mag-beauty-row" data-index="${i}">
+                <input type="text" class="text_pole mag-beauty-name" placeholder="名称" title="prompt 里 [%beauty:此名称%] 命中该条" data-i18n="[title]mag_beauty_name_title">
+                <textarea class="text_pole textarea_compact mag-beauty-text" rows="2" placeholder="替换文本(风格/外貌描述)" data-i18n="[placeholder]mag_beauty_text_ph"></textarea>
+                <i class="fa-solid fa-xmark interactable mag-beauty-delete" title="删除此条" data-i18n="[title]mag_beauty_remove"></i>
+            </div>`);
+        $row.find('.mag-beauty-name').val(String(entry.name ?? ''));
+        $row.find('.mag-beauty-text').val(String(entry.text ?? ''));
+        $list.append($row);
+    });
+}
+
+function bindBeautyPackEvents() {
+    const rowIndex = (el) => Number($(el).closest('.mag-beauty-row').data('index'));
+    const writeEntry = (index, key, value) => {
+        const list = ensureBeautyPack();
+        if (!list[index]) return;
+        list[index][key] = value;
+        saveSettingsDebounced();
+    };
+    // 行内编辑委托到容器(重渲安全,与前缀列表同款)
+    $('#beauty_pack_list')
+        .on('change.beauty', '.mag-beauty-name', function () {
+            writeEntry(rowIndex(this), 'name', $(this).val());
+        })
+        .on('change.beauty', '.mag-beauty-text', function () {
+            writeEntry(rowIndex(this), 'text', $(this).val());
+        })
+        .on('click.beauty', '.mag-beauty-delete', function () {
+            const list = ensureBeautyPack();
+            const idx = rowIndex(this);
+            if (!Number.isInteger(idx) || !list[idx]) return;
+            list.splice(idx, 1);
+            saveSettingsDebounced();
+            renderBeautyPackList();
+        });
+    $('#beauty_pack_add_btn').off('click.beauty').on('click.beauty', function () {
+        ensureBeautyPack().push({ name: '', text: '' });
+        saveSettingsDebounced();
+        renderBeautyPackList();
+        $('#beauty_pack_list .mag-beauty-row').last().find('.mag-beauty-name').trigger('focus');
+    });
+}
+
 function updateUI() {
     if ($('#mediaType').length) {
         $('#mediaType').val(extension_settings[extensionName].mediaType);
@@ -2322,6 +2433,7 @@ function updateUI() {
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
+        renderBeautyPackList();
 
         // --- 新增: 渲染配置档 dropdown 和字段 ---
         renderPresetDropdown();
@@ -2403,6 +2515,14 @@ async function loadSettings() {
         extension_settings[extensionName].comfyImportUrls = extension_settings[extensionName].comfyImportUrls
             .filter(s => typeof s === 'string' && s.trim());
     }
+    // 美化包规范化:数组守卫(缺失→默认包)+ 条目洗成 {name, text}(手改 settings 的脏条目剔除)
+    if (!Array.isArray(extension_settings[extensionName].beautyPack)) {
+        extension_settings[extensionName].beautyPack = DEFAULT_BEAUTY_PACK.map(e => ({ ...e }));
+    } else {
+        extension_settings[extensionName].beautyPack = extension_settings[extensionName].beautyPack
+            .map(e => (e && typeof e === 'object') ? { name: String(e.name ?? ''), text: String(e.text ?? '') } : null)
+            .filter(Boolean);
+    }
     // 自动回复设置规范化:缺字段补默认、数值钳制;enabled 但 remaining=0 的脏态自动置关
     // (耗尽即自动关,正常路径不该出现这种组合)
     {
@@ -2472,6 +2592,9 @@ function bindSettingsEvents() {
 
     // --- 新增: 绑定角色固定特征 tab 全部事件(toggle/select/add/edit/save/cancel/delete) ---
     bindCharTagsEvents();
+
+    // --- 新增: 绑定风格美化包列表事件(行内编辑/增删行) ---
+    bindBeautyPackEvents();
 
     // --- 新增: 绑定 ComfyUI 配置档事件 ---
     bindPresetEvents();
