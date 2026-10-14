@@ -2370,55 +2370,72 @@ function bindCharTagsEvents() {
     });
 }
 
-// --- 风格美化包 UI:名称 + 替换文本的行内编辑列表(前缀列表同款惯例,change 即写回) ---
-function renderBeautyPackList() {
-    const $list = $('#beauty_pack_list');
-    if (!$list.length) return;
-    $list.empty();
-    const list = ensureBeautyPack();
-    $('#beauty_pack_empty').css('display', list.length ? 'none' : 'block');
-    list.forEach((entry, i) => {
-        const $row = $(`
-            <div class="mag-beauty-row" data-index="${i}">
-                <input type="text" class="text_pole mag-beauty-name" placeholder="名称" title="prompt 里 [%beauty:此名称%] 命中该条" data-i18n="[title]mag_beauty_name_title">
-                <textarea class="text_pole textarea_compact mag-beauty-text" rows="2" placeholder="替换文本(风格/外貌描述)" data-i18n="[placeholder]mag_beauty_text_ph"></textarea>
-                <i class="fa-solid fa-xmark interactable mag-beauty-delete" title="删除此条" data-i18n="[title]mag_beauty_remove"></i>
-            </div>`);
-        $row.find('.mag-beauty-name').val(String(entry.name ?? ''));
-        $row.find('.mag-beauty-text').val(String(entry.text ?? ''));
-        $list.append($row);
-    });
+// --- 风格美化包 UI:整段 JSON 编辑器,实时校验(JSON 语法 + 美化包格式),合法即保存 ---
+/** 当前美化包序列化成编辑框里的 JSON 文本({"风格名": "替换文本"} 对象,保持条目顺序) */
+function beautyPackJsonText() {
+    const obj = {};
+    for (const e of ensureBeautyPack()) obj[String(e.name ?? '')] = String(e.text ?? '');
+    return JSON.stringify(obj, null, 2);
+}
+
+/**
+ * 校验美化包 JSON 文本。规则:合法 JSON / 顶层是对象 / 键非空 / 值为字符串。
+ * @returns {{ok: boolean, error?: string, pack?: {name, text}[]}} 通过时给出规范化条目数组
+ */
+function validateBeautyPackJson(text) {
+    const trimmed = String(text ?? '').trim();
+    if (!trimmed) return { ok: false, error: '内容为空;清空美化包请输入 {}' };
+    let obj;
+    try {
+        obj = JSON.parse(trimmed);
+    } catch (e) {
+        return { ok: false, error: `JSON 语法错误:${e.message}` };
+    }
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) {
+        return { ok: false, error: '格式错误:顶层必须是对象 { "风格名": "替换文本", ... }' };
+    }
+    const pack = [];
+    for (const [name, text] of Object.entries(obj)) {
+        const n = String(name).trim();
+        if (!n) return { ok: false, error: '格式错误:存在空的风格名' };
+        if (typeof text !== 'string') return { ok: false, error: `格式错误:风格「${n}」的值必须是字符串` };
+        pack.push({ name: n, text });
+    }
+    return { ok: true, pack };
+}
+
+/** 校验结果 → 状态行(ok=绿色计数 / err=红色原因) */
+function updateBeautyPackStatus(result) {
+    const $st = $('#beauty_pack_status');
+    if (!$st.length) return;
+    if (result.ok) {
+        $st.attr('class', 'mag_beauty_status mag_beauty_status_ok').text(`格式正确,已保存 ${result.pack.length} 条风格`);
+    } else {
+        $st.attr('class', 'mag_beauty_status mag_beauty_status_err').text(result.error);
+    }
+}
+
+/** 把当前美化包灌进编辑框(焦点在框内时跳过,防 updateUI 重渲打断用户输入/跳光标) */
+function renderBeautyPackEditor() {
+    const $ta = $('#beauty_pack_json');
+    if (!$ta.length) return;
+    if ($ta.is(document.activeElement)) return;
+    const text = beautyPackJsonText();
+    $ta.val(text);
+    updateBeautyPackStatus(validateBeautyPackJson(text));
 }
 
 function bindBeautyPackEvents() {
-    const rowIndex = (el) => Number($(el).closest('.mag-beauty-row').data('index'));
-    const writeEntry = (index, key, value) => {
-        const list = ensureBeautyPack();
-        if (!list[index]) return;
-        list[index][key] = value;
-        saveSettingsDebounced();
-    };
-    // 行内编辑委托到容器(重渲安全,与前缀列表同款)
-    $('#beauty_pack_list')
-        .on('change.beauty', '.mag-beauty-name', function () {
-            writeEntry(rowIndex(this), 'name', $(this).val());
-        })
-        .on('change.beauty', '.mag-beauty-text', function () {
-            writeEntry(rowIndex(this), 'text', $(this).val());
-        })
-        .on('click.beauty', '.mag-beauty-delete', function () {
-            const list = ensureBeautyPack();
-            const idx = rowIndex(this);
-            if (!Number.isInteger(idx) || !list[idx]) return;
-            list.splice(idx, 1);
+    const $ta = $('#beauty_pack_json');
+    if (!$ta.length) return;
+    // 实时校验:输入即解析,合法 → 写回设置;非法 → 只标红提示、不动设置(上次合法值继续生效)
+    $ta.off('input.beauty change.beauty').on('input.beauty change.beauty', function () {
+        const result = validateBeautyPackJson($(this).val());
+        updateBeautyPackStatus(result);
+        if (result.ok) {
+            extension_settings[extensionName].beautyPack = result.pack;
             saveSettingsDebounced();
-            renderBeautyPackList();
-        });
-    $('#beauty_pack_add_btn').off('click.beauty').on('click.beauty', function () {
-        ensureBeautyPack().push({ name: '', text: '' });
-        saveSettingsDebounced();
-        renderBeautyPackList();
-        $('#beauty_pack_list .mag-beauty-row').last().find('.mag-beauty-name').trigger('focus');
+        }
     });
 }
 
@@ -2433,7 +2450,7 @@ function updateUI() {
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
-        renderBeautyPackList();
+        renderBeautyPackEditor();
 
         // --- 新增: 渲染配置档 dropdown 和字段 ---
         renderPresetDropdown();

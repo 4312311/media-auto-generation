@@ -1164,11 +1164,10 @@
     #comfy_prefix_list .mag-prefix-count { width: 40px; flex-shrink: 0; }
     #comfy_prefix_list .mag-prefix-delete { flex-shrink: 0; padding: 8px 4px 0 2px; cursor: pointer; }
 
-    #beauty_pack_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; max-height: 300px; overflow-y: auto; }
-    #beauty_pack_list .mag-beauty-row { display: flex; align-items: flex-start; gap: 6px; }
-    #beauty_pack_list .mag-beauty-name { width: 110px; flex-shrink: 0; margin-top: 4px; }
-    #beauty_pack_list .mag-beauty-text { flex: 1; resize: vertical; min-height: 2.8em; }
-    #beauty_pack_list .mag-beauty-delete { flex-shrink: 0; padding: 8px 4px 0 2px; cursor: pointer; }
+    #beauty_pack_json { width: 100%; margin-top: 4px; }
+    .mag_beauty_status { font-size: 0.85em; margin-top: 3px; min-height: 1.2em; word-break: break-word; }
+    .mag_beauty_status_ok { color: #4caf50; }
+    .mag_beauty_status_err { color: var(--fullred, #f44336); }
 </style>
 
 <div class="mag-tabs-header">
@@ -1448,13 +1447,9 @@
     <div class="flex-container align_center justifySpaceBetween margin-bottom-5">
         <b data-i18n="mag_beauty_title">风格美化包</b>
     </div>
-    <small class="mag-prefix-hint" data-i18n="mag_beauty_hint">生成时把 prompt 里的 [%beauty:名称%] 整体替换为对应文本;名称与条目名一致才命中(全局生效,与配置档无关)</small>
-    <div id="beauty_pack_list"></div>
-    <div id="beauty_pack_empty" class="mag_prefix_empty" style="display:none;" data-i18n="mag_beauty_empty">暂无条目,点下方按钮新增</div>
-    <div id="beauty_pack_add_btn" class="menu_button" style="display: inline-flex; gap: 5px; align-items: center; margin-top: 6px;" title="新增风格" data-i18n="[title]mag_beauty_add">
-        <i class="fa-solid fa-plus interactable"></i>
-        <span data-i18n="mag_beauty_add_label">新增风格</span>
-    </div>
+    <small class="mag-prefix-hint" data-i18n="mag_beauty_hint">生成时把 prompt 里的 [%beauty:名称%] 整体替换为对应文本(全局生效,与配置档无关)。下方 JSON:键=风格名,值=替换文本;实时校验,合法即保存</small>
+    <textarea id="beauty_pack_json" class="text_pole textarea_compact" rows="12" style="font-family: monospace; font-size: 0.85em; resize: vertical;" placeholder='{"风格名": "替换文本", ...}' spellcheck="false"></textarea>
+    <div id="beauty_pack_status" class="mag_beauty_status"></div>
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="gallery" style="display:none;">

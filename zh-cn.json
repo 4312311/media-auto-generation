@@ -140,13 +140,7 @@
     "mag_prefix_remove": "删除此条前缀",
 
     "mag_beauty_title": "风格美化包",
-    "mag_beauty_hint": "生成时把 prompt 里的 [%beauty:名称%] 整体替换为对应文本;名称与条目名一致才命中(全局生效,与配置档无关)",
-    "mag_beauty_empty": "暂无条目,点下方按钮新增",
-    "mag_beauty_add": "新增风格",
-    "mag_beauty_add_label": "新增风格",
-    "mag_beauty_name_title": "prompt 里 [%beauty:此名称%] 命中该条",
-    "mag_beauty_text_ph": "替换文本(风格/外貌描述)",
-    "mag_beauty_remove": "删除此条",
+    "mag_beauty_hint": "生成时把 prompt 里的 [%beauty:名称%] 整体替换为对应文本(全局生效,与配置档无关)。下方 JSON:键=风格名,值=替换文本;实时校验,合法即保存",
 
     "mag_upscale_model": "放大模型(可选)",
     "mag_upscale_none": "不使用",
