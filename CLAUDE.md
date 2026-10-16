@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 功能概览
 
-入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`):
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`)。**tab 栏上方常驻「跳转楼层」行**(2026-10-16 加,自动回复刷出大量楼层后的快速定位):输入楼层号(0 基 = chat 数组下标,与媒体预览「第 N 楼」编号一致)+ 点跳转/回车 → `jumpToFloor` 定位 `#chat .mes[mesid=N]` 平滑滚动(scroll-margin-top 避开顶部悬浮栏,挂在 flash 类上)并蓝色高亮 2s(重加类前强制 reflow,连续跳同楼也再闪;运行时 classList,不写入 mes 无 DOMPurify 前缀问题);范围 0~chat.length-1 校验、无聊天/未渲染 toastr 提示;总数提示 `0 ~ N-1` 随面板打开(toggleFloatingPanel)与 CHAT_CHANGED 刷新:
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
@@ -144,6 +144,7 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 - `applyWorkflowPlaceholders` / `injectUpscaleIntoWorkflowJson` / `generateViaComfy` — ComfyUI 生成管线:占位符替换 → 放大模型注入(preset.upscaleModel 非空时)→ 串行队列发 `/api/sd/comfy/generate`(见功能概览 ComfyUI 配置 tab 行)。生成超时 video 5min / image 1min(视频多帧采样耗时数分钟);`comfyProxy` 支持外部 AbortSignal(手动模式中断用),abort 与超时靠错误消息区分
 - `applyStylePrefixToPrompt` — 正向风格前缀拼接(`generateViaComfyInner` 内唯一拼装点,自动/手动/重生成/测试/重试全路径共用):`[%style%]` 占位符原位替换(split/join 字面全量替换,无 `$` 展开语义)/ `[Shot 1]` 后插入(前缀剥尾逗号补句号、后随逗号改句号分隔)/ 兜底旧前缀拼接;三分支各打一条 console log 便于实跑核对落点。拼装结果即 `finalPrompt`,五个 wrapper 构造点把它 bake 进 `data-final-prompt`(见 buildMediaWrap)
 - `applyBeautyPackToPrompt` / `ensureBeautyPack` / `beautyPackJsonText` / `validateBeautyPackJson` / `renderBeautyPackEditor` / `updateBeautyPackStatus` / `bindBeautyPackEvents` — 风格美化包(见功能概览 chars tab 行):`MAG_BEAUTY_TOKEN_RE` 匹配 `[%beauty:名称%]`,函数替换器免疫 `$` 展开;数组守卫;JSON 编辑器四件套(序列化渲染/校验/状态行/input 实时写回)。调用点在 `generateViaComfyInner` 内 `applyStylePrefixToPrompt` 之后,finalPrompt/manifest/复制链路自动带展开结果
+- `jumpToFloor` / `updateFloorJumpHint` / `bindFloorJumpEvents` — 楼层跳转(见功能概览面板入口行):0 基楼层号 → `.mes[mesid=N]` 滚动 + `mag-jump-flash` 高亮
 - `prefixEntryCount` / `clampPrefixIndex` / `ensurePrefixList` / `migrateLegacyPrefixes` / `pickPositivePrefix` / `renderPrefixList` — 多前缀 + 循环轮换系统(见功能概览 ComfyUI tab 行):次数/选中行钳制读取的两个共享助手;数组守卫;loadSettings 一次性旧字段迁移;生成时取前缀(循环游标推进+持久化,console log 带 row 序号);列表 UI 渲染(行内元素启停归它所有——radio 置灰由循环开关决定,**不能**进 renderPresetFields 那条统一 `prop('disabled', !hasPreset)` 行,统一 enable 会洗掉循环置灰态,E2E 实测过的坑)。duplicatePreset 深拷贝列表+游标归零(浅拷贝会两档共享数组互相污染);fetchAndApplyImportUrl 前缀整体换血为单条列表
 - `buildMediaWrap` — mag-media wrapper 构造(占位符替换/自动/手动/重生成/重试/楼层重生共用):`rawPrompt` 进 `data-prompt`(裸 prompt,ST Regex 还原规则锚点),`finalPrompt`(生成时刻完整拼装,含前缀)可选 bake 进 `data-final-prompt`,`prefixName`(同次生成用的前缀条目名)可选 bake 进 `data-prefix-name`(为空整个属性缺席);`parseMediaWrapper` 对称解析回字段
 - `manualGenerations` / `requestAbortManualGeneration` / `abortManualGeneration` — 手动模式生成中断:loading 态占位符点击 → `callGenericPopup` 确认(终止生成/继续等待)→ abort 前端 fetch + 浏览器直连 ComfyUI `POST /interrupt` 打断后端正在执行的任务(同 LoRA 直连要求 `--enable-cors-header`,失败静默降级)。中断 ≠ 失败:占位符恢复 idle 态(图标/文案还原),可再次点击重新生成;串行队列里后续 job 不受影响继续执行;排队期间被中断的 job 轮到时 fetch 发出前即取消。自动模式与 regenerateMedia 不支持中断(无占位符转圈入口)
@@ -272,3 +273,4 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 11. 复制生成时完整 prompt → 媒体预览行尾复制/预览放大 lightbox/图库 lightbox 复制到的都应是**生成时刻**的完整 prompt(含当时前缀);生成后改前缀或切配置档再复制,内容不变(不动态重拼)。存量媒体(无 `data-final-prompt`)按 url 回查 manifest 兜底,manifest 也删了就退裸 prompt;wrapper 内联复制按钮(聊天楼层里)仍是裸 `data-prompt`,刻意不动
 12. 多前缀循环 → 配 A(1)/B(2)/C(2) 开循环连发:console `style prefix cycle: 使用「名称」(N/M)` 与复制到的 finalPrompt 前缀应按 A,B,B,C,C,A 轮换;某条次数设 0 → 轮换跳过它(A1/B0/C2 → A,C,C 循环);全表 0 → 生成不带前缀;刷新页面后接着上次进度走;关循环恒用 ⊙ 选中行(该行次数 0 也照常使用);改小 count/删行后下一次取值按快进/取模自愈;复制配置档新档从第一条走、两档列表互不影响;旧单值配置档刷新后自动迁移为列表第一项(全档一次性);每行名称输入框改完落盘,刷新后保留(存量条目名称为空正常回退)
 13. 风格美化包 → prompt 带 `[%beauty:清冷御姐%]` 生成:console `beauty pack: 替换「清冷御姐」`,媒体预览行尾复制/图库 lightbox 复制到的是**替换后**完整 prompt(token 不见、value 整段在,与 `[%style%]` 前缀共存各换各的);名称打错 → token 原样保留在 finalPrompt 里 + console warn;角色 tab JSON 编辑框默认预填 10 条、改键值实时校验合法即保存(打错 JSON/顶层非对象/值非字符串 → 红字提示、设置不动),刷新后保留;输 `{}` 清空 → token 不再替换;存量安装刷新后自动带上默认 10 条(未改过设置时)
+14. 楼层跳转 → 面板 tab 栏上方输入楼层号回车/点跳转:聊天平滑滚到该楼并蓝色高亮 2s;输入的 N 与媒体预览「第 N 楼」指同一层(0 基);超范围(> 总数提示的上限)/空输入/无聊天 → toastr 提示不跳;切聊天后总数提示刷新;连续跳同一楼高亮每次都触发

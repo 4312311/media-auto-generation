@@ -142,6 +142,12 @@
     "mag_beauty_title": "风格美化包",
     "mag_beauty_hint": "生成时把 prompt 里的 [%beauty:名称%] 整体替换为对应文本(全局生效,与配置档无关)。下方 JSON:键=风格名,值=替换文本;实时校验,合法即保存",
 
+    "mag_jump_floor": "跳转楼层",
+    "mag_jump_floor_title": "编号同媒体预览的「第 N 楼」,从 0 开始",
+    "mag_jump_floor_ph": "楼层号",
+    "mag_jump_go": "跳转",
+    "mag_jump_go_title": "跳转到该楼层(回车同效)",
+
     "mag_upscale_model": "放大模型(可选)",
     "mag_upscale_none": "不使用",
     "mag_upscale_hint": "选择后生成时自动在输出节点前插入放大链(不改动工作流 JSON);列表来自 ComfyUI 的 models/upscale_models",

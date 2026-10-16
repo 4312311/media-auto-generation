@@ -2613,6 +2613,9 @@ function bindSettingsEvents() {
     // --- 新增: 绑定风格美化包列表事件(行内编辑/增删行) ---
     bindBeautyPackEvents();
 
+    // --- 新增: 绑定楼层跳转事件(按钮/回车) ---
+    bindFloorJumpEvents();
+
     // --- 新增: 绑定 ComfyUI 配置档事件 ---
     bindPresetEvents();
 
@@ -2891,10 +2894,50 @@ function toggleFloatingPanel(force) {
     if (willOpen) {
         moveSettingsTo($(PANEL_BODY_ID));
         $p.css('display', 'flex');
+        updateFloorJumpHint(); // 楼层总数提示随面板打开刷新(自动回复刷层后重开即最新)
     } else {
         $p.css('display', 'none');
         moveSettingsTo($(SETTINGS_HOST_ID));
     }
+}
+
+// --- 楼层跳转(面板 tab 栏上方常驻行):自动回复刷出大量楼层后的快速定位通道 ---
+/** 楼层总数提示:显示 0 基有效范围(编号同媒体预览「第 N 楼」),无聊天时留空 */
+function updateFloorJumpHint() {
+    const chat = getContext().chat || [];
+    $('#mag_floor_jump_total').text(chat.length ? `0 ~ ${chat.length - 1}` : '');
+}
+
+/**
+ * 跳到指定楼层:楼层号 0 基(= chat 数组下标 = 媒体预览「第 N 楼」编号),
+ * 定位 `.mes[mesid=N]` 平滑滚动 + 蓝色高亮 2s(重加 class 前强制 reflow,连续跳同楼也能再闪;
+ * scroll-margin-top 挂在 flash 类上,先加类再滚,落点避开顶部悬浮栏)。
+ */
+function jumpToFloor(raw) {
+    const chat = getContext().chat || [];
+    if (!chat.length) { toastr.warning('当前没有打开的聊天'); return; }
+    const n = Number.parseInt(String(raw ?? '').trim(), 10);
+    if (!Number.isInteger(n)) { toastr.warning('请输入楼层号'); return; }
+    if (n < 0 || n >= chat.length) { toastr.warning(`楼层超出范围(0 ~ ${chat.length - 1})`); return; }
+    const el = document.querySelector(`#chat .mes[mesid="${n}"]`);
+    if (!el) { toastr.warning('未找到该楼层的渲染块,请稍候重试'); return; }
+    el.classList.remove('mag-jump-flash');
+    void el.offsetWidth; // 重启动画
+    el.classList.add('mag-jump-flash');
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    setTimeout(() => el.classList.remove('mag-jump-flash'), 2000);
+}
+
+function bindFloorJumpEvents() {
+    $('#mag_floor_jump_btn').off('click.jump').on('click.jump', function () {
+        jumpToFloor($('#mag_floor_jump_input').val());
+    });
+    $('#mag_floor_jump_input').off('keydown.jump').on('keydown.jump', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            jumpToFloor($(this).val());
+        }
+    });
 }
 
 function initPanelDrag() {
@@ -5810,6 +5853,7 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
     if (inFlightMedia.size > 0) console.warn(`[${extensionName}] CHAT_CHANGED: 清空 ${inFlightMedia.size} 条滞留 in-flight 媒体`);
     inFlightMedia.clear();
     closeMediaPreviewModal();
+    updateFloorJumpHint(); // 楼层总数随聊天切换刷新
     await processAllMessagesForPlaceholders();
     if (extension_settings[extensionName] && extension_settings[extensionName].autoReplace !== 'manual') {
         await healAllFloorsNestedPlaceholders();
