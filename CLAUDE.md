@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 功能概览
 
-入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`)。**tab 栏上方常驻「跳转楼层」行**(2026-10-16 加,自动回复刷出大量楼层后的快速定位):输入楼层号(0 基 = chat 数组下标,与媒体预览「第 N 楼」编号一致)+ 点跳转/回车 → `jumpToFloor` 定位 `#chat .mes[mesid=N]` 平滑滚动(scroll-margin-top 避开顶部悬浮栏,挂在 flash 类上)并蓝色高亮 2s(重加类前强制 reflow,连续跳同楼也再闪;运行时 classList,不写入 mes 无 DOMPurify 前缀问题);范围 0~chat.length-1 校验、无聊天/未渲染 toastr 提示;总数提示 `0 ~ N-1` 随面板打开(toggleFloatingPanel)与 CHAT_CHANGED 刷新:
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`)。**主要配置 tab 顶部有「跳转楼层」行**(2026-10-16 加,自动回复刷出大量楼层后的快速定位,2026-10-20 应用户要求从 tab 栏上方挪进首个 tab):输入楼层号(0 基 = chat 数组下标,与媒体预览「第 N 楼」编号一致)+ 点跳转/回车 → `jumpToFloor` 定位 `#chat .mes[mesid=N]` 平滑滚动(scroll-margin-top 避开顶部悬浮栏,挂在 flash 类上)并蓝色高亮 2s(重加类前强制 reflow,连续跳同楼也再闪;运行时 classList,不写入 mes 无 DOMPurify 前缀问题);范围 0~chat.length-1 校验、无聊天/未渲染 toastr 提示;总数提示 `0 ~ N-1` 随面板打开(toggleFloatingPanel)与 CHAT_CHANGED 刷新:
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|
@@ -273,4 +273,4 @@ ST 默认端口 8000。启动方式按平台(都建议 `tee` 到日志文件,Cla
 11. 复制生成时完整 prompt → 媒体预览行尾复制/预览放大 lightbox/图库 lightbox 复制到的都应是**生成时刻**的完整 prompt(含当时前缀);生成后改前缀或切配置档再复制,内容不变(不动态重拼)。存量媒体(无 `data-final-prompt`)按 url 回查 manifest 兜底,manifest 也删了就退裸 prompt;wrapper 内联复制按钮(聊天楼层里)仍是裸 `data-prompt`,刻意不动
 12. 多前缀循环 → 配 A(1)/B(2)/C(2) 开循环连发:console `style prefix cycle: 使用「名称」(N/M)` 与复制到的 finalPrompt 前缀应按 A,B,B,C,C,A 轮换;某条次数设 0 → 轮换跳过它(A1/B0/C2 → A,C,C 循环);全表 0 → 生成不带前缀;刷新页面后接着上次进度走;关循环恒用 ⊙ 选中行(该行次数 0 也照常使用);改小 count/删行后下一次取值按快进/取模自愈;复制配置档新档从第一条走、两档列表互不影响;旧单值配置档刷新后自动迁移为列表第一项(全档一次性);每行名称输入框改完落盘,刷新后保留(存量条目名称为空正常回退)
 13. 风格美化包 → prompt 带 `[%beauty:清冷御姐%]` 生成:console `beauty pack: 替换「清冷御姐」`,媒体预览行尾复制/图库 lightbox 复制到的是**替换后**完整 prompt(token 不见、value 整段在,与 `[%style%]` 前缀共存各换各的);名称打错 → token 原样保留在 finalPrompt 里 + console warn;角色 tab JSON 编辑框默认预填 10 条、改键值实时校验合法即保存(打错 JSON/顶层非对象/值非字符串 → 红字提示、设置不动),刷新后保留;输 `{}` 清空 → token 不再替换;存量安装刷新后自动带上默认 10 条(未改过设置时)
-14. 楼层跳转 → 面板 tab 栏上方输入楼层号回车/点跳转:聊天平滑滚到该楼并蓝色高亮 2s;输入的 N 与媒体预览「第 N 楼」指同一层(0 基);超范围(> 总数提示的上限)/空输入/无聊天 → toastr 提示不跳;切聊天后总数提示刷新;连续跳同一楼高亮每次都触发
+14. 楼层跳转 → 主要配置 tab 顶部输入楼层号回车/点跳转:聊天平滑滚到该楼并蓝色高亮 2s;只在主要配置 tab 显示,其他 tab 不见;输入的 N 与媒体预览「第 N 楼」指同一层(0 基);超范围(> 总数提示的上限)/空输入/无聊天 → toastr 提示不跳;切聊天后总数提示刷新;连续跳同一楼高亮每次都触发

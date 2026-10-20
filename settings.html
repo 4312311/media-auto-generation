@@ -1187,17 +1187,16 @@
     <div class="mag-tab-btn" data-mag-tab="autoreply" data-i18n="mag_tab_autoreply">自动回复</div>
 </div>
 
-<div id="mag_floor_jump_row" class="flex-container flexnowrap align_center" style="gap: 6px; margin-top: 5px;">
-    <label for="mag_floor_jump_input" class="margin0" title="编号同媒体预览的「第 N 楼」,从 0 开始" data-i18n="[title]mag_jump_floor_title">跳转楼层</label>
-    <input id="mag_floor_jump_input" class="text_pole" type="number" min="0" step="1" placeholder="楼层号" data-i18n="[placeholder]mag_jump_floor_ph" style="flex: 1; min-width: 60px;">
-    <span id="mag_floor_jump_total" style="opacity: 0.6; font-size: 0.85em; white-space: nowrap;"></span>
-    <div id="mag_floor_jump_btn" class="menu_button" style="display: inline-flex; align-items: center; gap: 4px; margin: 0;" title="跳转到该楼层(回车同效)" data-i18n="[title]mag_jump_go_title">
-        <i class="fa-solid fa-location-arrow interactable"></i>
-        <span data-i18n="mag_jump_go">跳转</span>
-    </div>
-</div>
-
 <div class="mag-tab-panel" data-mag-panel="main">
+    <div id="mag_floor_jump_row" class="flex-container flexnowrap align_center" style="gap: 6px;">
+        <label for="mag_floor_jump_input" class="margin0" title="编号同媒体预览的「第 N 楼」,从 0 开始" data-i18n="[title]mag_jump_floor_title">跳转楼层</label>
+        <input id="mag_floor_jump_input" class="text_pole" type="number" min="0" step="1" placeholder="楼层号" data-i18n="[placeholder]mag_jump_floor_ph" style="flex: 1; min-width: 60px;">
+        <span id="mag_floor_jump_total" style="opacity: 0.6; font-size: 0.85em; white-space: nowrap;"></span>
+        <div id="mag_floor_jump_btn" class="menu_button" style="display: inline-flex; align-items: center; gap: 4px; margin: 0;" title="跳转到该楼层(回车同效)" data-i18n="[title]mag_jump_go_title">
+            <i class="fa-solid fa-location-arrow interactable"></i>
+            <span data-i18n="mag_jump_go">跳转</span>
+        </div>
+    </div>
     <div class="flex-container flexnowrap align_center margin-top-5" style="position: relative;">
         <div style="display:flex; align-items:center; gap:5px; flex:1; min-width:0;">
             <label for="auto_replace" class="margin0" data-i18n="mag_generate_mode">生成方式</label>
