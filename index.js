@@ -25,7 +25,19 @@ const extensionFolderPath = `/scripts/extensions/third-party/${extensionName}`;
 
 let isStreamActive = false;
 let streamInterval = null;
-let updateDebounceTimer = null; 
+let updateDebounceTimer = null;
+
+// --- 流式媒体即时显示(MutationObserver 重放层,纯视觉) ---
+// ST 流式每收到一个 chunk 就全量重写最后一楼 .mes_text(script.js onProgressStreaming →
+// innerHTML = 或 applyStreamFadeIn 的 morphdom),中途插进去的媒体元素必然被冲掉。
+// 此观察器在每次重写后的微任务里(浏览器绘制前执行)把已就绪的 in-flight 媒体重新放回
+// DOM——被冲掉的中间态不会绘制到屏幕,用户看到媒体"生成完成即刻出现、之后一直挂着"。
+// 数据层 mes 完全不动:流式结束后的 landInFlightMedia 落地机制原样(落地渲染出真 wrapper
+// 后,observer 按"mes 里裸标签已消失"判定使命完成并拆除)。
+let streamOverlayObserver = null;
+let streamOverlayFloor = -1;       // observer 盯的楼层(mesid = 流式目标楼)
+let streamOverlayQuitTimer = null; // ENDED 后的安全拆除定时器(见 scheduleStreamOverlayQuit)
+const STREAM_OVERLAY_OBSERVE_OPTS = { childList: true, subtree: true, characterData: true };
 
 // 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
 const failedPrompts = new Map();
@@ -74,6 +86,7 @@ const defaultSettings = {
     videoRegex: '/\\[video\\][ \\t]*([\\s\\S]*?)[ \\t]*\\[\\/video\\]|\\[video\\][ \\t]*([^\\n\\[]+)/gi',
     style: 'width:100%;height:auto',
     videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
+    streamInstantPreview: true, // 流式即时显示:true=流式期间生成完成的媒体立即显示在楼层(observer 微任务重放,纯视觉层);false=旧行为,流式结束后统一替换
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     beautyPack: DEFAULT_BEAUTY_PACK, // --- 新增: 风格美化包([{name,text}] 全局共享,prompt 里 [%beauty:名称%] → text) ---
@@ -2447,6 +2460,7 @@ function updateUI() {
         $('#media_style').val(extension_settings[extensionName].style);
         $('#auto_replace').val(extension_settings[extensionName].autoReplace);
         $('#video_default_sound').prop('checked', !!extension_settings[extensionName].videoDefaultSound);
+        $('#stream_instant_preview').prop('checked', extension_settings[extensionName].streamInstantPreview !== false);
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -2581,6 +2595,13 @@ function bindSettingsEvents() {
         saveSettingsDebounced();
         // 已渲染在 DOM 的楼层视频立即生效(attachFloorVideoControl 有 WeakSet 挡重复,不会自己重跑)
         document.querySelectorAll('#chat [data-mag-id] video').forEach(v => applyVideoMuted(v, videoShouldMute()));
+    });
+    $('#stream_instant_preview').on('change', function () {
+        extension_settings[extensionName].streamInstantPreview = $(this).prop('checked');
+        saveSettingsDebounced();
+        // 关闭即拆:已在屏的 overlay 元素随下一个 chunk 的 ST 重写自然消失(不再重放),
+        // 行为回到"流式期间只显示裸标签,流式结束后统一落地"
+        if (!$(this).prop('checked')) detachStreamOverlay('开关关闭');
     });
     $('#auto_replace').on('change', function () {
         extension_settings[extensionName].autoReplace = $(this).val();
@@ -3205,6 +3226,175 @@ async function landInFlightMedia() {
     return landed;
 }
 
+// --- 流式媒体即时显示:观察器三件套(ensureStreamOverlayAttached / applyStreamOverlay / detachStreamOverlay) ---
+
+/**
+ * 弹性标签正则源码:markdown 渲染会把 \n 变 <br>/段落、折叠空白,标签原文在 .mes_text 的
+ * textContent 里不再逐字符相等时,按"非空白 token 转义 + \s+ 连接"模糊匹配定位。
+ * 失配兜底:prompt 含 * 强调/反引号等被 markdown 吃掉字符的场景正则也配不上 → 该条目放弃
+ * 视觉替换(裸标签照旧显示),流式结束后的落地机制照常工作——最坏退回现状,不会更糟。
+ * @returns {string|null} 正则源码;originalTag 无非空白字符时返回 null
+ */
+function fuzzyTagRegexSource(originalTag) {
+    const tokens = String(originalTag).split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return null;
+    return tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+}
+
+/**
+ * 在 rootEl 的文本内容里定位 originalTag(先逐字符 indexOf 精确匹配,失配退弹性正则),
+ * 把 [start, start+len) 文本区间整体替换为 node(Range 手术)。支持标签文本被 markdown/
+ * fade-in 分段拆进多个节点(分段 span 包裹不改 textContent,跨 <br>/段落由弹性空白吸收)。
+ * @returns {boolean} 是否成功替换
+ */
+function replaceBareTagRange(rootEl, originalTag, node) {
+    const text = rootEl.textContent;
+    if (!text) return false;
+    let start = -1;
+    let len = 0;
+    const idx = text.indexOf(originalTag);
+    if (idx >= 0) {
+        start = idx;
+        len = originalTag.length;
+    } else {
+        const src = fuzzyTagRegexSource(originalTag);
+        if (src) {
+            const m = new RegExp(src).exec(text);
+            if (m) { start = m.index; len = m[0].length; }
+        }
+    }
+    if (start < 0) return false;
+    // TreeWalker 累计文本长度,把字符区间映射到具体文本节点 + 节点内偏移
+    const walker = document.createTreeWalker(rootEl, NodeFilter.SHOW_TEXT);
+    let consumed = 0;
+    let startNode = null;
+    let startOff = 0;
+    let endNode = null;
+    let endOff = 0;
+    let n;
+    while ((n = walker.nextNode())) {
+        const nodeLen = n.data.length;
+        if (startNode === null && consumed + nodeLen > start) {
+            startNode = n;
+            startOff = start - consumed;
+        }
+        if (consumed + nodeLen >= start + len) {
+            endNode = n;
+            endOff = start + len - consumed;
+            break;
+        }
+        consumed += nodeLen;
+    }
+    if (!startNode || !endNode) return false;
+    const range = document.createRange();
+    range.setStart(startNode, startOff);
+    range.setEnd(endNode, endOff);
+    range.deleteContents();
+    range.insertNode(node);
+    return true;
+}
+
+/**
+ * 核心重放:把流式目标楼里"已就绪媒体的裸标签"在 DOM 视觉层换成媒体元素。
+ * 两个调用点:observer 回调(ST 每 chunk 重写后的微任务,绘制前)+ 生成成功回调(媒体
+ * 刚就绪,不等下一个 chunk)。断开 → 改 → 重挂:断开期间自身写 DOM 产生的 mutation 不入
+ * 队(防重入),重挂用最新查询到的 .mes_text 元素(被整体替换时自动愈合)。
+ */
+function applyStreamOverlay() {
+    if (!streamOverlayObserver) return;
+    // ENDED 后只保留安全定时器窗口内的桥接(200ms 防抖落地 + 10s 完成兜底都在 15s 内)
+    if (!isStreamActive && !streamOverlayQuitTimer) return;
+    const targetEl = document.querySelector(`#chat .mes[mesid="${streamOverlayFloor}"] .mes_text`);
+    if (!targetEl) { detachStreamOverlay('楼层 DOM 不存在'); return; }
+
+    const msg = getContext().chat?.[streamOverlayFloor];
+    const mes = typeof msg?.mes === 'string' ? msg.mes : '';
+    const entries = [...inFlightMedia.entries()].filter(([, e]) => e.floor === streamOverlayFloor && e.mediaTag);
+    if (entries.length === 0) {
+        if (!isStreamActive) detachStreamOverlay('无待显示条目');
+        return;
+    }
+    // 数据层判定(拆除依据):裸标签还在 mes 里吗?本楼全部待显示条目的标签都已消失 = 已落地
+    // (landInFlightMedia 把标签换成了 wrapper)或楼层被编辑 → 视觉层使命完成。逐条判定而
+    // 非只看 DOM 里有没有 wrapper:continue 楼可能本来就带着旧落地媒体,不能一票拆除。
+    if (!entries.some(([, e]) => e.originalTag && mes.includes(e.originalTag))) {
+        detachStreamOverlay('mes 里裸标签已消失(落地完成/楼层被编辑)');
+        return;
+    }
+
+    streamOverlayObserver.disconnect();
+    let swapped = 0;
+    try {
+        for (const [, entry] of entries) {
+            if (!entry.originalTag || !mes.includes(entry.originalTag)) continue; // 该条已落地,跳过
+            const tpl = document.createElement('template');
+            tpl.innerHTML = entry.mediaTag;
+            const node = tpl.content.firstElementChild;
+            if (!node) continue;
+            node.setAttribute('data-mag-stream-overlay', '1'); // 瞬态标记:诊断/与落地 wrapper 区分
+            if (replaceBareTagRange(targetEl, entry.originalTag, node)) swapped++;
+        }
+    } finally {
+        streamOverlayObserver.observe(targetEl, STREAM_OVERLAY_OBSERVE_OPTS);
+    }
+    if (swapped > 0) {
+        console.log(`[${extensionName}] 流式即时显示: 已上屏 ${swapped} 个媒体(纯视觉层,持久化仍待流式结束落地)`);
+        scanFloorVideos(); // 视频挂自动播放控制(每 chunk 重建的新元素都要重新 attach,WeakSet 按 element 记不会误判)
+    }
+}
+
+/**
+ * 惰性挂载/自愈:流式 500ms 轮询每 tick 调(幂等便宜)。不在 GENERATION_STARTED 直接挂——
+ * 普通回复此刻楼层 DOM 还没建(首个 chunk 到达才 saveReply 建楼),continue/swipe 则预先
+ * 存在;每 tick 查一次,楼层出现即挂上。楼层变化 / .mes_text 被整体替换(printMessages
+ * 全量重渲等)→ 拆旧挂新;ENDED 安全窗内新流式开始 → 撤掉拆除定时器继续服役。
+ */
+function ensureStreamOverlayAttached() {
+    if (!isStreamActive) return;
+    if (streamOverlayQuitTimer) { clearTimeout(streamOverlayQuitTimer); streamOverlayQuitTimer = null; }
+    const s = extension_settings[extensionName];
+    if (!s || s.streamInstantPreview === false || s.autoReplace === 'manual') {
+        detachStreamOverlay('功能关闭');
+        return;
+    }
+    const chat = getContext().chat;
+    if (!chat || chat.length === 0) return;
+    const floor = chat.length - 1;
+    if (streamOverlayObserver) {
+        const alive = streamOverlayFloor === floor
+            && !!document.querySelector(`#chat .mes[mesid="${floor}"] .mes_text`);
+        if (alive) return;
+        detachStreamOverlay(streamOverlayFloor === floor ? '目标元素失联,重挂' : '楼层已变化,重挂');
+    }
+    const mesTextEl = document.querySelector(`#chat .mes[mesid="${floor}"] .mes_text`);
+    if (!mesTextEl) return; // 楼层 DOM 未建(首 chunk 未到),下个 tick 再试
+    streamOverlayFloor = floor;
+    streamOverlayObserver = new MutationObserver(() => applyStreamOverlay());
+    streamOverlayObserver.observe(mesTextEl, STREAM_OVERLAY_OBSERVE_OPTS);
+    console.log(`[${extensionName}] 流式即时显示: observer 挂载(floor=${floor})`);
+}
+
+/** 拆除观察器(所有路径的统一出口,幂等) */
+function detachStreamOverlay(reason) {
+    if (streamOverlayQuitTimer) { clearTimeout(streamOverlayQuitTimer); streamOverlayQuitTimer = null; }
+    if (streamOverlayObserver) console.log(`[${extensionName}] 流式即时显示: observer 拆除(${reason})`);
+    streamOverlayObserver?.disconnect();
+    streamOverlayObserver = null;
+    streamOverlayFloor = -1;
+}
+
+/**
+ * ENDED 后不立刻拆:保留 observer 桥接"ST 最终渲染(从累积器渲染,还是裸标签)→ 200ms
+ * 防抖落地渲染(真 wrapper)"之间的空窗——不桥接的话结束时裸标签会闪一下。落地渲染会触发
+ * observer 回调、按数据层判定自行拆除;安全定时器兜底强拆(失败占位符渲染、落地异常等
+ * 所有路径都在 15s 内完成,防 observer 泄漏挂在已停的流上)。
+ */
+function scheduleStreamOverlayQuit() {
+    if (!streamOverlayObserver) return;
+    clearTimeout(streamOverlayQuitTimer);
+    streamOverlayQuitTimer = setTimeout(() => detachStreamOverlay('ENDED 后安全定时器'), 15000);
+}
+
 /**
  * 处理消息内容
  * @param {boolean} isFinal 是否是最终检查
@@ -3399,6 +3589,13 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
                     await landInFlightMedia();
                 } else {
                     setTimeout(() => { landInFlightMedia(); }, 10000);
+                }
+
+                // 流式即时显示:媒体一就绪立刻上屏(纯视觉层),不等下一个 chunk 触发 observer
+                // 重放。ENDED 安全窗内完成的慢生成也照常上屏(落地由 10s 兜底重试接手)。
+                if (isStreamActive || streamOverlayObserver) {
+                    ensureStreamOverlayAttached();
+                    applyStreamOverlay();
                 }
 
             } catch (error) {
@@ -5800,6 +5997,7 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
             return;
         }
         processMessageContent(false, true);
+        ensureStreamOverlayAttached(); // 流式即时显示:惰性挂载 + 楼层跟随/失联自愈
     }, 500);
 });
 
@@ -5816,6 +6014,9 @@ const onGenerationFinished = async () => {
     pruneOldPrompts();
     // 流式结束，申请一次最终更新
     requestDebouncedUpdate(true);
+    // 流式即时显示:不立刻拆 observer——桥接"最终渲染(裸标签)→ 防抖落地(真 wrapper)"
+    // 的空窗,落地渲染触发 observer 按数据层判定自行拆除;15s 安全定时器兜底
+    scheduleStreamOverlayQuit();
 };
 
 eventSource.on(event_types.GENERATION_ENDED, onGenerationFinished);
@@ -5852,6 +6053,7 @@ eventSource.on(event_types.CHAT_CHANGED, async () => {
     }
     if (inFlightMedia.size > 0) console.warn(`[${extensionName}] CHAT_CHANGED: 清空 ${inFlightMedia.size} 条滞留 in-flight 媒体`);
     inFlightMedia.clear();
+    detachStreamOverlay('切聊天');
     closeMediaPreviewModal();
     updateFloorJumpHint(); // 楼层总数随聊天切换刷新
     await processAllMessagesForPlaceholders();

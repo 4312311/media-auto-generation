@@ -24,6 +24,8 @@
     "mag_auto_replace_manual_desc": "不自动生成,消息里显示可点击占位符,点击后才生成",
     "mag_video_default_sound": "视频默认播放声音",
     "mag_video_default_sound_hint": "开启:所有视频(聊天楼层/图库大图/媒体预览/测试预览)默认带声音播放;关闭:默认静音,需手动点开声音",
+    "mag_stream_instant": "流式即时显示媒体",
+    "mag_stream_instant_hint": "开启:流式输出期间生成完成的图片/视频立即显示在楼层里(SillyTavern 每 chunk 重写消息会把它冲掉,插件在每帧绘制前自动放回,肉眼看是一直挂着);关闭:流式期间只显示标签文本,流式结束后统一替换。仅影响显示时机,数据层流式结束都会落地持久化。",
     "Character Fixed Tags": "角色固定特征",
     "Auto inject tags to prompt": "自动将特征注入到提示词中",
     "Name (e.g. Lisa)": "角色名 (例如: Lisa)",
