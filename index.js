@@ -37,14 +37,6 @@ let updateDebounceTimer = null;
 let streamOverlayObserver = null;
 let streamOverlayFloor = -1;       // observer 盯的楼层(mesid = 流式目标楼)
 let streamOverlayQuitTimer = null; // ENDED 后的安全拆除定时器(见 scheduleStreamOverlayQuit)
-// 媒体元素复用缓存:key = promptHash(与 inFlightMedia 条目同生命周期),value = 媒体元素
-// (img/video)。ST 每 chunk 重写会把 wrapper 壳连同媒体元素一起拆掉(innerHTML 整体换 /
-// morphdom 把节点 morph 成文字),但"从文档摘除 ≠ 销毁"——持有 JS 引用的元素对象连同
-// 已解码帧/currentTime/缓冲数据都活着。视频冷启动(拉元数据→初始化解码器→解首帧→起播)
-// 上百毫秒,逐 chunk 重建 = "黑框→首帧"反复的肉眼闪烁(2026-10-27 实测:图片无感、视频
-// 明显);复用同一元素重挂则瞬间出画面、播放从断点续,闪烁消除。图片同样受益(免重复解码)。
-// 生命周期与 inFlightMedia 对齐:条目消费(落地)/observer 拆除时释放清理。
-const streamOverlayMediaCache = new Map();
 const STREAM_OVERLAY_OBSERVE_OPTS = { childList: true, subtree: true, characterData: true };
 
 // 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
@@ -3303,46 +3295,6 @@ function replaceBareTagRange(rootEl, originalTag, node) {
 }
 
 /**
- * 构造 overlay wrapper 节点,媒体元素(img/video)从缓存复用:壳每 chunk 重建(被 ST 拆的
- * 是壳,便宜),贵的媒体芯持有引用跨 chunk 存活——视频的已解码帧/currentTime/缓冲都在,
- * 重挂瞬间出画面、播放从断点续(见 streamOverlayMediaCache 注释)。
- * @returns {HTMLElement|null} 带 data-mag-stream-overlay 标记的 wrapper 节点
- */
-function buildOverlayNodeCached(promptHash, mediaTag) {
-    const tpl = document.createElement('template');
-    tpl.innerHTML = mediaTag;
-    const node = tpl.content.firstElementChild;
-    if (!node) return null;
-    const media = node.querySelector('img, video');
-    if (media) {
-        const cached = streamOverlayMediaCache.get(promptHash);
-        if (cached && !cached.isConnected) {
-            if (cached.tagName === media.tagName) {
-                media.replaceWith(cached); // 复用:壳新芯旧
-            } else {
-                streamOverlayMediaCache.set(promptHash, media); // 媒体类型变了(理论不可达):换芯登记
-            }
-        } else {
-            // 无缓存 → 登记本元素供后续 chunk 复用;缓存元素仍连着 DOM(上一轮壳没被拆的
-            // 残留态)→ 用新壳,缓存改指新元素,旧元素拆掉后由 GC 收
-            streamOverlayMediaCache.set(promptHash, media);
-        }
-    }
-    return node;
-}
-
-/** 清理媒体元素缓存:释放指定 key(或全部)的元素资源。视频 pause+摘 src+load() 让浏览器
- * 立即回收解码器/缓冲,不等 GC;元素已不在文档,无视觉副作用 */
-function releaseOverlayMediaCache(keys) {
-    const list = keys || [...streamOverlayMediaCache.keys()];
-    for (const key of list) {
-        const el = streamOverlayMediaCache.get(key);
-        streamOverlayMediaCache.delete(key);
-        if (el instanceof HTMLVideoElement) releaseVideoEl($(el));
-    }
-}
-
-/**
  * 核心重放:把流式目标楼里"已就绪媒体的裸标签"在 DOM 视觉层换成媒体元素。
  * 两个调用点:observer 回调(ST 每 chunk 重写后的微任务,绘制前)+ 生成成功回调(媒体
  * 刚就绪,不等下一个 chunk)。断开 → 改 → 重挂:断开期间自身写 DOM 产生的 mutation 不入
@@ -3373,9 +3325,11 @@ function applyStreamOverlay() {
     streamOverlayObserver.disconnect();
     let swapped = 0;
     try {
-        for (const [hash, entry] of entries) {
+        for (const [, entry] of entries) {
             if (!entry.originalTag || !mes.includes(entry.originalTag)) continue; // 该条已落地,跳过
-            const node = buildOverlayNodeCached(hash, entry.mediaTag);
+            const tpl = document.createElement('template');
+            tpl.innerHTML = entry.mediaTag;
+            const node = tpl.content.firstElementChild;
             if (!node) continue;
             node.setAttribute('data-mag-stream-overlay', '1'); // 瞬态标记:诊断/与落地 wrapper 区分
             if (replaceBareTagRange(targetEl, entry.originalTag, node)) swapped++;
@@ -3383,14 +3337,9 @@ function applyStreamOverlay() {
     } finally {
         streamOverlayObserver.observe(targetEl, STREAM_OVERLAY_OBSERVE_OPTS);
     }
-    // 缓存清理:inFlightMedia 已消费(落地)或丢弃的 hash 不再需要媒体元素缓存,释放解码资源
-    const stale = [...streamOverlayMediaCache.keys()].filter((k) => !inFlightMedia.has(k));
-    if (stale.length > 0) releaseOverlayMediaCache(stale);
     if (swapped > 0) {
         console.log(`[${extensionName}] 流式即时显示: 已上屏 ${swapped} 个媒体(纯视觉层,持久化仍待流式结束落地)`);
-        scanFloorVideos(); // 视频挂自动播放控制;复用元素有 WeakSet 挡不重复 attach,新元素(首次/换芯)照常 attach
-        resolveFloorVideoPlayback(); // 重挂的视频被浏览器的"摘除即暂停"掐过后,IO 在同帧 detach+reattach 下
-        // 可能不发回调 → 没人重启播放;主动跑一次单播裁决,winner 从 currentTime 断点续播
+        scanFloorVideos(); // 视频挂自动播放控制(每 chunk 重建的新元素都要重新 attach,WeakSet 按 element 记不会误判)
     }
 }
 
@@ -3425,15 +3374,13 @@ function ensureStreamOverlayAttached() {
     console.log(`[${extensionName}] 流式即时显示: observer 挂载(floor=${floor})`);
 }
 
-/** 拆除观察器(所有路径的统一出口,幂等);媒体复用缓存一并释放(落地真 wrapper 已渲染,
- * 缓存元素的历史使命结束;'失联重挂'路径也走这里,重挂后下一次上屏冷启动一次属可接受代价) */
+/** 拆除观察器(所有路径的统一出口,幂等) */
 function detachStreamOverlay(reason) {
     if (streamOverlayQuitTimer) { clearTimeout(streamOverlayQuitTimer); streamOverlayQuitTimer = null; }
     if (streamOverlayObserver) console.log(`[${extensionName}] 流式即时显示: observer 拆除(${reason})`);
     streamOverlayObserver?.disconnect();
     streamOverlayObserver = null;
     streamOverlayFloor = -1;
-    releaseOverlayMediaCache();
 }
 
 /**
