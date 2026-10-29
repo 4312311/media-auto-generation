@@ -1099,7 +1099,7 @@
     #media_auto_gen_panel_body .mag-preset-thumb.active .mag-preset-thumb-badge { display: flex; }
 
     /* --- LoRA 强度编辑(从工作流 JSON 自动提取) --- */
-    #comfy_lora_list, #comfy_prefix_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+    #comfy_lora_list { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
     #comfy_lora_list .mag-lora-row { display: flex; align-items: center; gap: 6px; }
     #comfy_lora_list .mag-lora-name {
         flex: 1;
@@ -1153,16 +1153,22 @@
         border-radius: 5px;
         margin-top: 4px;
     }
-    /* 正向前缀列表(多前缀 + 循环轮换) */
+    /* 提示词风格三件套(缩略图网格复用 .mag-preset-thumb 那套样式 + 编辑器字段) */
     .mag-prefix-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
     .mag-prefix-cycle-label { display: inline-flex; align-items: center; gap: 4px; font-size: 0.9em; cursor: pointer; margin: 0; }
     .mag-prefix-hint { opacity: 0.7; font-size: 0.85em; display: block; margin-top: 2px; }
-    #comfy_prefix_list .mag-prefix-row { display: flex; align-items: flex-start; gap: 6px; }
-    #comfy_prefix_list .mag-prefix-active { margin-top: 8px; flex-shrink: 0; }
-    #comfy_prefix_list .mag-prefix-name { width: 90px; flex-shrink: 0; margin-top: 4px; }
-    #comfy_prefix_list .mag-prefix-text { flex: 1; resize: vertical; min-height: 2.8em; }
-    #comfy_prefix_list .mag-prefix-count { width: 40px; flex-shrink: 0; }
-    #comfy_prefix_list .mag-prefix-delete { flex-shrink: 0; padding: 8px 4px 0 2px; cursor: pointer; }
+    #mag_style_gallery { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px; }
+    @media (max-width: 480px) {
+        #mag_style_gallery { grid-template-columns: repeat(3, 1fr); }
+    }
+    #mag_style_editor .mag-style-field { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+    #mag_style_editor .mag-style-field > label { font-size: 0.85em; opacity: 0.85; }
+    #mag_style_editor .mag-style-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    #mag_style_count { width: 72px; flex-shrink: 0; }
+    #mag_style_img { width: 100%; max-height: 140px; object-fit: contain; border-radius: 5px; cursor: pointer; display: block; }
+    #mag_style_img_actions { position: absolute; top: 4px; right: 4px; gap: 4px; }
+    .mag_style_img_empty { padding: 14px 10px !important; }
+    .mag_style_img_empty i { font-size: 1.1em !important; }
 
     #beauty_pack_json { width: 100%; margin-top: 4px; }
     .mag_beauty_status { font-size: 0.85em; margin-top: 3px; min-height: 1.2em; word-break: break-word; }
@@ -1382,25 +1388,59 @@
         </div>
     </div>
 
-    <div class="margin-top-5" id="comfy_prefix_wrap">
+    <div class="margin-top-5" id="mag_style_wrap">
         <div class="mag-prefix-head">
-            <label for="comfy_prefix_list" data-i18n="Positive Prompt Prefix">Positive Prompt Prefix</label>
-            <label class="mag-prefix-cycle-label" for="comfy_prefix_cycle" title="开启后每次生成按各条的次数自动轮换前缀;关闭时固定使用选中的那条" data-i18n="[title]mag_prefix_cycle_title">
-                <input type="checkbox" id="comfy_prefix_cycle">
-                <span data-i18n="mag_prefix_cycle">循环前缀</span>
+            <label data-i18n="mag_style_title">Prompt Styles</label>
+            <label class="mag-prefix-cycle-label" for="mag_style_cycle" title="开启后每次生成按各条的次数整组轮换(前缀/后缀/负面一起换);关闭时固定使用选中的那条" data-i18n="[title]mag_style_cycle_title">
+                <input type="checkbox" id="mag_style_cycle">
+                <span data-i18n="mag_style_cycle">循环风格</span>
             </label>
         </div>
-        <small class="mag-prefix-hint" data-i18n="mag_prefix_hint">循环开:按各条「次数」自动轮换;关:用 ⊙ 选中的那条(次数存着,开循环才生效)</small>
-        <div id="comfy_prefix_list"></div>
-        <div id="comfy_prefix_empty" class="mag_prefix_empty" style="display:none;" data-i18n="mag_prefix_empty">暂无前缀,点下方按钮新增</div>
-        <div id="comfy_prefix_add_btn" class="menu_button" style="display: inline-flex; gap: 5px; align-items: center; margin-top: 6px;" title="新增前缀" data-i18n="[title]mag_prefix_add">
-            <i class="fa-solid fa-plus interactable"></i>
-            <span data-i18n="mag_prefix_add_label">新增前缀</span>
+        <small class="mag-prefix-hint" data-i18n="mag_style_hint">循环开:按各条「次数」整组轮换前缀/后缀/负面;关:用 ✓ 选中的那条</small>
+        <div id="mag_style_gallery"></div>
+        <div id="mag_style_editor" style="display:none;">
+            <div id="mag_style_img_wrap" class="margin-top-5" style="position: relative;">
+                <div id="mag_style_img_empty" class="comfy_preview_empty mag_style_img_empty">
+                    <i class="fa-solid fa-image"></i>
+                    <span data-i18n="mag_style_img_empty">点击上传风格图</span>
+                </div>
+                <img id="mag_style_img" alt="style" style="display:none;" />
+                <div id="mag_style_img_actions" style="display:none;">
+                    <div id="mag_style_img_change" class="menu_button menu_button_icon" title="更换图片" data-i18n="[title]mag_style_img_change"><i class="fa-solid fa-rotate"></i></div>
+                    <div id="mag_style_img_delete" class="menu_button menu_button_icon" title="删除图片" data-i18n="[title]mag_style_img_delete"><i class="fa-solid fa-trash"></i></div>
+                </div>
+                <input type="file" id="mag_style_img_input" accept="image/*" hidden />
+            </div>
+            <div class="mag-style-field margin-top-5">
+                <label for="mag_style_name" data-i18n="mag_style_name">名称</label>
+                <input type="text" id="mag_style_name" class="text_pole" placeholder="便于识别的短名称(可空)" data-i18n="[placeholder]mag_style_name_ph">
+            </div>
+            <div class="mag-style-field">
+                <label for="mag_style_prefix" data-i18n="Positive Prompt Prefix">Positive Prompt Prefix</label>
+                <textarea id="mag_style_prefix" class="text_pole textarea_compact" rows="2" placeholder="masterpiece, best quality, ..."></textarea>
+            </div>
+            <div class="mag-style-field">
+                <label for="mag_style_suffix" data-i18n="mag_style_suffix">Positive Prompt Suffix</label>
+                <textarea id="mag_style_suffix" class="text_pole textarea_compact" rows="2" placeholder="highres, absurdres, ..." data-i18n="[placeholder]mag_style_suffix_ph"></textarea>
+            </div>
+            <div class="mag-style-field">
+                <label for="mag_style_negative" data-i18n="Negative Prompt Prefix">Negative Prompt</label>
+                <textarea id="mag_style_negative" class="text_pole textarea_compact" rows="2" placeholder="lowres, bad anatomy, ..."></textarea>
+            </div>
+            <div class="mag-style-row">
+                <label for="mag_style_count" data-i18n="mag_style_count">循环次数</label>
+                <input type="number" id="mag_style_count" class="text_pole" min="0" step="1" value="1" title="循环时该风格连续生成的次数;0=跳过" data-i18n="[title]mag_style_count_title">
+                <div id="mag_style_remove_btn" class="menu_button" style="margin-left: auto;" title="删除此风格" data-i18n="[title]mag_style_remove">
+                    <i class="fa-solid fa-trash interactable"></i>
+                    <span data-i18n="mag_style_remove">删除此风格</span>
+                </div>
+            </div>
         </div>
-    </div>
-    <div class="margin-top-5">
-        <label for="comfy_neg_prefix" data-i18n="Negative Prompt Prefix">Negative Prompt Prefix</label>
-        <textarea id="comfy_neg_prefix" class="text_pole textarea_compact" rows="2" placeholder="lowres, bad anatomy, ..."></textarea>
+        <div id="mag_style_empty" class="mag_prefix_empty" style="display:none;" data-i18n="mag_style_empty">暂无风格,点下方按钮新增</div>
+        <div id="mag_style_add_btn" class="menu_button" style="display: inline-flex; gap: 5px; align-items: center; margin-top: 6px;" title="新增风格" data-i18n="[title]mag_style_add">
+            <i class="fa-solid fa-plus interactable"></i>
+            <span data-i18n="mag_style_add_label">新增风格</span>
+        </div>
     </div>
     <div class="margin-top-5" style="position: relative;">
         <div style="display:flex; align-items:center; gap:5px;">
