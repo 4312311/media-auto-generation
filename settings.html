@@ -1170,6 +1170,132 @@
     .mag_style_img_empty { padding: 14px 10px !important; }
     .mag_style_img_empty i { font-size: 1.1em !important; }
 
+    /* --- 风格图裁剪编辑器(JS 懒挂 #mag_crop_modal 到 body;上传/换图先裁剪再走上传通路) ---
+       z-index 在媒体预览(2147483640)之上、lightbox(2147483650)之下 */
+    #mag_crop_modal {
+        position: fixed;
+        top: 0; left: 0;
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        z-index: 2147483645;
+        background: rgba(0,0,0,0.6);
+        display: none;
+    }
+    #mag_crop_modal.open { display: block; }
+    #mag_crop_modal .mag-crop-dialog {
+        position: absolute;
+        left: 50%; top: 50%;
+        transform: translate(-50%, -50%);
+        width: min(560px, 92vw);
+        max-height: 88vh;
+        max-height: 88dvh;
+        display: flex;
+        flex-direction: column;
+        background: var(--SmartThemeBlurTintColor, rgba(30,30,30,0.95));
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+        border-radius: 10px;
+        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        overflow: hidden;
+    }
+    #mag_crop_modal .mag-crop-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+        flex-shrink: 0;
+    }
+    #mag_crop_modal .mag-crop-title { font-weight: 600; flex: 1; }
+    #mag_crop_modal .mag-crop-aspect-btn {
+        cursor: pointer;
+        padding: 3px 10px;
+        border-radius: 5px;
+        border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.2));
+        background: transparent;
+        color: var(--SmartThemeBodyColor);
+        font-size: 0.85em;
+        opacity: 0.75;
+    }
+    #mag_crop_modal .mag-crop-aspect-btn.active {
+        border-color: var(--SmartThemeQuoteColor, #4a8cff);
+        color: var(--SmartThemeQuoteColor, #4a8cff);
+        opacity: 1;
+    }
+    #mag_crop_modal .mag-crop-stage {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+        touch-action: none; /* 触屏拖选框/把手不被浏览器滚动手势接管 */
+    }
+    #mag_crop_modal .mag-crop-canvas { position: relative; font-size: 0; max-width: 100%; }
+    #mag_crop_modal .mag-crop-canvas img {
+        display: block;
+        max-width: 100%;
+        max-height: min(56vh, 56dvh);
+        user-select: none;
+        -webkit-user-drag: none;
+    }
+    /* 选框:box-shadow 无限扩散 = 选框外遮罩(stage overflow:hidden 裁边),免单独遮罩层 */
+    #mag_crop_modal .mag-crop-box {
+        position: absolute;
+        box-shadow: 0 0 0 9999px rgba(0,0,0,0.55);
+        border: 1px solid rgba(255,255,255,0.9);
+        cursor: move;
+        touch-action: none;
+    }
+    /* 三分构图辅助线(1/3、2/4 竖横各两条) */
+    #mag_crop_modal .mag-crop-box::before {
+        content: '';
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+            linear-gradient(90deg, transparent calc(33.33% - 0.5px), rgba(255,255,255,0.3) calc(33.33% - 0.5px), rgba(255,255,255,0.3) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+            linear-gradient(90deg, transparent calc(66.66% - 0.5px), rgba(255,255,255,0.3) calc(66.66% - 0.5px), rgba(255,255,255,0.3) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px)),
+            linear-gradient(0deg, transparent calc(33.33% - 0.5px), rgba(255,255,255,0.3) calc(33.33% - 0.5px), rgba(255,255,255,0.3) calc(33.33% + 0.5px), transparent calc(33.33% + 0.5px)),
+            linear-gradient(0deg, transparent calc(66.66% - 0.5px), rgba(255,255,255,0.3) calc(66.66% - 0.5px), rgba(255,255,255,0.3) calc(66.66% + 0.5px), transparent calc(66.66% + 0.5px));
+    }
+    #mag_crop_modal .mag-crop-handle {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        background: #fff;
+        border: 1px solid rgba(0,0,0,0.5);
+        border-radius: 50%;
+        box-sizing: border-box;
+    }
+    @media (pointer: coarse) {
+        #mag_crop_modal .mag-crop-handle { width: 20px; height: 20px; }
+    }
+    #mag_crop_modal .mag-crop-handle[data-dir="nw"] { left: -7px; top: -7px; cursor: nwse-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="n"]  { left: calc(50% - 7px); top: -7px; cursor: ns-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="ne"] { right: -7px; top: -7px; cursor: nesw-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="e"]  { right: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="se"] { right: -7px; bottom: -7px; cursor: nwse-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="s"]  { left: calc(50% - 7px); bottom: -7px; cursor: ns-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="sw"] { left: -7px; bottom: -7px; cursor: nesw-resize; }
+    #mag_crop_modal .mag-crop-handle[data-dir="w"]  { left: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+    /* 1:1 锁定:只留四角把手 */
+    #mag_crop_modal .mag-crop-box.is-aspect .mag-crop-handle[data-dir="n"],
+    #mag_crop_modal .mag-crop-box.is-aspect .mag-crop-handle[data-dir="e"],
+    #mag_crop_modal .mag-crop-box.is-aspect .mag-crop-handle[data-dir="s"],
+    #mag_crop_modal .mag-crop-box.is-aspect .mag-crop-handle[data-dir="w"] { display: none; }
+    #mag_crop_modal .mag-crop-footer {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        padding: 10px 14px;
+        border-top: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+        flex-shrink: 0;
+    }
+
     #beauty_pack_json { width: 100%; margin-top: 4px; }
     .mag_beauty_status { font-size: 0.85em; margin-top: 3px; min-height: 1.2em; word-break: break-word; }
     .mag_beauty_status_ok { color: #4caf50; }

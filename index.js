@@ -1764,7 +1764,7 @@ function bindStyleImageEvents() {
     $('#mag_style_img_input').off('.styleimg').on('change.styleimg', function (e) {
         const f = e.target.files?.[0];
         e.target.value = ''; // 清空,允许下次还能选同一文件
-        if (f) uploadStyleImageFile(f);
+        if (f) openStyleImageCrop(f); // 先裁剪,确认/跳过后才真正上传
     });
     $('#mag_style_img_empty').off('.styleimg').on('click.styleimg', triggerPick);
     $('#mag_style_img').off('.styleimg').on('click.styleimg', triggerPick);
@@ -1785,6 +1785,245 @@ function bindStyleImageEvents() {
         renderStyleGallery(preset);
         await deleteStyleImage(oldPath);
     });
+}
+
+// --- 风格图裁剪编辑器(上传/换图先弹裁剪,确认后把裁剪产物当文件走 uploadStyleImageFile;跳过=原图直传) ---
+
+/** 裁剪会话状态:pendingFile 待上传原图、objUrl 预览用 objectURL、rect 选框(显示坐标)、aspect 1=锁定 1:1 / null=自由 */
+const styleCropState = { pendingFile: null, objUrl: null, rect: null, aspect: null };
+/** 选框最小边(px,显示坐标),小于此无法再缩小,也防边角互相穿过 */
+const STYLE_CROP_MIN = 24;
+
+/**
+ * 裁剪选框几何(纯函数,便于单测):由起点 rect + 拖动方向/位移算新 rect(显示坐标系,0,0 = 图片左上角)。
+ * dir 含 e/s/w/n(可组合,如 'se');aspect=1 时只走四角(边把手已隐藏)且锁定正方形——
+ * 以 |dx|,|dy| 中绝对值大者定边长,再按未越界方向钳制(越界的对角充当锚点)。
+ * @returns {{x:number,y:number,w:number,h:number}}
+ */
+function computeCropResize(start, dir, dx, dy, W, H, aspect) {
+    if (dir === 'move') {
+        const x = clamp(start.x + dx, 0, W - start.w);
+        const y = clamp(start.y + dy, 0, H - start.h);
+        return { x, y, w: start.w, h: start.h };
+    }
+    if (aspect === 1) {
+        let s = start.w;
+        if (dir === 'se') s = start.w + Math.max(dx, dy);
+        else if (dir === 'nw') s = start.w - Math.max(dx, dy);
+        else if (dir === 'ne') s = start.w + Math.max(dx, -dy);
+        else if (dir === 'sw') s = start.w + Math.max(-dx, dy);
+        // 越界钳制:拖出图片边界的方向停住,对角保持不动
+        if (dir.includes('e')) s = Math.min(s, W - start.x);
+        if (dir.includes('w')) s = Math.min(s, start.x + start.w);
+        if (dir.includes('s')) s = Math.min(s, H - start.y);
+        if (dir.includes('n')) s = Math.min(s, start.y + start.h);
+        s = Math.max(s, STYLE_CROP_MIN);
+        const x = dir.includes('w') ? start.x + start.w - s : start.x;
+        const y = dir.includes('n') ? start.y + start.h - s : start.y;
+        return { x, y, w: s, h: s };
+    }
+    // 自由比例:每个方向位独立调自己那条边(MIN 防对边穿过)
+    const r = { x: start.x, y: start.y, w: start.w, h: start.h };
+    if (dir.includes('e')) r.w = clamp(start.w + dx, STYLE_CROP_MIN, W - start.x);
+    if (dir.includes('s')) r.h = clamp(start.h + dy, STYLE_CROP_MIN, H - start.y);
+    if (dir.includes('w')) {
+        const x = clamp(start.x + dx, 0, start.x + start.w - STYLE_CROP_MIN);
+        r.x = x;
+        r.w = start.x + start.w - x;
+    }
+    if (dir.includes('n')) {
+        const y = clamp(start.y + dy, 0, start.y + start.h - STYLE_CROP_MIN);
+        r.y = y;
+        r.h = start.y + start.h - y;
+    }
+    return r;
+}
+
+/** 懒挂裁剪 modal 到 body + 一次性绑定交互(pointer 事件,选择框拖动/8 把手/比例切换/按钮) */
+function ensureStyleCropModal() {
+    if ($('#mag_crop_modal').length) return;
+    $('body').append(`
+        <div id="mag_crop_modal">
+            <div class="mag-crop-dialog">
+                <div class="mag-crop-header">
+                    <span class="mag-crop-title" data-i18n="mag_crop_title">裁剪风格图</span>
+                    <button type="button" class="mag-crop-aspect-btn" data-aspect="free" data-i18n="mag_crop_aspect_free">自由</button>
+                    <button type="button" class="mag-crop-aspect-btn" data-aspect="1:1">1:1</button>
+                    <div class="preview-modal-close" title="关闭" data-i18n="[title]mag_crop_close">
+                        <i class="fa-solid fa-xmark"></i>
+                    </div>
+                </div>
+                <div class="mag-crop-stage">
+                    <div class="mag-crop-canvas">
+                        <img id="mag_crop_img" alt="">
+                        <div class="mag-crop-box">
+                            <div class="mag-crop-handle" data-dir="nw"></div>
+                            <div class="mag-crop-handle" data-dir="n"></div>
+                            <div class="mag-crop-handle" data-dir="ne"></div>
+                            <div class="mag-crop-handle" data-dir="e"></div>
+                            <div class="mag-crop-handle" data-dir="se"></div>
+                            <div class="mag-crop-handle" data-dir="s"></div>
+                            <div class="mag-crop-handle" data-dir="sw"></div>
+                            <div class="mag-crop-handle" data-dir="w"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mag-crop-footer">
+                    <button type="button" id="mag_crop_skip" class="menu_button" data-i18n="mag_crop_skip">跳过,用原图</button>
+                    <button type="button" id="mag_crop_cancel" class="menu_button" data-i18n="mag_crop_cancel">取消</button>
+                    <button type="button" id="mag_crop_confirm" class="menu_button" data-i18n="mag_crop_confirm">确认裁剪</button>
+                </div>
+            </div>
+        </div>
+    `);
+    const $m = $('#mag_crop_modal');
+    const box = document.querySelector('#mag_crop_modal .mag-crop-box');
+
+    // 比例切换:1:1 时把当前选框就地归正(短边为准、以左上角锚定裁齐)
+    $m.find('.mag-crop-aspect-btn').on('click', function () {
+        const aspect = this.dataset.aspect === '1:1' ? 1 : null;
+        setStyleCropAspect(aspect, renderStyleCropBox);
+    });
+
+    // 拖动/缩放:pointerdown 分发(move = 选框内非把手区),pointer capture 让 move/up 不丢
+    let drag = null;
+    $(box).on('pointerdown', function (e) {
+        const img = document.getElementById('mag_crop_img');
+        if (!img || !img.clientWidth || !styleCropState.rect) return;
+        const handle = e.target.closest('.mag-crop-handle');
+        drag = {
+            dir: handle ? handle.dataset.dir : 'move',
+            px: e.clientX,
+            py: e.clientY,
+            start: { ...styleCropState.rect },
+            W: img.clientWidth,
+            H: img.clientHeight,
+        };
+        e.preventDefault();
+        this.setPointerCapture(e.pointerId);
+    });
+    $(box).on('pointermove', function (e) {
+        if (!drag) return;
+        styleCropState.rect = computeCropResize(
+            drag.start, drag.dir, e.clientX - drag.px, e.clientY - drag.py, drag.W, drag.H, styleCropState.aspect);
+        renderStyleCropBox();
+    });
+    const endDrag = () => { drag = null; };
+    $(box).on('pointerup pointercancel', endDrag);
+
+    $m.find('.preview-modal-close').on('click', closeStyleCropModal);
+    $m.find('#mag_crop_cancel').on('click', closeStyleCropModal);
+    $m.find('#mag_crop_skip').on('click', () => {
+        const f = styleCropState.pendingFile;
+        closeStyleCropModal();
+        if (f) uploadStyleImageFile(f);
+    });
+    $m.find('#mag_crop_confirm').on('click', applyStyleCrop);
+    // 点暗色遮罩关闭(=取消);ESC 同
+    $m.on('click', (e) => {
+        if ($(e.target).closest('.mag-crop-dialog').length) return;
+        closeStyleCropModal();
+    });
+    $(document).off('keydown.styleCrop').on('keydown.styleCrop', (e) => {
+        if (e.key === 'Escape' && $m.hasClass('open')) closeStyleCropModal();
+    });
+}
+
+/** 把当前选框 rect 渲染到 DOM(openStyleImageCrop 初始化与拖动共用) */
+function renderStyleCropBox() {
+    const r = styleCropState.rect;
+    if (!r) return;
+    $('#mag_crop_modal .mag-crop-box').css({
+        left: r.x, top: r.y, width: r.w, height: r.h,
+    });
+}
+
+/** 比例切换(ensureStyleCropModal 绑定与 openStyleImageCrop 恢复上次选择共用):1:1 时选框就地归正 */
+function setStyleCropAspect(aspect, onRectChange) {
+    const img = document.getElementById('mag_crop_img');
+    styleCropState.aspect = aspect;
+    $('#mag_crop_modal .mag-crop-aspect-btn').each(function () {
+        $(this).toggleClass('active', (this.dataset.aspect === '1:1') === (aspect === 1));
+    });
+    $('#mag_crop_modal .mag-crop-box').toggleClass('is-aspect', aspect === 1);
+    if (aspect === 1 && styleCropState.rect && img?.clientWidth) {
+        const W = img.clientWidth, H = img.clientHeight;
+        const s = clamp(Math.min(styleCropState.rect.w, styleCropState.rect.h), STYLE_CROP_MIN, Math.min(W, H));
+        styleCropState.rect = {
+            x: clamp(styleCropState.rect.x, 0, W - s),
+            y: clamp(styleCropState.rect.y, 0, H - s),
+            w: s, h: s,
+        };
+        onRectChange?.();
+    }
+}
+
+/** 打开裁剪编辑器:file 读成 objectURL 显示,选框初始化为居中 80% 正方形;非图片类型原样放行走上传通路报错 */
+function openStyleImageCrop(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+        uploadStyleImageFile(file);
+        return;
+    }
+    ensureStyleCropModal();
+    styleCropState.pendingFile = file;
+    if (styleCropState.objUrl) URL.revokeObjectURL(styleCropState.objUrl);
+    styleCropState.objUrl = URL.createObjectURL(file);
+    const img = document.getElementById('mag_crop_img');
+    img.onload = () => {
+        const W = img.clientWidth, H = img.clientHeight;
+        if (!W || !H) return;
+        const s = Math.min(W, H) * 0.8;
+        styleCropState.rect = {
+            x: (W - s) / 2,
+            y: (H - s) / 2,
+            w: s,
+            h: s,
+        };
+        renderStyleCropBox();
+        // 恢复上次会话选的比例(默认自由);1:1 时归正后的 rect 借 onRectChange 重渲
+        setStyleCropAspect(styleCropState.aspect, renderStyleCropBox);
+    };
+    img.src = styleCropState.objUrl;
+    $('#mag_crop_modal').addClass('open');
+}
+
+/** 关闭裁剪编辑器(取消/确认/跳过共用出口):回收 objectURL 防泄漏 */
+function closeStyleCropModal() {
+    styleCropState.pendingFile = null;
+    if (styleCropState.objUrl) {
+        URL.revokeObjectURL(styleCropState.objUrl);
+        styleCropState.objUrl = null;
+    }
+    styleCropState.rect = null;
+    $('#mag_crop_modal').removeClass('open');
+}
+
+/** 确认裁剪:选框(显示坐标)映射回图像自然坐标 → canvas 裁剪 → jpeg blob 当文件走 uploadStyleImageFile */
+async function applyStyleCrop() {
+    const img = document.getElementById('mag_crop_img');
+    const r = styleCropState.rect;
+    if (!img?.naturalWidth || !r) return;
+    const scaleX = img.naturalWidth / img.clientWidth;
+    const scaleY = img.naturalHeight / img.clientHeight;
+    const sx = clamp(r.x * scaleX, 0, img.naturalWidth - 1);
+    const sy = clamp(r.y * scaleY, 0, img.naturalHeight - 1);
+    const sw = Math.max(1, Math.min(r.w * scaleX, img.naturalWidth - sx));
+    const sh = Math.max(1, Math.min(r.h * scaleY, img.naturalHeight - sy));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(sw);
+    canvas.height = Math.round(sh);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; // jpeg 无 alpha,透明 PNG 先铺白底防裁出黑块
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+    closeStyleCropModal();
+    if (!blob) {
+        toastr.error('裁剪导出失败,请重试');
+        return;
+    }
+    await uploadStyleImageFile(new File([blob], 'style-crop.jpg', { type: 'image/jpeg' }));
 }
 
 /** 渲染当前 preset 的预览图区域(空状态/有图) */
