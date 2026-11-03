@@ -8,7 +8,7 @@ SillyTavern (ST) 第三方前端插件。基于 wickedcode01 的 image-auto-gene
 
 ## 功能概览
 
-入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`)。**主要配置 tab 顶部有「跳转楼层」行**(2026-10-16 加,自动回复刷出大量楼层后的快速定位,2026-10-20 应用户要求从 tab 栏上方挪进首个 tab):输入楼层号(0 基 = chat 数组下标,与媒体预览「第 N 楼」编号一致)+ 点跳转/回车 → `jumpToFloor` 定位 `#chat .mes[mesid=N]` 平滑滚动(scroll-margin-top 避开顶部悬浮栏,挂在 flash 类上)并蓝色高亮 2s(重加类前强制 reflow,连续跳同楼也再闪;运行时 classList,不写入 mes 无 DOMPurify 前缀问题);范围 0~chat.length-1 校验、无聊天/未渲染 toastr 提示;总数提示 `0 ~ N-1` 随面板打开(toggleFloatingPanel)与 CHAT_CHANGED 刷新:
+入口:右下角浮动按钮 `#media_auto_gen_float_btn` → 展开可拖动浮窗 `#media_auto_gen_panel_body`,内含 6 个 tab(对应 `settings.html` 的 `.mag-tab-btn` / `.mag-tab-panel`)。**tab 栏吸顶**(2026-11-03 加):`panel_body` 是滚动容器,`.mag-tabs-header` 设 `position:sticky; top:0` 钉在可视区顶,下滑内容时 tab 恒可见可点——配套改动:panel_body 的顶部 padding 归零挪进 tab 栏自身(padding:10px 10px 4px,否则 sticky top:0 落点歧义 + 栏上方漏 10px 缝隙),负侧 margin(`0 -10px`)撑满滚动容器内宽让分隔线贯通,背景 `--SmartThemeBlurTintColor` + backdrop blur 挡住从栏下滚过的内容(栏是透明按钮网格,无背景会透字);z-index 5,低于行内帮助 popover(1000,滚动时 popover 越过 tab 栏画在其上属可接受边界)。手机端 tab 换行成多行时整块吸顶,同样生效。**主要配置 tab 顶部有「跳转楼层」行**(2026-10-16 加,自动回复刷出大量楼层后的快速定位,2026-10-20 应用户要求从 tab 栏上方挪进首个 tab):输入楼层号(0 基 = chat 数组下标,与媒体预览「第 N 楼」编号一致)+ 点跳转/回车 → `jumpToFloor` 定位 `#chat .mes[mesid=N]` 平滑滚动(scroll-margin-top 避开顶部悬浮栏,挂在 flash 类上)并蓝色高亮 2s(重加类前强制 reflow,连续跳同楼也再闪;运行时 classList,不写入 mes 无 DOMPurify 前缀问题);范围 0~chat.length-1 校验、无聊天/未渲染 toastr 提示;总数提示 `0 ~ N-1` 随面板打开(toggleFloatingPanel)与 CHAT_CHANGED 刷新:
 
 | Tab | data-mag-tab | 干什么 |
 |---|---|---|

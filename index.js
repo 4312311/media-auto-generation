@@ -3234,7 +3234,8 @@ function createFloatingUI(settingsHtml) {
     $('#media_auto_gen_panel_close').css({ 'cursor': 'pointer', 'font-size': '20px' });
 
     $('#media_auto_gen_panel_body')
-        .attr('style', 'padding:10px; overflow-y:auto; flex:1;')
+        // 顶部 padding 归零挪给吸顶的 tab 栏(settings.html .mag-tabs-header),否则 sticky top:0 的落点歧义 + 栏上方漏 10px 缝隙
+        .attr('style', 'padding:0 10px 10px; overflow-y:auto; flex:1;')
         .empty();
 
     // --- 魔法棒快速菜单入口(#extensionsMenu,消息框旁的扩展菜单) ---

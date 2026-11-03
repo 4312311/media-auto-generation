@@ -1,11 +1,19 @@
 <style>
+    /* tab 栏吸顶:滚动容器(panel_body)的顶部 padding 已挪到这里(见 index.js panel_body 样式),
+       top:0 无歧义钉在可视区顶;负侧 margin 撑满滚动容器内宽(分隔线贯通),背景挡住滚过的内容 */
     #media_auto_gen_panel_body .mag-tabs-header {
+        position: sticky;
+        top: 0;
+        z-index: 5;
         display: flex;
         flex-wrap: wrap;
         gap: 4px;
         border-bottom: 1px solid var(--SmartThemeBorderColor);
-        margin-bottom: 10px;
-        padding-bottom: 4px;
+        margin: 0 -10px 10px;
+        padding: 10px 10px 4px;
+        background: var(--SmartThemeBlurTintColor);
+        backdrop-filter: blur(6px);
+        -webkit-backdrop-filter: blur(6px);
     }
     #media_auto_gen_panel_body .mag-tab-btn {
         flex: 0 0 auto;
