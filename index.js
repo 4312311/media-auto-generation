@@ -5490,10 +5490,14 @@ function ensureMediaPreviewModal() {
         mediaPreviewPendingFilter = this.checked;
         renderMediaPreviewModal();
     });
-    // 点暗色遮罩关闭(对话框内的点击不关)
+    // 点暗色遮罩空白(容器本体/顶栏点击层/缝)或 body 空白区(内容行之间、底部 padding——
+    // 内容不满屏时弹窗内下方一大片空白,用户把它当"空白处"点击,必须同样关闭)→ 关闭;
+    // 点 header/媒体行/占位卡/分隔行等实体内容不关(防误触重试按钮/滚动条拖动后误关)
     $m.on('click', (e) => {
-        if ($(e.target).closest('.preview-modal-dialog').length) return;
-        closeMediaPreviewModal();
+        const $t = $(e.target);
+        if (!$t.closest('.preview-modal-dialog').length || $t.is('.preview-modal-body')) {
+            closeMediaPreviewModal();
+        }
     });
     $(document).on('keydown.mediaPreview', (e) => {
         // lightbox 开着时 ESC 优先关 lightbox,不关本浮窗
