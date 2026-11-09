@@ -394,7 +394,7 @@
         left: 50%;
         top: 50%;
         transform: translate(-50%, -50%);
-        width: min(560px, 90vw);
+        width: calc(100vw - 24px); /* 占满屏宽,左右各留 12px 边距 */
         max-height: 78vh;
         max-height: 78dvh;
         display: flex;
@@ -617,10 +617,9 @@
         pointer-events: none;
         opacity: 0.5;
     }
-    /* 手机端整体再缩一档,避免占屏过大 */
+    /* 手机端高度再缩一档,避免占屏过大(宽度保持近全宽) */
     @media (max-width: 500px) {
         #mag_media_preview_modal .preview-modal-dialog {
-            width: 86vw;
             max-height: 68vh;
             max-height: 68dvh;
         }
