@@ -379,10 +379,13 @@
        z-index 与 group modal 同层(2147483640),lightbox(2147483650)在其之上 */
     #mag_media_preview_modal {
         position: fixed;
-        top: 0; left: 0;
+        /* 遮罩从 ST 操作栏下缘开始(--topBarBlockSize 随用户字号缩放),操作栏完全露出可点,
+           不再被半透明遮罩压住(z-index 3005 远低于本浮窗,只能靠错开区域让路) */
+        top: var(--topBarBlockSize, 40px);
+        left: 0;
         width: 100vw;
-        height: 100vh;
-        height: 100dvh;
+        height: calc(100vh - var(--topBarBlockSize, 40px));
+        height: calc(100dvh - var(--topBarBlockSize, 40px));
         z-index: 2147483640;
         background: rgba(0,0,0,0.6);
         display: none;
@@ -390,26 +393,32 @@
     #mag_media_preview_modal.open { display: block; }
     #mag_media_preview_modal .preview-modal-dialog {
         position: absolute;
-        /* ST 全局 html { perspective:1000px } 让 right/bottom 失效,只用 left/top + transform 居中 */
+        /* ST 全局 html { perspective:1000px } 让 right/bottom 失效,只用 left/top + transform */
         left: 50%;
-        top: 50%;
-        transform: translate(-50%, -50%);
-        width: 100vw; /* 外部无边距,紧贴屏幕边缘 */
-        height: 100vh;
-        height: 100dvh;
+        top: 10px; /* 相对遮罩顶缝 */
+        transform: translateX(-50%);
+        /* 桌面居中合理宽(不满屏);四周留缝露出遮罩,点缝即关浮窗 */
+        width: min(760px, calc(100vw - 48px));
+        height: calc(100% - 26px); /* 顶缝 10px + 底缝 16px */
         display: flex;
         flex-direction: column;
         background: var(--SmartThemeBlurTintColor, rgba(30,30,30,0.95));
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
-        border-radius: 0; /* 全屏贴合后圆角会在屏幕四角漏缝,归零 */
+        border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+        border-radius: 10px; /* 四角不再贴屏幕角,圆角不会漏缝 */
+        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
         overflow: hidden;
+    }
+    /* 手机端保持左右贴边(桌面上限 760px 在手机上不会命中,媒体查询兜底窄屏) */
+    @media (max-width: 480px) {
+        #mag_media_preview_modal .preview-modal-dialog { width: 100vw; }
     }
     #mag_media_preview_modal .preview-modal-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 10px 14px;
+        padding: 10px 8px;
         border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
         flex-shrink: 0;
     }
@@ -428,7 +437,7 @@
     #mag_media_preview_modal .preview-modal-close:hover { opacity: 1; }
     #mag_media_preview_modal .preview-modal-body {
         overflow-y: auto;
-        padding: 10px 12px 26px; /* 底部预留较大边距,滚动到底时内容不贴对话框下沿 */
+        padding: 10px 4px 26px; /* 左右收窄(用户要求),底部预留较大边距,滚动到底时内容不贴对话框下沿 */
         flex: 1;
         min-height: 0;
     }
@@ -480,14 +489,14 @@
     }
     #mag_media_preview_modal .preview-media-row {
         margin-bottom: 10px;
-        padding: 0 6px; /* 图片左右留一点边距,不顶满对话框 */
+        padding: 0 4px; /* 图片左右留一点边距,不顶满对话框(与 body 4px 合计 8px,用户要求收窄) */
     }
     #mag_media_preview_modal .preview-media-declare {
         color: var(--SmartThemeBodyColor, #fff);
         font-size: 0.85em;
         opacity: 0.8;
         white-space: pre-wrap;
-        padding: 0 0 5px; /* 与 row 的 6px 内边距对齐图片左缘 */
+        padding: 0 0 5px; /* 无左右 padding,与 row 内边距对齐图片左缘 */
     }
     #mag_media_preview_modal .preview-media-time {
         color: var(--SmartThemeBodyColor, #fff);
