@@ -394,17 +394,15 @@
         left: 50%;
         top: 50%;
         transform: translate(-50%, -50%);
-        width: calc(100vw - 24px); /* 占满屏宽,左右各留 12px 边距 */
-        max-height: 78vh;
-        max-height: 78dvh;
+        width: 100vw; /* 外部无边距,紧贴屏幕边缘 */
+        height: 100vh;
+        height: 100dvh;
         display: flex;
         flex-direction: column;
         background: var(--SmartThemeBlurTintColor, rgba(30,30,30,0.95));
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
-        border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
-        border-radius: 10px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+        border-radius: 0; /* 全屏贴合后圆角会在屏幕四角漏缝,归零 */
         overflow: hidden;
     }
     #mag_media_preview_modal .preview-modal-header {
@@ -616,13 +614,6 @@
     #mag_media_preview_modal .preview-pending-retry-btn.busy {
         pointer-events: none;
         opacity: 0.5;
-    }
-    /* 手机端高度再缩一档,避免占屏过大(宽度保持近全宽) */
-    @media (max-width: 500px) {
-        #mag_media_preview_modal .preview-modal-dialog {
-            max-height: 68vh;
-            max-height: 68dvh;
-        }
     }
     /* --- 角色固定特征:行内编辑 --- */
     #media_auto_gen_panel_body .char-tag-row {
