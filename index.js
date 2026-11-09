@@ -5465,6 +5465,8 @@ function ensureMediaPreviewModal() {
     if ($('#mag_media_preview_modal').length) return;
     $('body').append(`
         <div id="mag_media_preview_modal">
+            <!-- 透明点击层,盖住被让出去的 ST 顶栏区域;点击经容器级遮罩委托关闭浮窗(不在 dialog 内即关) -->
+            <div class="preview-topbar-catch"></div>
             <div class="preview-modal-dialog">
                 <div class="preview-modal-header">
                     <span class="preview-modal-title" data-i18n="mag_media_preview_title">媒体预览</span>

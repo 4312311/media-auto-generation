@@ -379,27 +379,37 @@
        z-index 与 group modal 同层(2147483640),lightbox(2147483650)在其之上 */
     #mag_media_preview_modal {
         position: fixed;
-        /* 遮罩从 ST 操作栏下缘开始(--topBarBlockSize 随用户字号缩放),操作栏完全露出可点,
-           不再被半透明遮罩压住(z-index 3005 远低于本浮窗,只能靠错开区域让路) */
+        /* 遮罩区域 = 顶栏下缘 → 输入栏上缘(--topBarBlockSize / --bottomFormBlockSize 均随用户字号缩放):
+           顶栏 z-index 3005 压不过本浮窗 2147483640,只能错开区域让路;
+           输入栏可被用户拉伸变高(resize:vertical),多出来的部分会被遮罩盖住,单行默认态不受影响 */
         top: var(--topBarBlockSize, 40px);
         left: 0;
         width: 100vw;
-        height: calc(100vh - var(--topBarBlockSize, 40px));
-        height: calc(100dvh - var(--topBarBlockSize, 40px));
+        height: calc(100vh - var(--topBarBlockSize, 40px) - var(--bottomFormBlockSize, 36px));
+        height: calc(100dvh - var(--topBarBlockSize, 40px) - var(--bottomFormBlockSize, 36px));
         z-index: 2147483640;
         background: rgba(0,0,0,0.6);
         display: none;
     }
     #mag_media_preview_modal.open { display: block; }
+    /* 顶栏点击层:盖住被让出去的 ST 顶栏区域(fixed 相对 viewport,容器无 transform 不截胡;
+       容器 display:none 时一并隐藏,开关同步免费)。透明不可见,点击=关闭浮窗(与点遮罩空白同语义) */
+    #mag_media_preview_modal .preview-topbar-catch {
+        position: fixed;
+        top: 0; left: 0;
+        width: 100vw;
+        height: var(--topBarBlockSize, 40px);
+        cursor: pointer;
+    }
     #mag_media_preview_modal .preview-modal-dialog {
         position: absolute;
         /* ST 全局 html { perspective:1000px } 让 right/bottom 失效,只用 left/top + transform */
         left: 50%;
-        top: 10px; /* 相对遮罩顶缝 */
+        top: 4px; /* 相对遮罩顶缝,贴近顶栏 */
         transform: translateX(-50%);
         /* 桌面居中合理宽(不满屏);四周留缝露出遮罩,点缝即关浮窗 */
         width: min(760px, calc(100vw - 48px));
-        height: calc(100% - 26px); /* 顶缝 10px + 底缝 16px */
+        height: calc(100% - 12px); /* 顶缝 4px + 底缝 8px */
         display: flex;
         flex-direction: column;
         background: var(--SmartThemeBlurTintColor, rgba(30,30,30,0.95));
