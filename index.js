@@ -87,6 +87,7 @@ const defaultSettings = {
     style: 'width:100%;height:auto',
     videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
     streamInstantPreview: true, // 流式即时显示:true=流式期间生成完成的媒体立即显示在楼层(observer 微任务重放,纯视觉层);false=旧行为,流式结束后统一替换
+    promptLogEnabled: true, // 请求日志:记录每次发 ComfyUI 的最终 prompt(调试用;仅存内存环形缓冲,不进 settings)
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     beautyPack: DEFAULT_BEAUTY_PACK, // --- 新增: 风格美化包([{name,text}] 全局共享,prompt 里 [%beauty:名称%] → text) ---
@@ -935,9 +936,29 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
 
+    // 请求日志(调试):发出前记录最终拼装的 prompt,结果回写状态(见下方请求日志模块)
+    const logEntry = extension_settings[extensionName].promptLogEnabled !== false
+        ? recordPromptLog({
+            ts: Date.now(),
+            mediaType,
+            prompt: finalPrompt,
+            negative: negativePrompt,
+            prefixName: stylePick.name,
+            presetName: preset.name,
+            status: 'pending',
+        })
+        : null;
+
     // 视频生成耗时可达数分钟(大模型+多帧采样),超时 5min;图片 30s
     const timeoutMs = mediaType === 'video' ? 300_000 : 30_000;
-    const result = await comfyProxy('generate', body, timeoutMs, signal);
+    let result;
+    try {
+        result = await comfyProxy('generate', body, timeoutMs, signal);
+        updatePromptLogStatus(logEntry, 'ok');
+    } catch (err) {
+        updatePromptLogStatus(logEntry, 'error', err?.message || err);
+        throw err;
+    }
     const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
 
     const context = getContext();
@@ -946,6 +967,99 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const url = await saveBase64AsFile(result.data, charName, filename, format);
 
     return { url, format, character: charName, finalPrompt, prefixName: stylePick.name };
+}
+
+// --- 请求日志(调试用,「请求日志」tab):记录每次发给 ComfyUI 的最终 prompt ---
+
+/** 环形缓冲上限:只留最近 N 条(调试场景看近期就够,防长挂机无限增长) */
+const PROMPT_LOG_MAX = 50;
+/** 内存日志条目:[{ ts, mediaType, prompt, negative, prefixName, presetName, status: pending|ok|error, error }]。刻意不持久化——调试用途,刷新清空,避免 prompt 文本膨胀 settings.json */
+const promptLog = [];
+
+/**
+ * 记录一条发送日志(generateViaComfyInner 在 comfyProxy 发出前调用;promptLogEnabled 关时不记)。
+ * 返回条目引用,调用方拿到结果后经 updatePromptLogStatus 回写 ok/error——列表即时从"生成中"变终态。
+ */
+function recordPromptLog(entry) {
+    promptLog.push(entry);
+    if (promptLog.length > PROMPT_LOG_MAX) promptLog.splice(0, promptLog.length - PROMPT_LOG_MAX);
+    renderPromptLogList();
+    return entry;
+}
+
+/** 回写单条日志的结果状态并重渲列表(logEntry 为 null 时是开关关闭路径,静默跳过) */
+function updatePromptLogStatus(entry, status, error) {
+    if (!entry) return;
+    entry.status = status;
+    entry.error = error ? String(error).slice(0, 300) : '';
+    renderPromptLogList();
+}
+
+/** 渲染请求日志列表(新→旧;动态注入内容沿用本插件惯例硬编码中文,不走 data-i18n) */
+function renderPromptLogList() {
+    const $list = $('#prompt_log_list');
+    if (!$list.length) return;
+    $('#prompt_log_count').text(`${promptLog.length}/${PROMPT_LOG_MAX}`);
+    if (!promptLog.length) {
+        $list.empty().append('<div class="prompt-log-empty"><i class="fa-solid fa-file-lines" style="font-size:1.4em;"></i><div style="margin-top:6px;">暂无记录,生成一次媒体后出现在这里(开关关闭期间不记录)</div></div>');
+        return;
+    }
+    $list.empty();
+    // 从尾往头渲 = 最新在最上;复制按钮读 data-prompt 属性(转义后),不依赖数组下标
+    for (let i = promptLog.length - 1; i >= 0; i--) {
+        const e = promptLog[i];
+        const time = new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false });
+        const statusText = e.status === 'ok' ? '成功' : (e.status === 'error' ? '失败' : '生成中');
+        const typeIcon = e.mediaType === 'video' ? 'fa-video' : 'fa-image';
+        const typeText = e.mediaType === 'video' ? '视频' : '图片';
+        const styleBadge = e.prefixName ? ` · <span class="prompt-log-style">${escapeHtmlAttribute(e.prefixName)}</span>` : '';
+        const presetBadge = e.presetName ? ` · <span class="prompt-log-preset">${escapeHtmlAttribute(e.presetName)}</span>` : '';
+        const errorHtml = (e.status === 'error' && e.error) ? `<div class="prompt-log-error">⚠️ ${escapeHtmlAttribute(e.error)}</div>` : '';
+        const negHtml = e.negative
+            ? `<div class="prompt-log-label"><span>负面</span><i class="fa-solid fa-copy prompt-log-copy-btn" title="复制负面提示词" data-prompt="${escapeHtmlAttribute(e.negative)}"></i></div><div class="prompt-log-text">${escapeHtmlAttribute(e.negative)}</div>`
+            : '';
+        $list.append(`
+            <div class="prompt-log-entry ${e.status}">
+                <div class="prompt-log-head">
+                    <span class="prompt-log-time">${time}</span>
+                    <i class="fa-solid ${typeIcon}" title="${typeText}"></i>
+                    <span class="prompt-log-status">${statusText}</span>${styleBadge}${presetBadge}
+                </div>
+                <div class="prompt-log-label"><span>正向</span><i class="fa-solid fa-copy prompt-log-copy-btn" title="复制正向提示词" data-prompt="${escapeHtmlAttribute(e.prompt)}"></i></div>
+                <div class="prompt-log-text">${escapeHtmlAttribute(e.prompt)}</div>
+                ${negHtml}
+                ${errorHtml}
+            </div>`);
+    }
+}
+
+/** 请求日志 tab 事件:开关持久化 / 清空 / 复制(委托,列表整体重渲不丢绑定) */
+function bindPromptLogEvents() {
+    $('#prompt_log_enabled').on('change', function () {
+        extension_settings[extensionName].promptLogEnabled = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+    $('#prompt_log_clear_btn').on('click', function () {
+        promptLog.length = 0;
+        renderPromptLogList();
+    });
+    $('#prompt_log_list').on('click', '.prompt-log-copy-btn', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = String($(this).attr('data-prompt') || '');
+        if (!text) { toastr.warning('没有可复制的内容'); return; }
+        try {
+            if (typeof copyText === 'function') {
+                await copyText(text);
+            } else {
+                await navigator.clipboard.writeText(text);
+            }
+            toastr.success('已复制');
+        } catch (err) {
+            console.error(`[${extensionName}] copy prompt log failed:`, err);
+            toastr.error('复制失败');
+        }
+    });
 }
 
 // --- 设置与UI逻辑 ---
@@ -2881,6 +2995,8 @@ function updateUI() {
         $('#auto_replace').val(extension_settings[extensionName].autoReplace);
         $('#video_default_sound').prop('checked', !!extension_settings[extensionName].videoDefaultSound);
         $('#stream_instant_preview').prop('checked', extension_settings[extensionName].streamInstantPreview !== false);
+        $('#prompt_log_enabled').prop('checked', extension_settings[extensionName].promptLogEnabled !== false);
+        renderPromptLogList();
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -3068,6 +3184,9 @@ function bindSettingsEvents() {
 
     // --- 新增: 绑定自动回复 tab 事件 ---
     bindAutoReplyEvents();
+
+    // --- 新增: 绑定请求日志 tab 事件 ---
+    bindPromptLogEvents();
 }
 
 // 设置面板的统一迁移单元:挂在 #mag_settings_root 下,在隐藏 host 与浮窗 body 间 detach 切换。

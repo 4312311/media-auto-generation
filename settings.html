@@ -89,6 +89,64 @@
         font-family: monospace;
         flex-shrink: 0;
     }
+    /* 请求日志 tab:条目卡片(pending 微透明、ok/error 状态字着色),用 settings_root 前缀(寄居隐藏 host 期间也生效) */
+    #mag_settings_root .prompt-log-entry {
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        padding: 6px 8px;
+        margin-bottom: 8px;
+        font-size: 0.9em;
+        transition: opacity 0.2s;
+    }
+    #mag_settings_root .prompt-log-entry.pending { opacity: 0.65; }
+    #mag_settings_root .prompt-log-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.92em;
+        opacity: 0.85;
+    }
+    #mag_settings_root .prompt-log-entry.ok .prompt-log-status { color: #7bd88f; }
+    #mag_settings_root .prompt-log-entry.error .prompt-log-status { color: #e57373; }
+    #mag_settings_root .prompt-log-style,
+    #mag_settings_root .prompt-log-preset {
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 4px;
+        padding: 0 4px;
+        font-size: 0.88em;
+        opacity: 0.9;
+    }
+    #mag_settings_root .prompt-log-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 5px;
+        font-size: 0.85em;
+        opacity: 0.7;
+    }
+    #mag_settings_root .prompt-log-copy-btn {
+        cursor: pointer;
+        margin-left: 2px;
+    }
+    #mag_settings_root .prompt-log-copy-btn:hover { opacity: 1; }
+    #mag_settings_root .prompt-log-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: 2px;
+        opacity: 0.92;
+    }
+    #mag_settings_root .prompt-log-error {
+        color: #e57373;
+        margin-top: 4px;
+        font-size: 0.88em;
+        word-break: break-word;
+    }
+    #mag_settings_root .prompt-log-empty {
+        text-align: center;
+        opacity: 0.6;
+        padding: 24px 10px;
+    }
     #media_auto_gen_panel_body .comfy_preview_empty {
         border: 2px dashed var(--SmartThemeBorderColor);
         border-radius: 5px;
@@ -1334,6 +1392,7 @@
     <div class="mag-tab-btn" data-mag-tab="gallery" data-i18n="mag_tab_gallery">图库</div>
     <div class="mag-tab-btn" data-mag-tab="chars" data-i18n="mag_tab_chars">角色固定特征</div>
     <div class="mag-tab-btn" data-mag-tab="autoreply" data-i18n="mag_tab_autoreply">自动回复</div>
+    <div class="mag-tab-btn" data-mag-tab="promptlog" data-i18n="mag_tab_promptlog">请求日志</div>
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="main">
@@ -1748,4 +1807,22 @@
     <div class="margin-top-5" style="opacity:0.6; font-size:0.9em;" data-i18n="mag_ar_hint">
         每轮 AI 回复结束后,延迟指定秒数自动把上方内容作为用户消息发送;内容里的 {n} 或 {} 替换为当前轮次(如「当前是第{n}轮」);流式卡住(无新内容)超阈值自动终止并重新生成,最多重试指定次数;手动停止或切换聊天会暂停
     </div>
+</div>
+
+<div class="mag-tab-panel" data-mag-panel="promptlog" style="display:none;">
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="prompt_log_enabled" class="flex1" data-i18n="mag_pl_enable">记录发送的提示词</label>
+        <input type="checkbox" id="prompt_log_enabled">
+    </div>
+    <div class="margin-top-5" style="opacity:0.6; font-size:0.9em;" data-i18n="mag_pl_hint">
+        开启后,每次请求 ComfyUI 生成时记录最终发送的正向/负面提示词(含风格前缀后缀、角色注入、美化包展开后的完整文本,即 workflow 里真正发出去的),可逐条点击复制;仅存内存,最多 50 条,刷新页面清空
+    </div>
+    <div class="flex-container flexnowrap justifySpaceBetween align_center margin-top-5">
+        <span id="prompt_log_count" style="opacity:0.85;"></span>
+        <div id="prompt_log_clear_btn" class="menu_button" title="清空全部日志" data-i18n="[title]mag_pl_clear_title" style="display:inline-flex; gap:5px; align-items:center; padding:3px 8px;">
+            <i class="fa-solid fa-eraser"></i>
+            <span data-i18n="mag_pl_clear">清空</span>
+        </div>
+    </div>
+    <div id="prompt_log_list" class="margin-top-5"></div>
 </div>
