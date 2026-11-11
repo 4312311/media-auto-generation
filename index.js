@@ -1650,37 +1650,37 @@ function deletePreset() {
     for (const img of styleImages) deleteStyleImage(img);
 }
 
-// --- 列表拉取倒计时:显示在 comfy tab 刷新按钮旁,拉取中逐秒递减,到 0 即对应 fetch 的超时 abort ---
+// --- 列表拉取倒计时 toastr:与生成图片/视频的"⏳ 生成... Ns"同款常驻弹窗,拉取中逐秒递减 ---
 let fetchCountdownTimer = null;
 let fetchCountdownShowTimer = null;
+let fetchCountdownToast = null;
 
 /**
- * 启动一段拉取倒计时(每个拉取阶段各调一次:连接三列表 → LoRA → 放大模型)。
- * 300ms 后才显示——LoRA/放大直连在没开 --enable-cors-header 的机器上毫秒级失败,立即显示会闪一下就没;
- * 到 0 不在这里提示,由各 fetch 的超时 abort 错误路径 toastr(倒计时归零 ≈ fetch 同刻被 abort)。
+ * 启动一段拉取倒计时弹窗(每个拉取阶段各调一次:连接三列表 → LoRA → 放大模型),
+ * 样式同生成媒体的"⏳ 生成图片... Ns" toastr(timeOut 0 常驻 + 文字逐秒刷新 + 关闭按钮)。
+ * 300ms 后才弹——LoRA/放大直连在没开 --enable-cors-header 的机器上毫秒级失败,立即弹会闪一下就没;
+ * 到 0 不在这里报错,由各 fetch 的超时 abort 错误路径 toastr(倒计时归零 ≈ fetch 同刻被 abort,
+ * 本弹窗随后由 stopFetchCountdown 清掉)。
  */
 function startFetchCountdown(label, ms) {
     stopFetchCountdown();
-    const $el = $('#comfy_fetch_countdown');
-    if (!$el.length) return;
     let remain = Math.ceil(ms / 1000);
-    const render = () => { $el.text(`${label} ${remain}s`); };
+    const text = () => `⏳ ${label}... ${remain}s`;
     fetchCountdownShowTimer = setTimeout(() => {
-        render();
-        $el.css('display', '');
+        fetchCountdownToast = toastr.info(text(), '', { timeOut: 0, extendedTimeOut: 0, closeButton: true });
     }, 300);
     fetchCountdownTimer = setInterval(() => {
         remain -= 1;
-        if (remain < 0) { stopFetchCountdown(); return; }
-        render();
+        if (remain < 0) return; // 停在 0s 等 fetch 落定(stop 清弹窗),不无限往负数走
+        if (fetchCountdownToast && fetchCountdownToast.find) fetchCountdownToast.find('.toast-message').text(text());
     }, 1000);
 }
 
-/** 结束倒计时(fetch 落定/中断即调,元素隐藏;正在跑的另一个拉取不受影响——本插件拉取串行,无并发场景) */
+/** 结束倒计时(fetch 落定即调):停表 + 清弹窗 */
 function stopFetchCountdown() {
     if (fetchCountdownTimer) { clearInterval(fetchCountdownTimer); fetchCountdownTimer = null; }
     if (fetchCountdownShowTimer) { clearTimeout(fetchCountdownShowTimer); fetchCountdownShowTimer = null; }
-    $('#comfy_fetch_countdown').css('display', 'none').text('');
+    if (fetchCountdownToast) { toastr.clear(fetchCountdownToast); fetchCountdownToast = null; }
 }
 
 /** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断。每次点击都重新发起。 */
@@ -1692,9 +1692,9 @@ async function refreshComfyOptions() {
         return;
     }
     const timeoutMs = fetchTimeoutMs(); // 五类列表拉取共用(主要配置 tab「列表拉取超时」)
-    toastr.info('正在连接 ComfyUI...');
     const body = { url: comfyUrl };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
+    // "正在连接"语义由倒计时弹窗承载(⏳ 连接中... Ns),不再另发一条 info toastr
     startFetchCountdown('连接中', timeoutMs);
     const results = await Promise.allSettled([
         comfyProxy('models', body, timeoutMs),
