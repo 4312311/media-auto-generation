@@ -88,6 +88,9 @@ const defaultSettings = {
     videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
     streamInstantPreview: true, // 流式即时显示:true=流式期间生成完成的媒体立即显示在楼层(observer 微任务重放,纯视觉层);false=旧行为,流式结束后统一替换
     promptLogEnabled: true, // 请求日志:记录每次发 ComfyUI 的最终 prompt(调试用;仅存内存环形缓冲,不进 settings)
+    fetchTimeoutSec: 20, // 列表拉取超时(秒):模型/采样器/调度器/LoRA/放大模型五类共用一个配置,『连接』倒计时同源
+    imageGenTimeoutSec: 60, // 图片生成超时(秒)
+    videoGenTimeoutSec: 300, // 视频生成超时(秒,视频多帧采样耗时数分钟,默认比图片宽)
     autoReplace: 'auto', // 'auto'=匹配后自动生成替换;'manual'=渲染成可点击占位符,手动点击触发生成
     characterTags: {}, // --- 新增: 角色固定特征字典 ---
     beautyPack: DEFAULT_BEAUTY_PACK, // --- 新增: 风格美化包([{name,text}] 全局共享,prompt 里 [%beauty:名称%] → text) ---
@@ -912,6 +915,35 @@ function pickPromptStyle(preset) {
     return result;
 }
 
+/** 读取超时秒数设置(非数字/≤0 回退默认;主要配置 tab 的三个超时输入共用读取口径) */
+function settingTimeoutSec(key, fallbackSec) {
+    const n = Number.parseInt(extension_settings[extensionName]?.[key], 10);
+    return (Number.isFinite(n) && n > 0) ? n : fallbackSec;
+}
+
+/** 列表拉取超时(ms):模型/采样器/调度器/LoRA/放大模型五类共用 */
+function fetchTimeoutMs() {
+    return settingTimeoutSec('fetchTimeoutSec', 20) * 1000;
+}
+
+/** 生成超时(ms),按媒体类型分档:视频/图片各一个配置 */
+function mediaGenTimeoutMs(mediaType) {
+    const sec = mediaType === 'video'
+        ? settingTimeoutSec('videoGenTimeoutSec', 300)
+        : settingTimeoutSec('imageGenTimeoutSec', 60);
+    return sec * 1000;
+}
+
+/** 超时数字输入的事件绑定(bindSettingsEvents 用):空值/非数字不写保留旧值,合法即钳制 min..max 落盘 */
+function bindTimeoutInput(selector, key, min, max) {
+    $(selector).on('input', function () {
+        const n = Number.parseInt(String($(this).val() ?? '').trim(), 10);
+        if (!Number.isFinite(n)) return;
+        extension_settings[extensionName][key] = clamp(n, min, max);
+        saveSettingsDebounced();
+    });
+}
+
 async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacter, forceRandomSeed = false, signal = null) {
     const preset = getActivePreset();
     if (!preset) throw new Error('No active ComfyUI preset configured');
@@ -949,8 +981,8 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
         })
         : null;
 
-    // 视频生成耗时可达数分钟(大模型+多帧采样),超时 5min;图片 30s
-    const timeoutMs = mediaType === 'video' ? 300_000 : 30_000;
+    // 生成超时按媒体类型分档,秒数可在主要配置 tab 调(默认图片 60s / 视频 300s,视频多帧采样耗时数分钟)
+    const timeoutMs = mediaGenTimeoutMs(mediaType);
     let result;
     try {
         result = await comfyProxy('generate', body, timeoutMs, signal);
@@ -1618,6 +1650,39 @@ function deletePreset() {
     for (const img of styleImages) deleteStyleImage(img);
 }
 
+// --- 列表拉取倒计时:显示在 comfy tab 刷新按钮旁,拉取中逐秒递减,到 0 即对应 fetch 的超时 abort ---
+let fetchCountdownTimer = null;
+let fetchCountdownShowTimer = null;
+
+/**
+ * 启动一段拉取倒计时(每个拉取阶段各调一次:连接三列表 → LoRA → 放大模型)。
+ * 300ms 后才显示——LoRA/放大直连在没开 --enable-cors-header 的机器上毫秒级失败,立即显示会闪一下就没;
+ * 到 0 不在这里提示,由各 fetch 的超时 abort 错误路径 toastr(倒计时归零 ≈ fetch 同刻被 abort)。
+ */
+function startFetchCountdown(label, ms) {
+    stopFetchCountdown();
+    const $el = $('#comfy_fetch_countdown');
+    if (!$el.length) return;
+    let remain = Math.ceil(ms / 1000);
+    const render = () => { $el.text(`${label} ${remain}s`); };
+    fetchCountdownShowTimer = setTimeout(() => {
+        render();
+        $el.css('display', '');
+    }, 300);
+    fetchCountdownTimer = setInterval(() => {
+        remain -= 1;
+        if (remain < 0) { stopFetchCountdown(); return; }
+        render();
+    }, 1000);
+}
+
+/** 结束倒计时(fetch 落定/中断即调,元素隐藏;正在跑的另一个拉取不受影响——本插件拉取串行,无并发场景) */
+function stopFetchCountdown() {
+    if (fetchCountdownTimer) { clearInterval(fetchCountdownTimer); fetchCountdownTimer = null; }
+    if (fetchCountdownShowTimer) { clearTimeout(fetchCountdownShowTimer); fetchCountdownShowTimer = null; }
+    $('#comfy_fetch_countdown').css('display', 'none').text('');
+}
+
 /** 并发拉取 model/sampler/scheduler 列表,单个失败不阻断。每次点击都重新发起。 */
 async function refreshComfyOptions() {
     const preset = getActivePreset();
@@ -1626,14 +1691,17 @@ async function refreshComfyOptions() {
         toastr.warning('请先填 ComfyUI 服务地址');
         return;
     }
+    const timeoutMs = fetchTimeoutMs(); // 五类列表拉取共用(主要配置 tab「列表拉取超时」)
     toastr.info('正在连接 ComfyUI...');
     const body = { url: comfyUrl };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
+    startFetchCountdown('连接中', timeoutMs);
     const results = await Promise.allSettled([
-        comfyProxy('models', body, 10_000),
-        comfyProxy('samplers', body, 10_000),
-        comfyProxy('schedulers', body, 10_000),
+        comfyProxy('models', body, timeoutMs),
+        comfyProxy('samplers', body, timeoutMs),
+        comfyProxy('schedulers', body, timeoutMs),
     ]);
+    stopFetchCountdown();
     console.log('[mag-debug] allSettled done', results.map(r => ({ status: r.status, reason: r.reason ? String(r.reason.message || r.reason).slice(0, 100) : null })));
     const [modelsR, samplersR, schedulersR] = results;
     const okCount = results.filter(r => r.status === 'fulfilled').length;
@@ -1662,17 +1730,26 @@ async function refreshComfyOptions() {
             toastr.warning(`部分失败(${okCount}/${results.length}):${failed}`);
         }
     }
-    // LoRA 列表:浏览器直连 ComfyUI(--enable-cors-header);失败降级为手动输入文件名,null=本轮未拉到
-    const lorasR = await fetchLorasDirect(comfyUrl).catch(err => {
-        console.debug('[media-auto-generation] loras list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', err?.message || err);
+    // LoRA 列表:浏览器直连 ComfyUI(--enable-cors-header);失败降级为手动输入文件名,null=本轮未拉到。
+    // 超时(倒计时归零)单独 toastr 提示;非超时失败(如 CORS 403)保持 console.debug 静默降级
+    startFetchCountdown('拉取 LoRA', timeoutMs);
+    const lorasR = await fetchLorasDirect(comfyUrl, timeoutMs).catch(err => {
+        const msg = String(err?.message || err);
+        if (msg.includes('超时')) toastr.warning(`LoRA 列表拉取超时(${Math.round(timeoutMs / 1000)}s),本轮降级为手动输入文件名`);
+        console.debug('[media-auto-generation] loras list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', msg);
         return null;
     });
+    stopFetchCountdown();
     comfyCache.loras = lorasR || [];
     // 放大模型列表:浏览器直连 ComfyUI(--enable-cors-header);失败降级为下拉仅显示已存值
-    const upscaleR = await fetchUpscaleModelsDirect(comfyUrl).catch(err => {
-        console.debug('[media-auto-generation] upscale model list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', err?.message || err);
+    startFetchCountdown('拉取放大模型', timeoutMs);
+    const upscaleR = await fetchUpscaleModelsDirect(comfyUrl, timeoutMs).catch(err => {
+        const msg = String(err?.message || err);
+        if (msg.includes('超时')) toastr.warning(`放大模型列表拉取超时(${Math.round(timeoutMs / 1000)}s),本轮下拉仅显示已存值`);
+        console.debug('[media-auto-generation] upscale model list unavailable (需 ComfyUI 带 --enable-cors-header 启动):', msg);
         return null;
     });
+    stopFetchCountdown();
     comfyCache.upscaleModels = upscaleR || [];
     // 部分失败也标记地址:renderPresetFields 的失配守卫才不会拿旧存档覆盖本轮已拉到的结果
     comfyCache.url = comfyUrl;
@@ -2997,6 +3074,9 @@ function updateUI() {
         $('#stream_instant_preview').prop('checked', extension_settings[extensionName].streamInstantPreview !== false);
         $('#prompt_log_enabled').prop('checked', extension_settings[extensionName].promptLogEnabled !== false);
         renderPromptLogList();
+        $('#fetch_timeout_sec').val(settingTimeoutSec('fetchTimeoutSec', 20));
+        $('#image_gen_timeout_sec').val(settingTimeoutSec('imageGenTimeoutSec', 60));
+        $('#video_gen_timeout_sec').val(settingTimeoutSec('videoGenTimeoutSec', 300));
 
         // --- 新增: 更新UI时一并渲染角色列表 ---
         renderCharacterTagsList();
@@ -3126,6 +3206,10 @@ function bindSettingsEvents() {
     $('#image_regex').on('input', function () { extension_settings[extensionName].imageRegex = $(this).val(); saveSettingsDebounced(); });
     $('#video_regex').on('input', function () { extension_settings[extensionName].videoRegex = $(this).val(); saveSettingsDebounced(); });
     $('#media_style').on('input', function () { extension_settings[extensionName].style = $(this).val(); saveSettingsDebounced(); });
+    // 三个超时输入:空值/非法不写(保留旧值继续生效),合法即钳制到 min..max 落盘
+    bindTimeoutInput('#fetch_timeout_sec', 'fetchTimeoutSec', 1, 600);
+    bindTimeoutInput('#image_gen_timeout_sec', 'imageGenTimeoutSec', 5, 3600);
+    bindTimeoutInput('#video_gen_timeout_sec', 'videoGenTimeoutSec', 10, 7200);
     $('#video_default_sound').on('change', function () {
         extension_settings[extensionName].videoDefaultSound = $(this).prop('checked');
         saveSettingsDebounced();

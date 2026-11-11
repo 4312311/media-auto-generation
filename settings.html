@@ -1455,6 +1455,19 @@
         <i id="stream_instant_preview_help" class="fa-solid fa-circle-question mag-help-icon" data-i18n="[title]mag_stream_instant_hint"></i>
         <input type="checkbox" id="stream_instant_preview">
     </div>
+
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="fetch_timeout_sec" class="flex1" data-i18n="mag_fetch_timeout">列表拉取超时(秒)</label>
+        <input id="fetch_timeout_sec" type="number" class="text_pole margin0" style="width:76px;" min="1" max="600" step="1" title="点『连接』拉取 模型/采样器/调度器/LoRA/放大模型 五类列表共用的超时;拉取时 ComfyUI 配置 tab 刷新按钮旁显示倒计时,归零即提示超时" data-i18n="[title]mag_fetch_timeout_hint">
+    </div>
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="image_gen_timeout_sec" class="flex1" data-i18n="mag_image_gen_timeout">图片生成超时(秒)</label>
+        <input id="image_gen_timeout_sec" type="number" class="text_pole margin0" style="width:76px;" min="5" max="3600" step="1" title="图片生成请求的超时,超时后中断并报错(所有生成路径共用,含测试生成)" data-i18n="[title]mag_image_gen_timeout_hint">
+    </div>
+    <div class="flex-container flexnowrap align_center margin-top-5">
+        <label for="video_gen_timeout_sec" class="flex1" data-i18n="mag_video_gen_timeout">视频生成超时(秒)</label>
+        <input id="video_gen_timeout_sec" type="number" class="text_pole margin0" style="width:76px;" min="10" max="7200" step="1" title="视频生成请求的超时,视频多帧采样耗时数分钟,默认比图片宽;超时后中断并报错(所有生成路径共用,含测试生成)" data-i18n="[title]mag_video_gen_timeout_hint">
+    </div>
 </div>
 
 <div class="mag-tab-panel" data-mag-panel="comfy" style="display:none;">
@@ -1541,6 +1554,7 @@
         <div id="comfy_refresh" class="menu_button menu_button_icon" title="Refresh" data-i18n="[title]Refresh" style="align-self: flex-end; margin: 0; padding: 5px;">
             <i class="fa-solid fa-rotate"></i>
         </div>
+        <span id="comfy_fetch_countdown" style="display:none; align-self:flex-end; opacity:0.8; font-size:0.85em; white-space:nowrap; padding-bottom:8px;"></span>
     </div>
 
     <div class="flex-container flexGap5 margin-top-5">
