@@ -175,8 +175,9 @@
 
     "mag_tab_autoreply": "自动回复",
     "mag_tab_promptlog": "请求日志",
-    "mag_pl_enable": "记录发送的提示词",
-    "mag_pl_hint": "开启后,每次请求 ComfyUI 生成时记录最终发送的正向/负面提示词(含风格前缀后缀、角色注入、美化包展开后的完整文本,即 workflow 里真正发出去的),可逐条点击复制;仅存内存,最多 50 条,刷新页面清空",
+    "mag_pl_enable": "记录发送给 AI 的完整请求",
+    "mag_pl_hint": "开启后,记录最近 5 次真实发送给 AI 的完整请求(chat completion 记全部消息、文本补全记完整 prompt);自动标题/记忆总结等静默生成与扩展的 dryRun 预演不记录;仅存内存,刷新页面清空",
+    "mag_pl_newest_note": "按钮 1 = 最新一次",
     "mag_pl_clear": "清空",
     "mag_pl_clear_title": "清空全部日志",
     "mag_ar_enable": "启用自动回复",

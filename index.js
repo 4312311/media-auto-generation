@@ -87,7 +87,7 @@ const defaultSettings = {
     style: 'width:100%;height:auto',
     videoDefaultSound: false, // 视频默认播放声音:false=默认静音(需手动点开声音,现状);true=楼层/图库大图/预览浮窗/测试预览的视频默认带声
     streamInstantPreview: true, // 流式即时显示:true=流式期间生成完成的媒体立即显示在楼层(observer 微任务重放,纯视觉层);false=旧行为,流式结束后统一替换
-    promptLogEnabled: true, // 请求日志:记录每次发 ComfyUI 的最终 prompt(调试用;仅存内存环形缓冲,不进 settings)
+    promptLogEnabled: true, // 请求日志:记录最近 5 次真实发送给 AI 的完整请求(调试用;仅存内存环形缓冲,不进 settings)
     fetchTimeoutSec: 20, // 列表拉取超时(秒):模型/采样器/调度器/LoRA/放大模型五类共用一个配置,『连接』倒计时同源
     imageGenTimeoutSec: 60, // 图片生成超时(秒)
     videoGenTimeoutSec: 300, // 视频生成超时(秒,视频多帧采样耗时数分钟,默认比图片宽)
@@ -968,29 +968,9 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     const body = { url: comfyUrl, prompt: `{ "prompt": ${workflow} }` };
     if (preset.comfyAuth) body.auth = preset.comfyAuth;
 
-    // 请求日志(调试):发出前记录最终拼装的 prompt,结果回写状态(见下方请求日志模块)
-    const logEntry = extension_settings[extensionName].promptLogEnabled !== false
-        ? recordPromptLog({
-            ts: Date.now(),
-            mediaType,
-            prompt: finalPrompt,
-            negative: negativePrompt,
-            prefixName: stylePick.name,
-            presetName: preset.name,
-            status: 'pending',
-        })
-        : null;
-
     // 生成超时按媒体类型分档,秒数可在主要配置 tab 调(默认图片 60s / 视频 300s,视频多帧采样耗时数分钟)
     const timeoutMs = mediaGenTimeoutMs(mediaType);
-    let result;
-    try {
-        result = await comfyProxy('generate', body, timeoutMs, signal);
-        updatePromptLogStatus(logEntry, 'ok');
-    } catch (err) {
-        updatePromptLogStatus(logEntry, 'error', err?.message || err);
-        throw err;
-    }
+    const result = await comfyProxy('generate', body, timeoutMs, signal);
     const format = (result.format || (mediaType === 'video' ? 'mp4' : 'png')).toLowerCase();
 
     const context = getContext();
@@ -1001,84 +981,215 @@ async function generateViaComfyInner(modifiedPrompt, mediaType, overrideCharacte
     return { url, format, character: charName, finalPrompt, prefixName: stylePick.name };
 }
 
-// --- 请求日志(调试用,「请求日志」tab):记录每次发给 ComfyUI 的最终 prompt ---
+// --- 请求日志(调试用,「请求日志」tab):记录最近 5 次真实发送给 AI 的完整请求 ---
 
-/** 环形缓冲上限:只留最近 N 条(调试场景看近期就够,防长挂机无限增长) */
-const PROMPT_LOG_MAX = 50;
-/** 内存日志条目:[{ ts, mediaType, prompt, negative, prefixName, presetName, status: pending|ok|error, error }]。刻意不持久化——调试用途,刷新清空,避免 prompt 文本膨胀 settings.json */
-const promptLog = [];
+/** 环形缓冲上限 = 按钮个数:按钮 1~5 对应最新 → 第 5 新 */
+const LLM_REQUEST_LOG_MAX = 5;
+/** 单条消息在查看器里最多渲染的字符数(超长截断,复制按钮拿全文)——聊天上下文可达数百 KB,全渲会拖垮浮窗 */
+const LLM_LOG_MSG_RENDER_MAX = 15000;
+/** 内存日志条目:[{ id, ts, kind: 'chat'|'text', char, chat?, prompt?, msgs, chars }]。
+ *  刻意不持久化——请求体可达数百 KB,防 settings.json 膨胀;刷新清空 */
+const llmRequestLog = [];
+let llmRequestLogSeq = 0;
+/** 当前选中查看的条目 id;条目滑出缓冲后自动回落到最新 */
+let llmRequestLogSelectedId = null;
+/** 记录闸门:GENERATION_STARTED(非 dryRun 且非静默)时置 true。
+ *  静默生成(自动标题/记忆总结/扩展内部 generateRaw 等)不发 STARTED 或带 quiet_prompt,不记录 */
+let llmRequestLogArmed = false;
+/** 本次生成的暂存条目(尚未落账):prompt-ready 事件先暂存,GENERATION_ENDED/STOPPED 统一落账。
+ *  为什么不当场记录:同一次生成可能 fire 两个 prompt-ready——textgen-webui 走 chat completion 源时
+ *  GENERATE_AFTER_COMBINE_PROMPTS 带完整文本 prompt(getCombinedPrompt 只对 main_api==='openai'
+ *  返回空串,script.js:4973),随后 CHAT_COMPLETION_PROMPT_READY 才是真正发出去的 messages;
+ *  chat 暂存覆盖 text 暂存,每代最终只落一条、且留下的是真请求 */
+let llmRequestLogPending = null;
 
-/**
- * 记录一条发送日志(generateViaComfyInner 在 comfyProxy 发出前调用;promptLogEnabled 关时不记)。
- * 返回条目引用,调用方拿到结果后经 updatePromptLogStatus 回写 ok/error——列表即时从"生成中"变终态。
- */
-function recordPromptLog(entry) {
-    promptLog.push(entry);
-    if (promptLog.length > PROMPT_LOG_MAX) promptLog.splice(0, promptLog.length - PROMPT_LOG_MAX);
-    renderPromptLogList();
-    return entry;
+/** chat completion 消息的 content 字段转纯文本:string 直返;多模态数组取 text 段、图片/音频段落占位符 */
+function llmContentText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map(p => {
+            if (typeof p?.text === 'string' && p.text) return p.text;
+            if (p?.type === 'image_url') return '[图片]';
+            if (p?.type === 'input_audio' || p?.type === 'audio_url') return '[音频]';
+            return '';
+        }).filter(Boolean).join('\n');
+    }
+    return '';
 }
 
-/** 回写单条日志的结果状态并重渲列表(logEntry 为 null 时是开关关闭路径,静默跳过) */
-function updatePromptLogStatus(entry, status, error) {
+/** 日志条目 → 可复制的纯文本(chat:逐条 `### role (name)` 分段;text:原始 prompt) */
+function llmRequestPlainText(entry) {
+    if (!entry) return '';
+    if (entry.kind === 'text') return entry.prompt;
+    return entry.chat.map(m => {
+        const name = m?.name ? ` (${m.name})` : '';
+        return `### ${m?.role || 'unknown'}${name}\n${llmContentText(m?.content)}`;
+    }).join('\n\n');
+}
+
+/** 记录一条 LLM 请求(已过闸门/开关检查的调用方才有资格进来) */
+function recordLlmRequest(entry) {
+    llmRequestLog.push(entry);
+    if (llmRequestLog.length > LLM_REQUEST_LOG_MAX) llmRequestLog.splice(0, llmRequestLog.length - LLM_REQUEST_LOG_MAX);
+    // 选中条目滑出缓冲(或从未选过)→ 自动回落到最新一条
+    if (!llmRequestLog.some(e => e.id === llmRequestLogSelectedId)) llmRequestLogSelectedId = entry.id;
+    renderLlmRequestLog();
+}
+
+/** GENERATION_ENDED/STOPPED 落账暂存条目(onGenerationFinished 调):一次生成最终只落一条 */
+function commitLlmRequestLog() {
+    llmRequestLogArmed = false; // 撤防:没暂存(组装前被打断/静默生成)也不该再记
+    const entry = llmRequestLogPending;
+    llmRequestLogPending = null;
     if (!entry) return;
-    entry.status = status;
-    entry.error = error ? String(error).slice(0, 300) : '';
-    renderPromptLogList();
+    if (extension_settings[extensionName].promptLogEnabled === false) return;
+    recordLlmRequest(entry);
+    const kindText = entry.kind === 'chat' ? `chat completion,${entry.msgs} 条消息` : `text completion`;
+    console.log(`[${extensionName}] 请求日志: 记录 LLM 请求(${kindText},${entry.chars} 字符)`);
 }
 
-/** 渲染请求日志列表(新→旧;动态注入内容沿用本插件惯例硬编码中文,不走 data-i18n) */
-function renderPromptLogList() {
-    const $list = $('#prompt_log_list');
-    if (!$list.length) return;
-    $('#prompt_log_count').text(`${promptLog.length}/${PROMPT_LOG_MAX}`);
-    if (!promptLog.length) {
-        $list.empty().append('<div class="prompt-log-empty"><i class="fa-solid fa-file-lines" style="font-size:1.4em;"></i><div style="margin-top:6px;">暂无记录,生成一次媒体后出现在这里(开关关闭期间不记录)</div></div>');
+/** CHAT_COMPLETION_PROMPT_READY(chat completion 路径,openai.js:1512):{ chat: messages[], dryRun } */
+function onLlmChatPromptReady(data) {
+    try {
+        if (!llmRequestLogArmed || !data || data.dryRun) return;
+        if (extension_settings[extensionName].promptLogEnabled === false) return;
+        if (!Array.isArray(data.chat) || !data.chat.length) return;
+        // 深拷贝:eventData.chat 是 ST 后续真正发给 LLM 的活引用,晚注册的订阅者(ST Regex 等)可能继续改
+        const chat = typeof structuredClone === 'function'
+            ? structuredClone(data.chat)
+            : JSON.parse(JSON.stringify(data.chat));
+        const chars = chat.reduce((n, m) => n + llmContentText(m?.content).length, 0);
+        const context = getContext();
+        // 暂存(覆盖同代更早的 text 暂存,见 llmRequestLogPending 注释),ENDED 统一落账
+        llmRequestLogPending = {
+            id: ++llmRequestLogSeq,
+            ts: Date.now(),
+            kind: 'chat',
+            char: context.name2 || context.groupId || '',
+            chat,
+            msgs: chat.length,
+            chars,
+        };
+    } catch (err) {
+        console.error(`[${extensionName}] 请求日志(chat)捕获失败:`, err);
+    }
+}
+
+/** GENERATE_AFTER_COMBINE_PROMPTS(text completion 路径,script.js:5076):{ prompt: string, dryRun } */
+function onLlmTextPromptReady(data) {
+    try {
+        if (!llmRequestLogArmed || !data || data.dryRun) return;
+        if (extension_settings[extensionName].promptLogEnabled === false) return;
+        // chat completion 路径下本事件也 emit 且 prompt 为空串(openai 有自己的 prompt manager,
+        // script.js:4973 getCombinedPrompt 对 openai 返回 '')——空串跳过,真请求由稍后的
+        // CHAT_COMPLETION_PROMPT_READY 接手(它在后面才 fire)
+        const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+        if (!prompt.trim()) return;
+        const context = getContext();
+        // 暂存(若本代稍后 fire CHAT_COMPLETION_PROMPT_READY 会被其覆盖——那才是真请求),ENDED 统一落账
+        llmRequestLogPending = {
+            id: ++llmRequestLogSeq,
+            ts: Date.now(),
+            kind: 'text',
+            char: context.name2 || context.groupId || '',
+            prompt,
+            msgs: 1,
+            chars: prompt.length,
+        };
+    } catch (err) {
+        console.error(`[${extensionName}] 请求日志(text)捕获失败:`, err);
+    }
+}
+
+/** 单条消息块的 HTML(role 徽标 + 文本,超长截断) */
+function llmLogMessageHtml(m) {
+    const roleMap = { system: '系统', user: '用户', assistant: 'AI', tool: '工具' };
+    const role = String(m?.role || 'unknown');
+    const roleText = roleMap[role] || role;
+    const name = m?.name ? ` · ${escapeHtmlAttribute(String(m.name))}` : '';
+    let text = llmContentText(m?.content);
+    let truncated = false;
+    if (text.length > LLM_LOG_MSG_RENDER_MAX) {
+        text = text.slice(0, LLM_LOG_MSG_RENDER_MAX);
+        truncated = true;
+    }
+    const truncNote = truncated ? '<div class="llm-log-trunc">…(过长已截断,点上方"复制全部"看全文)</div>' : '';
+    return `
+        <div class="llm-log-msg ${role}">
+            <div class="llm-log-role">${escapeHtmlAttribute(roleText)}${name}</div>
+            <div class="llm-log-text">${escapeHtmlAttribute(text)}</div>
+            ${truncNote}
+        </div>`;
+}
+
+/** 渲染请求日志 tab:数字按钮行(1=最新)+ 选中条目查看器(动态注入内容沿用本插件惯例硬编码中文,不走 data-i18n) */
+function renderLlmRequestLog() {
+    const $btnRow = $('#prompt_log_btn_row');
+    if (!$btnRow.length) return;
+
+    // 按钮行:1 = 最新(数组尾部),无条目的槽位禁用
+    let btns = '';
+    for (let i = 1; i <= LLM_REQUEST_LOG_MAX; i++) {
+        const entry = llmRequestLog[llmRequestLog.length - i];
+        if (!entry) {
+            btns += `<div class="llm-log-btn disabled">${i}</div>`;
+            continue;
+        }
+        const time = new Date(entry.ts).toLocaleTimeString('zh-CN', { hour12: false });
+        const selected = entry.id === llmRequestLogSelectedId ? ' active' : '';
+        btns += `<div class="llm-log-btn${selected}" data-id="${entry.id}" title="${time}">${i}</div>`;
+    }
+    $btnRow.empty().append(btns);
+
+    // 查看器:选中条目(选中 id 已在 recordLlmRequest 里保证存在)
+    const $viewer = $('#prompt_log_viewer');
+    if (!$viewer.length) return;
+    const entry = llmRequestLog.find(e => e.id === llmRequestLogSelectedId);
+    if (!entry) {
+        $viewer.empty().append(`
+            <div class="llm-log-empty">
+                <i class="fa-solid fa-file-lines" style="font-size:1.4em;"></i>
+                <div style="margin-top:6px;">暂无记录,发一次消息(或重生成/继续)后出现在这里;静默生成(自动标题/记忆等)不记录</div>
+            </div>`);
         return;
     }
-    $list.empty();
-    // 从尾往头渲 = 最新在最上;复制按钮读 data-prompt 属性(转义后),不依赖数组下标
-    for (let i = promptLog.length - 1; i >= 0; i--) {
-        const e = promptLog[i];
-        const time = new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false });
-        const statusText = e.status === 'ok' ? '成功' : (e.status === 'error' ? '失败' : '生成中');
-        const typeIcon = e.mediaType === 'video' ? 'fa-video' : 'fa-image';
-        const typeText = e.mediaType === 'video' ? '视频' : '图片';
-        const styleBadge = e.prefixName ? ` · <span class="prompt-log-style">${escapeHtmlAttribute(e.prefixName)}</span>` : '';
-        const presetBadge = e.presetName ? ` · <span class="prompt-log-preset">${escapeHtmlAttribute(e.presetName)}</span>` : '';
-        const errorHtml = (e.status === 'error' && e.error) ? `<div class="prompt-log-error">⚠️ ${escapeHtmlAttribute(e.error)}</div>` : '';
-        const negHtml = e.negative
-            ? `<div class="prompt-log-label"><span>负面</span><i class="fa-solid fa-copy prompt-log-copy-btn" title="复制负面提示词" data-prompt="${escapeHtmlAttribute(e.negative)}"></i></div><div class="prompt-log-text">${escapeHtmlAttribute(e.negative)}</div>`
-            : '';
-        $list.append(`
-            <div class="prompt-log-entry ${e.status}">
-                <div class="prompt-log-head">
-                    <span class="prompt-log-time">${time}</span>
-                    <i class="fa-solid ${typeIcon}" title="${typeText}"></i>
-                    <span class="prompt-log-status">${statusText}</span>${styleBadge}${presetBadge}
-                </div>
-                <div class="prompt-log-label"><span>正向</span><i class="fa-solid fa-copy prompt-log-copy-btn" title="复制正向提示词" data-prompt="${escapeHtmlAttribute(e.prompt)}"></i></div>
-                <div class="prompt-log-text">${escapeHtmlAttribute(e.prompt)}</div>
-                ${negHtml}
-                ${errorHtml}
-            </div>`);
-    }
+    const time = new Date(entry.ts).toLocaleString('zh-CN', { hour12: false });
+    const kindText = entry.kind === 'chat' ? 'Chat Completion' : 'Text Completion';
+    const charBadge = entry.char ? ` · ${escapeHtmlAttribute(entry.char)}` : '';
+    const bodyHtml = entry.kind === 'chat'
+        ? entry.chat.map(llmLogMessageHtml).join('')
+        : `<div class="llm-log-msg text"><div class="llm-log-role">完整 Prompt</div><div class="llm-log-text">${escapeHtmlAttribute(entry.prompt.length > LLM_LOG_MSG_RENDER_MAX ? entry.prompt.slice(0, LLM_LOG_MSG_RENDER_MAX) : entry.prompt)}</div>${entry.prompt.length > LLM_LOG_MSG_RENDER_MAX ? '<div class="llm-log-trunc">…(过长已截断,点上方"复制全部"看全文)</div>' : ''}</div>`;
+    $viewer.empty().append(`
+        <div class="llm-log-head">
+            <span class="llm-log-meta">${time} · ${kindText} · ${entry.msgs} 条 · ${entry.chars.toLocaleString()} 字符${charBadge}</span>
+            <i class="fa-solid fa-copy llm-log-copy-btn" title="复制全部请求内容" data-log-id="${entry.id}"></i>
+        </div>
+        <div class="llm-log-body">${bodyHtml}</div>`);
 }
 
-/** 请求日志 tab 事件:开关持久化 / 清空 / 复制(委托,列表整体重渲不丢绑定) */
+/** 请求日志 tab 事件:开关持久化 / 清空 / 按钮切换 / 复制(委托,内容整体重渲不丢绑定) */
 function bindPromptLogEvents() {
     $('#prompt_log_enabled').on('change', function () {
         extension_settings[extensionName].promptLogEnabled = $(this).prop('checked');
         saveSettingsDebounced();
     });
     $('#prompt_log_clear_btn').on('click', function () {
-        promptLog.length = 0;
-        renderPromptLogList();
+        llmRequestLog.length = 0;
+        llmRequestLogSelectedId = null;
+        renderLlmRequestLog();
     });
-    $('#prompt_log_list').on('click', '.prompt-log-copy-btn', async function (e) {
+    $('#prompt_log_btn_row').on('click', '.llm-log-btn', function () {
+        const entryId = Number($(this).attr('data-id') || 0); // 按钮 data-id 即日志条目 id
+        if (!entryId) return;
+        llmRequestLogSelectedId = entryId;
+        renderLlmRequestLog();
+    });
+    $('#prompt_log_viewer').on('click', '.llm-log-copy-btn', async function (e) {
         e.preventDefault();
         e.stopPropagation();
-        const text = String($(this).attr('data-prompt') || '');
+        const id = Number($(this).attr('data-log-id') || 0);
+        const entry = llmRequestLog.find(x => x.id === id);
+        const text = llmRequestPlainText(entry);
         if (!text) { toastr.warning('没有可复制的内容'); return; }
         try {
             if (typeof copyText === 'function') {
@@ -1086,9 +1197,9 @@ function bindPromptLogEvents() {
             } else {
                 await navigator.clipboard.writeText(text);
             }
-            toastr.success('已复制');
+            toastr.success('已复制完整请求内容');
         } catch (err) {
-            console.error(`[${extensionName}] copy prompt log failed:`, err);
+            console.error(`[${extensionName}] copy llm request log failed:`, err);
             toastr.error('复制失败');
         }
     });
@@ -3073,7 +3184,7 @@ function updateUI() {
         $('#video_default_sound').prop('checked', !!extension_settings[extensionName].videoDefaultSound);
         $('#stream_instant_preview').prop('checked', extension_settings[extensionName].streamInstantPreview !== false);
         $('#prompt_log_enabled').prop('checked', extension_settings[extensionName].promptLogEnabled !== false);
-        renderPromptLogList();
+        renderLlmRequestLog();
         $('#fetch_timeout_sec').val(settingTimeoutSec('fetchTimeoutSec', 20));
         $('#image_gen_timeout_sec').val(settingTimeoutSec('imageGenTimeoutSec', 60));
         $('#video_gen_timeout_sec').val(settingTimeoutSec('videoGenTimeoutSec', 300));
@@ -6581,6 +6692,10 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
         return;
     }
     console.log(`[${extensionName}] GENERATION_STARTED(type=${type}): inFlight=${inFlightMedia.size} processing=${processingHashes.size}`);
+    // 请求日志:布防——本次生成接下来组装出的 LLM 请求可记(静默生成 quiet_prompt=true 不记:
+    // 自动标题/记忆总结等,发了 STARTED 但用户并不关心);暂存条目由 onGenerationFinished 落账
+    llmRequestLogArmed = !options?.quiet_prompt;
+    llmRequestLogPending = null; // 防御:上一代 ENDED 彻底丢失时别把旧暂存错记到本代
     // 自动回复:新一轮真实生成开始——上一轮延迟中的自动回复作废(用户抢先手动发了,这轮
     // 不消耗次数,新 ENDED 会重新 tick);停止抑制解除(后续 ENDED 属于正常收尾)
     autoReplySuppressed = false;
@@ -6635,6 +6750,7 @@ eventSource.on(event_types.GENERATION_STARTED, (type, options, dryRun) => {
 const onGenerationFinished = async () => {
     if (streamInterval) { clearInterval(streamInterval); streamInterval = null; }
     isStreamActive = false;
+    commitLlmRequestLog(); // 请求日志:落账本次生成暂存的 LLM 请求(含撤防)
 
     try {
         await sanitizeFreshLlmMessage(); // 先剥 LLM 伪造的 mag-* HTML,再让最终处理面对干净 mes
@@ -6664,6 +6780,13 @@ eventSource.on(event_types.GENERATION_STOPPED, () => {
     cancelAutoReplyTimer();
     stopStreamWatchdog();
 });
+
+// 请求日志:捕获真实发送给 AI 的完整请求(见"请求日志"模块)。两个事件按后端互补——
+// chat completion 走 CHAT_COMPLETION_PROMPT_READY(messages 数组),text completion 走
+// GENERATE_AFTER_COMBINE_PROMPTS(prompt 字符串,chat 后端下为空串由 handler 自行跳过);
+// dryRun(Prompt-Template 等扩展的组装预演)与静默生成(无 STARTED 布防)都不记
+eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onLlmChatPromptReady);
+eventSource.on(event_types.GENERATE_AFTER_COMBINE_PROMPTS, onLlmTextPromptReady);
 
 // 非流式/加载时
 eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
@@ -6703,5 +6826,6 @@ eventSource.on(event_types.MESSAGE_EDITED, async () => {
     }
 });
 
-// 发送给 LLM 前的 wrapper → [image]/[video] 还原已移交 ST Regex 扩展承担(配置见 README),
-// 插件不再挂 GENERATE_AFTER_COMBINE_PROMPTS / CHAT_COMPLETION_PROMPT_READY 出口监听。
+// 发送给 LLM 前的 wrapper → [image]/[video] 还原已移交 ST Regex 扩展承担(配置见 README);
+// GENERATE_AFTER_COMBINE_PROMPTS / CHAT_COMPLETION_PROMPT_READY 现在只**只读**挂监听(请求日志
+// tab 捕获完整 LLM 请求用,见上方"请求日志"模块),不做任何出口改写。
