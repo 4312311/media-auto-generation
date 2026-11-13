@@ -89,7 +89,25 @@
         font-family: monospace;
         flex-shrink: 0;
     }
-    /* 请求日志 tab:5 个数字按钮(1=最新)+ 查看器,用 settings_root 前缀(寄居隐藏 host 期间也生效) */
+    /* 请求日志 tab:视图切换按钮(对话请求/生图提示词)+ 5 个数字按钮(1=最新)+ 查看器 + 生图卡片,用 settings_root 前缀(寄居隐藏 host 期间也生效) */
+    #mag_settings_root .llm-log-mode-btn {
+        flex: 1;
+        text-align: center;
+        padding: 5px 0;
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: background 0.15s, border-color 0.15s;
+        user-select: none;
+    }
+    #mag_settings_root .llm-log-mode-btn:hover { background: rgba(127,127,127,0.15); }
+    #mag_settings_root .llm-log-mode-btn.active {
+        border-color: var(--SmartThemeQuoteColor, #4a8cff);
+        color: var(--SmartThemeQuoteColor, #4a8cff);
+        font-weight: 600;
+        background: rgba(127,127,127,0.12);
+    }
     #mag_settings_root .llm-log-btn {
         flex: 1;
         text-align: center;
@@ -166,6 +184,64 @@
         margin-top: 2px;
     }
     #mag_settings_root .llm-log-empty {
+        text-align: center;
+        opacity: 0.6;
+        padding: 24px 10px;
+    }
+    /* 生图提示词视图:条目卡片(pending 微透明、ok/error 状态字着色) */
+    #mag_settings_root .prompt-log-entry {
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 6px;
+        padding: 6px 8px;
+        margin-bottom: 8px;
+        font-size: 0.9em;
+        transition: opacity 0.2s;
+    }
+    #mag_settings_root .prompt-log-entry.pending { opacity: 0.65; }
+    #mag_settings_root .prompt-log-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.92em;
+        opacity: 0.85;
+    }
+    #mag_settings_root .prompt-log-entry.ok .prompt-log-status { color: #7bd88f; }
+    #mag_settings_root .prompt-log-entry.error .prompt-log-status { color: #e57373; }
+    #mag_settings_root .prompt-log-style,
+    #mag_settings_root .prompt-log-preset {
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 4px;
+        padding: 0 4px;
+        font-size: 0.88em;
+        opacity: 0.9;
+    }
+    #mag_settings_root .prompt-log-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 5px;
+        font-size: 0.85em;
+        opacity: 0.7;
+    }
+    #mag_settings_root .prompt-log-copy-btn {
+        cursor: pointer;
+        margin-left: 2px;
+    }
+    #mag_settings_root .prompt-log-copy-btn:hover { opacity: 1; }
+    #mag_settings_root .prompt-log-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin-top: 2px;
+        opacity: 0.92;
+    }
+    #mag_settings_root .prompt-log-error {
+        color: #e57373;
+        margin-top: 4px;
+        font-size: 0.88em;
+        word-break: break-word;
+    }
+    #mag_settings_root .prompt-log-empty {
         text-align: center;
         opacity: 0.6;
         padding: 24px 10px;
@@ -1847,19 +1923,24 @@
 
 <div class="mag-tab-panel" data-mag-panel="promptlog" style="display:none;">
     <div class="flex-container flexnowrap align_center margin-top-5">
-        <label for="prompt_log_enabled" class="flex1" data-i18n="mag_pl_enable">记录发送给 AI 的完整请求</label>
+        <label for="prompt_log_enabled" class="flex1" data-i18n="mag_pl_enable">记录对话与生图请求</label>
         <input type="checkbox" id="prompt_log_enabled">
     </div>
-    <div class="margin-top-5" style="opacity:0.6; font-size:0.9em;" data-i18n="mag_pl_hint">
-        开启后,记录最近 5 次真实发送给 AI 的完整请求(chat completion 记全部消息、文本补全记完整 prompt);自动标题/记忆总结等静默生成与扩展的 dryRun 预演不记录;仅存内存,刷新页面清空
-    </div>
-    <div class="flex-container flexnowrap justifySpaceBetween align_center margin-top-5">
-        <span style="opacity:0.7; font-size:0.9em;" data-i18n="mag_pl_newest_note">按钮 1 = 最新一次</span>
+    <div class="flex-container flexnowrap justifySpaceBetween align_center">
+        <span style="opacity:0.7; font-size:0.9em;" data-i18n="mag_pl_newest_note">按钮 1 = 最新一轮(发出的请求 + AI 回复 + 生图提示词)</span>
         <div id="prompt_log_clear_btn" class="menu_button" title="清空全部日志" data-i18n="[title]mag_pl_clear_title" style="display:inline-flex; gap:5px; align-items:center; padding:3px 8px;">
             <i class="fa-solid fa-eraser"></i>
             <span data-i18n="mag_pl_clear">清空</span>
         </div>
     </div>
+    <div class="margin-top-5" style="opacity:0.6; font-size:0.9em;" data-i18n="mag_pl_hint">
+        每次发送记一轮:点 1~5 选轮(1=最新),再切「对话请求」(发送给 AI 的完整请求)/「AI 回复」(本轮 AI 的回复原文)/「生图提示词」(本轮实际发给 ComfyUI 的提示词,含风格前缀与美化包展开);自动标题/记忆总结等静默生成、dryRun 预演与扩展的空跑生成不成轮;手动/测试/重试生图单独成轮;刷新页面保留(浏览器本地存储),清空按钮一键倒空
+    </div>
     <div id="prompt_log_btn_row" class="flex-container flexnowrap margin-top-5" style="gap:6px;"></div>
+    <div id="prompt_log_view_toggle" class="flex-container flexnowrap margin-top-5" style="gap:6px;">
+        <div id="prompt_log_view_chat" class="llm-log-mode-btn active" data-i18n="mag_pl_view_chat">对话请求</div>
+        <div id="prompt_log_view_reply" class="llm-log-mode-btn" data-i18n="mag_pl_view_reply">AI 回复</div>
+        <div id="prompt_log_view_media" class="llm-log-mode-btn" data-i18n="mag_pl_view_media">生图提示词</div>
+    </div>
     <div id="prompt_log_viewer" class="llm-log-viewer margin-top-5"></div>
 </div>
