@@ -228,6 +228,12 @@ function collectThinkRanges(text) {
         opens.push({ name: m[1], start: m.index, end: m.index + m[0].length });
     }
     for (const o of opens) {
+        // 开标签已落在先前收集的区间内 = 块内提及,不是真块——不再为它开新区间。
+        // 反噬案例(2026-11-16 实测):思考里复述卡的格式说明"必须包含 <Analysis>",
+        // 而正文 <UpdateVariable> 里才有真的 </Analysis>——为提及开区间会从思考中部
+        // 一路吞到正文深处,把 </think_nya> 之后的所有正文 [image] 划进思维链,
+        // 正文全部失守不生成。
+        if (isInsideThinkRanges(ranges, o.start, o.end)) continue;
         const cm = new RegExp(`</\\s*${o.name}\\s*>`, 'i').exec(text.slice(o.end));
         if (cm) {
             ranges.push([o.start, o.end + cm.index + cm[0].length]);
