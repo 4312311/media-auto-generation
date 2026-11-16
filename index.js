@@ -251,6 +251,35 @@ function isInsideThinkRanges(ranges, start, end) {
 }
 
 /**
+ * 在"非思维链区段"上执行裸标签 matchAll,返回 match 列表(index 已重映射回原文本坐标,
+ * 供 isInsideHtmlTag / declareForPosition / originalTag 原文切片直接使用)。
+ * 为什么按区段切着扫而不整段 matchAll:配对分支 [\s\S]*? 跨换行,think 内漏闭合的
+ * [image] 提及(卡格式说明'内部是成对的 [image] 与 [img_Declare]')会一路吞到正文
+ * 第一张图的 [/image] 才闭合——蛇形匹配起点在 think 内、被 isInsideThinkRanges 正确
+ * 跳过,但正文首个真标签被吞在蛇肚子里连 match 都没有,永不生成(2026-11-16 实测:
+ * 7 页漫画只出第 2~7 页,第 1 页裸标签卡死,改 prompt 重试也无效——蛇还在)。反向
+ * 同理:正文漏闭合标签也会吞到 think 文本里的 [/image]。按区段扫描后匹配天然不可能
+ * 跨 think 边界,两个方向的蛇都被消灭;段文本就是原文本切片,组内容无需还原。
+ */
+function scanOutsideThinkRanges(text, ranges, regex) {
+    const segs = [];
+    let pos = 0;
+    const sorted = [...ranges].sort((a, b) => a[0] - b[0]);
+    for (const [s, e] of sorted) {
+        if (s > pos) segs.push([pos, s]);
+        pos = Math.max(pos, e);
+    }
+    if (pos < text.length) segs.push([pos, text.length]);
+    const out = [];
+    for (const [s, e] of segs) {
+        for (const m of text.slice(s, e).matchAll(regex)) {
+            out.push({ 0: m[0], 1: m[1], 2: m[2], index: s + m.index, input: text, groups: m.groups });
+        }
+    }
+    return out;
+}
+
+/**
  * 修复嵌套损坏的占位符(存量自愈):占位符 data-original-tag 属性值被塞进了另一份
  * 完整占位符 HTML(见 isInsideHtmlTag 注释的成因)时,把属性值剥回内层记录的裸标签原文。
  * 外层占位符的其余部分(子元素/属性)保持不变,每轮剥一层,循环到无嵌套或 10 轮上限。
@@ -4198,7 +4227,7 @@ async function landInFlightMedia() {
             const tagRegex = regexFromString(entry.regexStr);
             const thinkRanges = collectThinkRanges(msg.mes); // 守卫:think 内同 hash 标签不是落点
             const seen = new Map();
-            for (const m of msg.mes.matchAll(tagRegex)) {
+            for (const m of scanOutsideThinkRanges(msg.mes, thinkRanges, tagRegex)) {
                 // 守卫:跳过占位符/wrapper 属性里携带的标签文本(同 processMessageContent)
                 if (isInsideHtmlTag(msg.mes, m.index)) continue;
                 if (isInsideThinkRanges(thinkRanges, m.index, m.index + m[0].length)) continue;
@@ -4433,9 +4462,12 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     const mediaTagRegex = regexFromString(regexStr);
     // 快照 mes:生成为异步,期间流式会持续重写 message.mes,match.index / declare 位置都锚定在此快照上
     const mesText = message.mes;
-    // 思维链守卫输入:<think>/<thinking>/<think_nya> 等块内的标签是卡的格式说明复述,不是生图指令
+    // 思维链守卫输入:<think>/<thinking>/<think_nya> 等块内的标签是卡的格式说明复述,不是生图指令。
+    // 扫描按区段切着跑(见 scanOutsideThinkRanges):整段 matchAll 会被"think 内漏闭合
+    // [image] 提及 + 配对分支 [\s\S]*? 跨行"的蛇形匹配吞掉正文首个真标签
+    // (2026-11-16 第 1 页不生成事故)。match.index 已重映射回原文本坐标。
     const thinkRanges = collectThinkRanges(mesText);
-    const matches = [...mesText.matchAll(mediaTagRegex)];
+    const matches = scanOutsideThinkRanges(mesText, thinkRanges, mediaTagRegex);
     if (matches.length === 0) return;
     if (isFinal) console.log(`[${extensionName}] 最终扫描: 楼${messageIndex} 匹配 ${matches.length} 个标签`);
 
@@ -4457,7 +4489,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
             continue;
         }
 
-        // 思维链守卫:思考过程里的 [image]...[/image](格式说明复述)不触发生成/占位符
+        // 思维链守卫(防御层):区段扫描下 match 不会落在 think 内,仍保留重叠检查兜底
+        // (collectThinkRanges 白名单漏判等未来改动破坏不变量时不静默生成思考内容)
         if (isInsideThinkRanges(thinkRanges, match.index, match.index + match[0].length)) {
             if (isFinal) console.log(`[${extensionName}] 跳过思维链块内的匹配: ${match[0].slice(0, 50)}`);
             continue;
@@ -4706,7 +4739,7 @@ async function processAllMessagesForPlaceholders() {
         }
 
         const thinkRanges = collectThinkRanges(mes); // 守卫输入(heal 可能改写过 mes,按最新文本收)
-        const matches = [...mes.matchAll(mediaTagRegex)];
+        const matches = scanOutsideThinkRanges(mes, thinkRanges, mediaTagRegex); // 区段扫描防蛇形匹配
         if (matches.length === 0) {
             if (modified) { message.mes = mes; updateMessageBlock(i, message); changedFloors.push(i); }
             continue;
@@ -6034,7 +6067,7 @@ function collectUnfulfilledMedia() {
             const tagRegex = regexFromString(regexStr);
             if (!tagRegex) continue;
             const seen = new Map(); // baseHash → 出现次数,occ 后缀算法与 processMessageContent 一致
-            for (const m of stripped.matchAll(tagRegex)) {
+            for (const m of scanOutsideThinkRanges(stripped, thinkRanges, tagRegex)) {
                 if (isInsideHtmlTag(stripped, m.index)) continue;
                 if (isInsideThinkRanges(thinkRanges, m.index, m.index + m[0].length)) continue;
                 const rawPrompt = extractTagPrompt(m);
