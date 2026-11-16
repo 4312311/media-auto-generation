@@ -180,11 +180,68 @@ function replaceLiteral(str, search, repl) {
  * 再当正文标签匹配,把新占位符的完整 HTML 未转义塞进旧占位符的属性值 → 嵌套损坏,
  * 渲染成源码文本(2026-08 实测:image/video 均中招,首次落地正常、重进聊天后损坏)。
  * 判定:index 前最近的 '<' 比最近的 '>' 更近 = 位于标签内部。
+ * 注意 index=0 要显式 return false:String.prototype.lastIndexOf 的 fromIndex 为负时
+ * 语义是"只在位置 0 查找"(不是整串回搜)——index=0 时 fromIndex=-1,'<' 恰在位置 0
+ * 会得 lt=0 > gt=-1,把文本开头(index=0)的匹配误判成"在标签内部"而跳过
+ * (实测:mes 以 <think>/[image] 开头时,开标签/正文标签全部失守,2026-11-16 思维链
+ * 守卫上线时暴露——AI 回复以标签开头同样被误跳过不生成)。
  */
 function isInsideHtmlTag(text, index) {
+    if (index <= 0) return false;
     const lt = text.lastIndexOf('<', index - 1);
     const gt = text.lastIndexOf('>', index - 1);
     return lt > gt;
+}
+
+// --- 思维链(think)块守卫:思考过程里的 [image] 格式说明不是生图指令 ---
+
+/**
+ * 思维链开标签白名单(前缀匹配):<think>/<thinking>/<think_nya>/<thought>/<reasoning>/
+ * <reasoning_content>/<rationale>/<scratchpad>/<chain-of-thought> 等常见思维链容器都认,
+ * 标签名后缀任意([\w:-]*),开标签允许带属性(<think mode="deep">),自闭合 <think/> 不算块开。
+ * LLM 思考过程里常复述卡的输出规范,带"[image][图片提示词][/image]"这类**格式说明文本**——
+ * 2026-11 实测被生图正则当真标签触发 ComfyUI 生成(正文还没有,图先错生成)。所有裸标签
+ * 扫描点一律先 collectThinkRanges 收集区间,媒体标签匹配落进区间即跳过。
+ * 白名单刻意克制:<mind>/<internal> 等叙事性标签不是思维链容器,可能包真实正文,不收。
+ */
+const MAG_THINK_OPEN_RE = /<((?:think|thought|reason|rationale|scratchpad|analysis|cot|chain[-_]?of[-_]?thought|deliberation|reflection|inner[-_]?(?:thought|monologue|voice))[\w:-]*)((?:\s[^<>]*?)?)>/gi;
+
+/**
+ * 收集 text 里全部思维链块 [start, end) 字符区间(裸标签扫描点的守卫输入)。
+ * 开标签先过 isInsideHtmlTag 守卫——wrapper/占位符属性值里携带的 think 字样(prompt 内容)
+ * 不是真实思维链结构,不能让它把后面正文误判进区间;作废匹配把 lastIndex 回退到开标签后
+ * 重扫,防"假开标签吃掉真闭标签,真实 think 块漏判"。
+ * 漏闭合兜底:闭标签缺失(流式思考输出中 / 模型忘写)→ 开标签到消息末尾整段视为思维链——
+ * 思考没结束,这段里不可能有真实生图指令;流式期间顺带挡掉"思考文本里的成对示例标签
+ * 每 500ms 轮询就触发一次生成"的变体事故。
+ * 闭标签按开标签捕获名精确配对(</think> 只配 <think>),同名不串(think_nya 不吃 </think>)。
+ */
+function collectThinkRanges(text) {
+    const ranges = [];
+    if (typeof text !== 'string' || !text.includes('<')) return ranges;
+    const openRe = new RegExp(MAG_THINK_OPEN_RE.source, MAG_THINK_OPEN_RE.flags);
+    const opens = [];
+    let m;
+    while ((m = openRe.exec(text)) !== null) {
+        if (m[0].endsWith('/>')) continue; // 自闭合 = 空思考,不开区间
+        if (isInsideHtmlTag(text, m.index)) { openRe.lastIndex = m.index + 1; continue; }
+        opens.push({ name: m[1], start: m.index, end: m.index + m[0].length });
+    }
+    for (const o of opens) {
+        const cm = new RegExp(`</\\s*${o.name}\\s*>`, 'i').exec(text.slice(o.end));
+        if (cm) {
+            ranges.push([o.start, o.end + cm.index + cm[0].length]);
+        } else {
+            ranges.push([o.start, text.length]);
+            break; // 漏闭合:其后所有开标签都落在本区间内,无需再看
+        }
+    }
+    return ranges;
+}
+
+/** match 区间 [start, end) 与任一思维链区间有重叠即判在块内(半截标签跨界也算) */
+function isInsideThinkRanges(ranges, start, end) {
+    return ranges.some(([s, e]) => start < e && end > s);
 }
 
 /**
@@ -4133,10 +4190,12 @@ async function landInFlightMedia() {
         } else if (entry.regexStr) {
             // hash 兜底重扫:prompt 提取 / 特征注入 / occ 计数与 processMessageContent 逻辑 B 一致
             const tagRegex = regexFromString(entry.regexStr);
+            const thinkRanges = collectThinkRanges(msg.mes); // 守卫:think 内同 hash 标签不是落点
             const seen = new Map();
             for (const m of msg.mes.matchAll(tagRegex)) {
                 // 守卫:跳过占位符/wrapper 属性里携带的标签文本(同 processMessageContent)
                 if (isInsideHtmlTag(msg.mes, m.index)) continue;
+                if (isInsideThinkRanges(thinkRanges, m.index, m.index + m[0].length)) continue;
                 let rawPrompt = extractTagPrompt(m);
                 if (!rawPrompt) continue;
                 const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
@@ -4368,6 +4427,8 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
     const mediaTagRegex = regexFromString(regexStr);
     // 快照 mes:生成为异步,期间流式会持续重写 message.mes,match.index / declare 位置都锚定在此快照上
     const mesText = message.mes;
+    // 思维链守卫输入:<think>/<thinking>/<think_nya> 等块内的标签是卡的格式说明复述,不是生图指令
+    const thinkRanges = collectThinkRanges(mesText);
     const matches = [...mesText.matchAll(mediaTagRegex)];
     if (matches.length === 0) return;
     if (isFinal) console.log(`[${extensionName}] 最终扫描: 楼${messageIndex} 匹配 ${matches.length} 个标签`);
@@ -4387,6 +4448,12 @@ async function processMessageContent(isFinal = false, onlyTrigger = false) {
         // (见 isInsideHtmlTag 注释)。wrapper 的 data-prompt(prompt 含标签文本)同样被拦。
         if (isInsideHtmlTag(mesText, match.index)) {
             if (isFinal) console.log(`[${extensionName}] 跳过标签内部的匹配(占位符/wrapper 属性携带): ${match[0].slice(0, 50)}`);
+            continue;
+        }
+
+        // 思维链守卫:思考过程里的 [image]...[/image](格式说明复述)不触发生成/占位符
+        if (isInsideThinkRanges(thinkRanges, match.index, match.index + match[0].length)) {
+            if (isFinal) console.log(`[${extensionName}] 跳过思维链块内的匹配: ${match[0].slice(0, 50)}`);
             continue;
         }
 
@@ -4632,6 +4699,7 @@ async function processAllMessagesForPlaceholders() {
             modified = true;
         }
 
+        const thinkRanges = collectThinkRanges(mes); // 守卫输入(heal 可能改写过 mes,按最新文本收)
         const matches = [...mes.matchAll(mediaTagRegex)];
         if (matches.length === 0) {
             if (modified) { message.mes = mes; updateMessageBlock(i, message); changedFloors.push(i); }
@@ -4641,6 +4709,8 @@ async function processAllMessagesForPlaceholders() {
         for (const [index, match] of matches.entries()) {
             // 守卫同 processMessageContent:跳过占位符/wrapper 属性里携带的标签文本
             if (isInsideHtmlTag(mes, match.index)) continue;
+            // 思维链块内的标签是格式说明,不转占位符(手动模式同理不生成)
+            if (isInsideThinkRanges(thinkRanges, match.index, match.index + match[0].length)) continue;
 
             const originalTag = match[0];
 
@@ -5952,6 +6022,7 @@ function collectUnfulfilledMedia() {
         // ② 裸标签(流式目标楼跳过,见函数注释)
         if (isStreamActive && i === chat.length - 1) continue;
         const stripped = mes.replace(MAG_MEDIA_WRAP_RE, '').replace(MAG_PLACEHOLDER_RE, '');
+        const thinkRanges = collectThinkRanges(stripped); // 思维链块内的休眠标签不进「未生成」列表(误点重试会真生成)
         const strippedDeclares = [...stripped.matchAll(PIC_DECLARE_RE)];
         for (const { type, regexStr } of regexEntries) {
             const tagRegex = regexFromString(regexStr);
@@ -5959,6 +6030,7 @@ function collectUnfulfilledMedia() {
             const seen = new Map(); // baseHash → 出现次数,occ 后缀算法与 processMessageContent 一致
             for (const m of stripped.matchAll(tagRegex)) {
                 if (isInsideHtmlTag(stripped, m.index)) continue;
+                if (isInsideThinkRanges(thinkRanges, m.index, m.index + m[0].length)) continue;
                 const rawPrompt = extractTagPrompt(m);
                 if (!rawPrompt) continue;
                 const base = simpleHash(normalizePrompt(injectCharacterTags(rawPrompt, s.characterTags).modifiedPrompt));
