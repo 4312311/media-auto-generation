@@ -36,7 +36,9 @@ let updateDebounceTimer = null;
 // 后,observer 按"mes 里裸标签已消失"判定使命完成并拆除)。
 let streamOverlayObserver = null;
 let streamOverlayFloor = -1;       // observer 盯的楼层(mesid = 流式目标楼)
+let streamOverlayEl = null;        // observer 实际连接的 .mes_text 元素(MutationObserver 无查连接对象的 API,靠它引用对账防死链)
 let streamOverlayQuitTimer = null; // ENDED 后的安全拆除定时器(见 scheduleStreamOverlayQuit)
+let streamOverlayMissWarnTs = 0;   // 上屏失配 warn 的限频时间戳(流式每 chunk 重放一次,不限频会刷屏)
 const STREAM_OVERLAY_OBSERVE_OPTS = { childList: true, subtree: true, characterData: true };
 
 // 失败记录 (Key: Hash -> Value: errorMessage):自动模式 ComfyUI 失败时记录,流式结束后渲染 error 占位符让用户重试
@@ -4365,6 +4367,7 @@ function applyStreamOverlay() {
 
     streamOverlayObserver.disconnect();
     let swapped = 0;
+    let missed = 0;
     try {
         for (const [, entry] of entries) {
             if (!entry.originalTag || !mes.includes(entry.originalTag)) continue; // 该条已落地,跳过
@@ -4374,9 +4377,20 @@ function applyStreamOverlay() {
             if (!node) continue;
             node.setAttribute('data-mag-stream-overlay', '1'); // 瞬态标记:诊断/与落地 wrapper 区分
             if (replaceBareTagRange(targetEl, entry.originalTag, node)) swapped++;
+            else missed++;
         }
     } finally {
         streamOverlayObserver.observe(targetEl, STREAM_OVERLAY_OBSERVE_OPTS);
+    }
+    if (missed > 0) {
+        // 静默黑洞补观测(走到这里的条目 mes 数据层必有标签,DOM textContent 里定位失败 =
+        // 渲染层变形,markdown 吃字符类场景);此前零日志,"看不到图"零线索。流式每 chunk
+        // 重放都会失败一次,3s 限频防刷屏
+        const now = Date.now();
+        if (now - streamOverlayMissWarnTs > 3000) {
+            streamOverlayMissWarnTs = now;
+            console.warn(`[${extensionName}] 流式即时显示: ${missed}/${entries.length} 条待显示媒体的标签在 DOM textContent 定位失败(精确+模糊均失配),放弃视觉替换待落地兜底(floor=${streamOverlayFloor})`);
+        }
     }
     if (swapped > 0) {
         console.log(`[${extensionName}] 流式即时显示: 已上屏 ${swapped} 个媒体(纯视觉层,持久化仍待流式结束落地)`);
@@ -4402,14 +4416,24 @@ function ensureStreamOverlayAttached() {
     if (!chat || chat.length === 0) return;
     const floor = chat.length - 1;
     if (streamOverlayObserver) {
+        // 存活判定必须用引用对账而非"文档里查得到该楼 .mes_text":元素被整体替换(printMessages
+        // 全量重渲等路径)时旧元素还在内存但已不在文档,新元素能被查到——旧判定误判存活,
+        // observer 永远连着死元素、收不到任何 chunk mutation,重放死亡,媒体只能等 ENDED 落地
+        // 才显示(概率性"流式期间不上屏"事故)。MutationObserver 无查连接对象的 API,记
+        // streamOverlayEl 引用对比。
+        const currentEl = document.querySelector(`#chat .mes[mesid="${floor}"] .mes_text`);
         const alive = streamOverlayFloor === floor
-            && !!document.querySelector(`#chat .mes[mesid="${floor}"] .mes_text`);
+            && streamOverlayEl
+            && currentEl === streamOverlayEl
+            && streamOverlayEl.isConnected;
         if (alive) return;
-        detachStreamOverlay(streamOverlayFloor === floor ? '目标元素失联,重挂' : '楼层已变化,重挂');
+        detachStreamOverlay(streamOverlayFloor !== floor ? '楼层已变化,重挂'
+            : currentEl ? '目标元素已被整体替换,重挂' : '目标元素失联,重挂');
     }
     const mesTextEl = document.querySelector(`#chat .mes[mesid="${floor}"] .mes_text`);
     if (!mesTextEl) return; // 楼层 DOM 未建(首 chunk 未到),下个 tick 再试
     streamOverlayFloor = floor;
+    streamOverlayEl = mesTextEl;
     streamOverlayObserver = new MutationObserver(() => applyStreamOverlay());
     streamOverlayObserver.observe(mesTextEl, STREAM_OVERLAY_OBSERVE_OPTS);
     console.log(`[${extensionName}] 流式即时显示: observer 挂载(floor=${floor})`);
@@ -4422,6 +4446,7 @@ function detachStreamOverlay(reason) {
     streamOverlayObserver?.disconnect();
     streamOverlayObserver = null;
     streamOverlayFloor = -1;
+    streamOverlayEl = null;
 }
 
 /**
