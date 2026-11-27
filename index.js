@@ -6122,6 +6122,95 @@ function collectUnfulfilledMedia() {
     return records;
 }
 
+/**
+ * 提取整楼层「declare 块 + 图片/视频标签原文」纯文本(媒体预览楼层分隔行复制按钮,调试用):
+ * 按原文顺序只保留以下片段,其余正文全部丢弃,片段间以换行连接——
+ * ① declare 块(PIC_DECLARE_RE 三种格式,原样直出);
+ * ② mag-placeholder 占位符 → data-original-tag 属性里存的 AI 原始标签文本(未生成/失败的也在内);
+ * ③ mag-media wrapper / 旧格式裸 <img|video prompt=...> → 原始标签已被替换成 HTML,用 data-prompt /
+ *    prompt 属性里的裸 prompt(未替换,[%style%]/[%beauty:*%] 占位符原样)重建成
+ *    [image]...[/image] / [video]...[/video] 规范格式;
+ * ④ 休眠裸 [image]/[video] 标签(用户可配置正则,match[0] 原文直出)。
+ * 守卫与 collectUnfulfilledMedia 同款:思维链块内的标签提及不收(collectThinkRanges +
+ * scanOutsideThinkRanges 按段扫防蛇形匹配);wrapper/占位符属性值里存的标签文本不收
+ * (占据区间跳过 + isInsideHtmlTag 双保险)。
+ */
+function buildFloorTagsText(floor) {
+    const message = (getContext().chat || [])[floor];
+    const mes = typeof message?.mes === 'string' ? message.mes : '';
+    if (!mes) return '';
+    const s = extension_settings[extensionName];
+    const segments = [];
+    const occupied = []; // wrapper/占位符 HTML 块的 [start, end) 区间:属性值里存着标签/prompt 文本,不能再被 declare/裸标签扫描命中
+
+    // ③ wrapper:裸 prompt(data-prompt,未替换)重建规范标签
+    MAG_MEDIA_WRAP_RE.lastIndex = 0;
+    let wm;
+    while ((wm = MAG_MEDIA_WRAP_RE.exec(mes)) !== null) {
+        occupied.push([wm.index, wm.index + wm[0].length]);
+        const parsed = parseMediaWrapper(wm[0]);
+        if (parsed) {
+            const tag = parsed.mediaType === 'video' ? 'video' : 'image';
+            segments.push({ index: wm.index, text: `[${tag}]${parsed.prompt}[/${tag}]` });
+        }
+    }
+
+    // ② 占位符:original-tag 原文优先,属性缺失退 data-prompt 重建
+    for (const pm of mes.matchAll(MAG_PLACEHOLDER_RE)) {
+        occupied.push([pm.index, pm.index + pm[0].length]);
+        const originalTag = unescapeHtmlAttr(extractAttr(pm[0], 'data-original-tag'));
+        if (originalTag) {
+            segments.push({ index: pm.index, text: originalTag });
+            continue;
+        }
+        const prompt = unescapeHtmlAttr(extractAttr(pm[0], 'data-prompt'));
+        if (prompt) {
+            const tag = extractAttr(pm[0], 'data-media-type') === 'video' ? 'video' : 'image';
+            segments.push({ index: pm.index, text: `[${tag}]${prompt}[/${tag}]` });
+        }
+    }
+
+    // ③ 旧格式裸 <img|video prompt=...> HTML 标签(wrapper 区间之外才是真旧格式),prompt 属性取裸 prompt 重建
+    const htmlTagRe = /<(img|video)\b[^>]*>/g;
+    let hm;
+    while ((hm = htmlTagRe.exec(mes)) !== null) {
+        const start = hm.index;
+        const end = start + hm[0].length;
+        if (occupied.some(([s2, e2]) => start < e2 && end > s2)) continue;
+        if (!hm[0].includes('prompt="')) continue;
+        const prompt = unescapeHtmlAttr(extractAttr(hm[0], 'prompt'));
+        if (!prompt) continue;
+        const tag = hm[1] === 'video' ? 'video' : 'image';
+        segments.push({ index: start, text: `[${tag}]${prompt}[/${tag}]` });
+    }
+
+    const inOccupied = (start, end) => occupied.some(([s2, e2]) => start < e2 && end > s2);
+
+    // ① declare 块(原样直出;思维链内的格式说明示例不收,与裸标签同守卫)
+    const thinkRanges = collectThinkRanges(mes);
+    for (const d of mes.matchAll(PIC_DECLARE_RE)) {
+        const start = d.index;
+        const end = start + d[0].length;
+        if (inOccupied(start, end) || isInsideThinkRanges(thinkRanges, start, end)) continue;
+        segments.push({ index: start, text: d[0] });
+    }
+
+    // ④ 休眠裸 [image]/[video] 标签:思维链外按段扫,match[0] 原文直出
+    for (const regexStr of [s?.imageRegex, s?.videoRegex]) {
+        const tagRegex = regexFromString(regexStr);
+        if (!tagRegex) continue;
+        for (const m of scanOutsideThinkRanges(mes, thinkRanges, tagRegex)) {
+            const start = m.index;
+            const end = start + m[0].length;
+            if (inOccupied(start, end) || isInsideHtmlTag(mes, start)) continue;
+            segments.push({ index: start, text: m[0] });
+        }
+    }
+
+    segments.sort((a, b) => a.index - b.index);
+    return segments.map(seg => seg.text).join('\n');
+}
+
 /** 懒挂媒体预览 modal 到 body(居中对话框 + 暗色遮罩) */
 function ensureMediaPreviewModal() {
     if ($('#mag_media_preview_modal').length) return;
@@ -6183,6 +6272,24 @@ function ensureMediaPreviewModal() {
         e.preventDefault();
         e.stopPropagation();
         await regenerateFloorMedia(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
+    });
+    // 点楼层分隔行的复制按钮 → 复制整楼层 declare + 图片/视频标签原文(prompt 未替换,其余正文丢弃)
+    $m.find('.preview-modal-body').on('click', '.preview-floor-copy-btn', async function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const text = buildFloorTagsText(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
+        if (!text.trim()) { toastr.warning('该楼层没有可复制的 declare 或图片/视频标签'); return; }
+        try {
+            if (typeof copyText === 'function') {
+                await copyText(text);
+            } else {
+                await navigator.clipboard.writeText(text);
+            }
+            toastr.success('已复制本楼层 declare + 图片/视频标签原文');
+        } catch (err) {
+            console.error(`[${extensionName}] copy floor tags failed:`, err);
+            toastr.error('复制失败');
+        }
     });
     // 点行尾复制按钮 → 两个按钮按 data-copy-kind 分流:
     // final=生成时完整快照(data-final-prompt,占位符/风格前后缀/角色注入替换后的;无快照退裸 data-prompt)
@@ -6312,8 +6419,10 @@ function renderMediaPreviewModal() {
                 const btnIcon = busy ? 'fa-circle-notch fa-spin busy' : 'fa-rotate-right';
                 return `<i class="fa-solid ${btnIcon} preview-floor-regen-btn" title="重新生成本楼层全部媒体"></i>`;
             })();
+            // 楼层复制按钮(常规/过滤态都渲染):复制整层 declare + 图片/视频标签原文,见 buildFloorTagsText
+            const floorCopyBtn = `<i class="fa-solid fa-clipboard preview-floor-copy-btn" title="复制本楼层全部 declare + 图片/视频标签原文(去掉其余内容,prompt 未替换)"></i>`;
             $body.append(`
-                <div class="preview-floor-sep" data-floor="${r.floor}"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div>${regenBtn}</div>
+                <div class="preview-floor-sep" data-floor="${r.floor}"><span class="preview-floor-label">${labelText}</span><div class="preview-floor-line"></div>${floorCopyBtn}${regenBtn}</div>
             `);
         }
         floorSeq++;

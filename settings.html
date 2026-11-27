@@ -654,6 +654,19 @@
         pointer-events: none;
         opacity: 0.5;
     }
+    /* 楼层复制按钮:分隔行行尾(重生按钮左侧),复制整层 declare+图片/视频标签原文;与重生按钮同款热区 */
+    #mag_media_preview_modal .preview-floor-copy-btn {
+        cursor: pointer;
+        color: var(--SmartThemeBodyColor, #fff);
+        font-size: 1em;
+        opacity: 0.65;
+        padding: 4px 6px;
+        white-space: nowrap;
+    }
+    #mag_media_preview_modal .preview-floor-copy-btn:hover {
+        opacity: 1;
+        color: var(--SmartThemeQuoteColor, rgba(120,160,255,0.9));
+    }
     #mag_media_preview_modal .preview-media-row {
         margin-bottom: 10px;
         padding: 0 4px; /* 图片左右留一点边距,不顶满对话框(与 body 4px 合计 8px,用户要求收窄) */
