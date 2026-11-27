@@ -6184,13 +6184,18 @@ function ensureMediaPreviewModal() {
         e.stopPropagation();
         await regenerateFloorMedia(Number($(this).closest('.preview-floor-sep').attr('data-floor')));
     });
-    // 点行尾复制按钮 → 复制该媒体的生成时完整 prompt(data-final-prompt 快照;无快照退裸 data-prompt)
+    // 点行尾复制按钮 → 两个按钮按 data-copy-kind 分流:
+    // final=生成时完整快照(data-final-prompt,占位符/风格前后缀/角色注入替换后的;无快照退裸 data-prompt)
+    // raw=原始 data-prompt(AI 原文,含 [%style%]/[%beauty:*%] 等占位符未替换——调试用)
     // (与 onMagClick 的 copy 角色同款:copyText 优先,降级原生剪贴板)
     $m.find('.preview-modal-body').on('click', '.preview-media-copy-btn', async function (e) {
         e.preventDefault();
         e.stopPropagation();
         const $row = $(this).closest('.preview-media-row');
-        const prompt = String($row.attr('data-final-prompt') || $row.attr('data-prompt') || '');
+        const kind = $(this).attr('data-copy-kind');
+        const prompt = kind === 'raw'
+            ? String($row.attr('data-prompt') || '')
+            : String($row.attr('data-final-prompt') || $row.attr('data-prompt') || '');
         if (!prompt) { toastr.warning('该媒体没有可复制的 prompt'); return; }
         try {
             if (typeof copyText === 'function') {
@@ -6198,7 +6203,7 @@ function ensureMediaPreviewModal() {
             } else {
                 await navigator.clipboard.writeText(prompt);
             }
-            toastr.success('已复制 prompt');
+            toastr.success(kind === 'raw' ? '已复制原始 prompt(未替换)' : '已复制完整 prompt(替换后)');
         } catch (err) {
             console.error(`[${extensionName}] copy prompt failed:`, err);
             toastr.error('复制失败');
@@ -6324,7 +6329,8 @@ function renderMediaPreviewModal() {
         // 用的哪条前缀:生成时快照(wrapper data-prefix-name 优先,存量按 url 回查 manifest);无前缀/未命名/存量查不到 → 不显示
         const prefixName = r.prefixName || manifestPrefixName.get(r.url) || '';
         const prefixBadge = prefixName ? `<span class="preview-media-prefix" title="生成时使用的风格条目">${escapeHtmlAttribute(prefixName)}</span>` : '';
-        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${prefixBadge}${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" title="复制生成时完整 prompt"></i></div>`;
+        // 行尾双复制按钮:fa-copy=替换后完整快照,fa-code=原始 prompt(未替换,含 [%style%]/[%beauty:*%] 占位符)
+        const timeHtml = `<div class="preview-media-time"><span class="preview-media-seq">第 ${floorSeq} 张</span>${prefixBadge}${timeTs > 0 ? ` · <span class="preview-media-timestamp">${formatGalleryTime(timeTs)}</span>` : ''} <i class="fa-solid fa-copy preview-media-copy-btn" data-copy-kind="final" title="复制替换后的完整 prompt"></i><i class="fa-solid fa-code preview-media-copy-btn" data-copy-kind="raw" title="复制原始 prompt(未替换,含占位符)"></i></div>`;
         const mediaTag = r.mediaType === 'video'
             ? `<video src="${escapedUrl}" preload="metadata" controls${videoShouldMute() ? ' muted' : ''} playsinline></video>`
             : `<img src="${escapedUrl}" loading="lazy" />`;
